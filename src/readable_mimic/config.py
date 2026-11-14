@@ -1,8 +1,18 @@
 """One JSON file is the source of experiment configuration."""
 
+from dataclasses import dataclass
 import json
 from pathlib import Path
 from types import SimpleNamespace
+
+
+@dataclass(frozen=True)
+class ObservationNoiseConfig:
+    joint_pos_noise: float = 0.01
+    joint_vel_noise: float = 0.5
+    base_ang_vel_noise: float = 0.2
+    projected_gravity_noise: float = 0.05
+    ref_base_rot_noise: float = 0.05
 
 
 def load_config(path="config.json"):

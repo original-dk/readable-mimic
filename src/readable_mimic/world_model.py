@@ -1,7 +1,7 @@
 from __future__ import annotations
+from . import data_transforms as transforms
 import torch
 import torch.nn as nn
-from .task import invariant_feature_dim, invariant_features
 from .rotations import mm3, mv3, so3_exp, yaw_mat
 from .common import mlp, RunningNorm
 
@@ -27,7 +27,7 @@ class WorldModel(nn.Module):
         self.use_last_action = use_last_action
         self.structured, self.control_time_step = (structured, control_time_step)
         self.input_dim = (
-            invariant_feature_dim(num_joints)
+            transforms.compute_invariant_feature_dim(num_joints)
             + num_joints * (2 if use_last_action else 1)
             + num_simulation_parameters
         )
@@ -44,9 +44,17 @@ class WorldModel(nn.Module):
     def inputs(self, state, action, last_action, normalized_simulation_parameters):
         if self.use_last_action:
             return torch.cat(
-                (invariant_features(state), action, last_action, normalized_simulation_parameters), -1
+                (
+                    transforms.compute_invariant_features(state),
+                    action,
+                    last_action,
+                    normalized_simulation_parameters,
+                ),
+                -1,
             )
-        return torch.cat((invariant_features(state), action, normalized_simulation_parameters), -1)
+        return torch.cat(
+            (transforms.compute_invariant_features(state), action, normalized_simulation_parameters), -1
+        )
 
     NEW_VELOCITY_WEIGHT = 0.625
 

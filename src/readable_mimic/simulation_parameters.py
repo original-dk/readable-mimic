@@ -39,19 +39,6 @@ def default_simulation_parameters(robot, device):
     )
 
 
-def normalize_simulation_parameters(parameters, robot):
-    friction_lower, friction_upper = robot.domain_randomization.friction_range
-    center = default_simulation_parameters(robot, parameters.device)
-    scales = torch.cat(
-        (
-            parameters.new_tensor([(friction_upper - friction_lower) / 2]),
-            joint_pos_offset_limits(robot, parameters.device).clamp_min(1e-06),
-            parameters.new_full((3,), 0.05),
-        )
-    )
-    return (parameters - center) / scales
-
-
 def initialize_simulation_parameters(environment):
     """Sample friction / COM once and apply the same values to MuJoCo and replay context."""
     robot = environment.robot_description

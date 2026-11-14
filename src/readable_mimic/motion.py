@@ -8,7 +8,7 @@ import numpy as np
 import torch
 from .kinematics import Kinematics
 from .robot import MotionArrays, RobotSpec
-from .rotations import mat_to_6d, mm3, mv3, quat_slerp, quat_to_mat, so3_log, yaw_mat
+from .rotations import quat_slerp, quat_to_mat, so3_log
 
 CONTROL_DT = 0.02
 BIN_FRAMES = 50
@@ -165,7 +165,7 @@ class ReferenceMotion:
         return ReferenceMotion(files, kinematics, device, robot.load_motion)
 
     def set_ref_foot_contact(
-        self, feet: list[int], margin: float = 0.015, vmax: float = 0.5, joint_pos: float = 0.05
+        self, feet: list[int], margin: float = 0.015, vmax: float = 0.5, floor_quantile: float = 0.05
     ) -> None:
         """Speed-branch reference foot contact (num_frames, len(feet)): height below the clip's own floor (the
         q-quantile of that foot's height in the clip) + margin, and horizontal speed below vmax. A fixed 4.5 cm
@@ -178,42 +178,8 @@ class ReferenceMotion:
         floor = torch.zeros_like(foot_heights)
         for clip_index in range(len(self.names)):
             start_frame = self.clip_id == clip_index
-            floor[start_frame] = foot_heights[start_frame].quantile(joint_pos, dim=0)
+            floor[start_frame] = foot_heights[start_frame].quantile(floor_quantile, dim=0)
         self.ref_foot_contact = ((foot_heights < floor + margin) & (foot_horizontal_speed < vmax)).float()
-
-    def command_dim(self, K: int) -> int:
-        return K * (3 + 6 + 3 + 3 + 2 * self.joint_pos.shape[-1])
-
-    def future_frames(self, motion_frame_index: torch.Tensor, K: int) -> torch.Tensor:
-        """Frames f+1..f+K clamped to the clip's last frame, shape (B, K)."""
-        end = self.clip_end[self.clip_id[motion_frame_index]]
-        future_frames = motion_frame_index.unsqueeze(-1) + torch.arange(
-            1, K + 1, device=motion_frame_index.device
-        )
-        return torch.minimum(future_frames, end.unsqueeze(-1))
-
-    def command(self, motion_frame_index: torch.Tensor, K: int) -> torch.Tensor:
-        """Goal features from the reference only: K future frames relative to the current reference frame."""
-        future_frames = self.future_frames(motion_frame_index, K)
-        base_heading_rot_mat_w = yaw_mat(self.base_rot_mat_w[motion_frame_index])
-        world_to_heading = base_heading_rot_mat_w.transpose(-1, -2).unsqueeze(1)
-        delta_base_pos_heading = mv3(
-            world_to_heading,
-            self.base_pos_w[future_frames] - self.base_pos_w[motion_frame_index].unsqueeze(1),
-        )
-        ref_base_rot_6d_heading = mat_to_6d(mm3(world_to_heading, self.base_rot_mat_w[future_frames]))
-        command_features = torch.cat(
-            (
-                delta_base_pos_heading,
-                ref_base_rot_6d_heading,
-                self.base_lin_vel[future_frames],
-                self.base_ang_vel[future_frames],
-                self.joint_pos[future_frames],
-                self.joint_vel[future_frames] * 0.1,
-            ),
-            -1,
-        )
-        return command_features.reshape(motion_frame_index.shape[0], -1)
 
     def ref_state(self, motion_frame_index: torch.Tensor):
         return (

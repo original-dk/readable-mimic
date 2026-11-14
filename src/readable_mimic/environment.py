@@ -1,11 +1,12 @@
 """Actor action -> MuJoCo step -> state / reward / replay transition."""
 
+from . import data_transforms as transforms
 import torch
 from mjlab.scene import Scene, SceneCfg
 from mjlab.sim import MujocoCfg, Simulation, SimulationCfg
 from mjlab.terrains import TerrainEntityCfg
 from .motion import CONTROL_DT
-from .task import MAX_STEP_REWARD, flatten_state
+from .task import MAX_STEP_REWARD
 from .rotations import mat_to_quat, quat_to_mat, so3_exp
 from .simulation_parameters import initialize_simulation_parameters, randomize_joint_pos_offsets
 
@@ -61,6 +62,9 @@ class TrackingEnvironment:
         self.last_action = torch.zeros(num_envs, self.num_joints, device=device)
         self.episode_return = torch.zeros(num_envs, device=device)
         self.reset(torch.arange(num_envs, device=device))
+        self.observation_noise_limits = transforms.compute_observation_noise_limits(
+            robot.observation_noise, robot.num_joints
+        ).to(device)
 
     def state(self):
         robot_indices = self.robot.indexing
@@ -127,10 +131,15 @@ class TrackingEnvironment:
         randomize_joint_pos_offsets(self.simulation_parameters, environment_indices, self.robot_description)
 
     def observe(self):
-        observation = self.task.observation(
-            self.state(), self.last_action, self.simulation_parameters, self.motion_frame_index
+        observation = transforms.compute_observation(
+            self.state(),
+            self.last_action,
+            self.simulation_parameters,
+            self.motion_frame_index,
+            self.motion,
+            self.default_joint_pos,
         )
-        return self.task.add_noise(observation)
+        return transforms.apply_observation_noise(observation, self.observation_noise_limits)
 
     def step(self, action):
         state = self.state()
@@ -152,8 +161,8 @@ class TrackingEnvironment:
         timeout = (next_motion_frame_index >= clip_end_frame) | (episode_step + 1 >= self.max_episode_steps)
         done = termination | timeout
         transition = dict(
-            state=flatten_state(state),
-            next_state=flatten_state(next_state),
+            state=transforms.flatten_state(state),
+            next_state=transforms.flatten_state(next_state),
             action=action.clone(),
             last_action=last_action,
             motion_frame_index=motion_frame_index,

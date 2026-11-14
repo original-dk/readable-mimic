@@ -1,35 +1,10 @@
-"""Observation, tracking reward, termination and critic features shared by real and imagined states."""
+"""Tracking rewards and termination conditions shared by real and imagined states."""
 
 from __future__ import annotations
-from .observation import build_observation
 from dataclasses import dataclass
 import torch
-from .kinematics import Kinematics
-from .motion import CONTROL_DT, ReferenceMotion
-from .rotations import mat_to_6d, mm3, mv3, quat_to_mat, mat_to_quat, rot_angle_sq, yaw_mat
-from .observation import ObservationNoiseConfig, observation_noise_limits
-
-
-def state_dim(num_joints: int) -> int:
-    return 3 + 4 + 3 + 3 + num_joints + num_joints
-
-
-def observation_dim(num_joints: int) -> int:
-    return num_joints + num_joints + 3 + 3 + num_joints + 6
-
-
-def observation_scale(num_joints: int) -> torch.Tensor:
-    return torch.cat(
-        (
-            torch.ones(num_joints),
-            torch.full((num_joints,), 0.1),
-            torch.full((3,), 0.25),
-            torch.ones(3),
-            torch.ones(num_joints),
-            torch.ones(6),
-        )
-    )
-
+from .motion import CONTROL_DT
+from .rotations import mm3, mv3, rot_angle_sq, yaw_mat
 
 CONTACT_Z = 0.045
 MAX_STEP_REWARD = (4 * 1.0 + 2 * 0.5) * CONTROL_DT
@@ -50,88 +25,20 @@ class RewardConfig:
     termination_tilt_threshold: float = 0.8
 
 
-def flatten_state(state) -> torch.Tensor:
-    base_pos_w, base_rot_mat_w, base_lin_vel_w, base_ang_vel_w, joint_pos, joint_vel = state
-    return torch.cat(
-        (base_pos_w, mat_to_quat(base_rot_mat_w), base_lin_vel_w, base_ang_vel_w, joint_pos, joint_vel), -1
-    )
-
-
-def unflatten_state(flat_state: torch.Tensor):
-    num_joints = (flat_state.shape[-1] - 13) // 2
-    return (
-        flat_state[..., 0:3],
-        quat_to_mat(flat_state[..., 3:7]),
-        flat_state[..., 7:10],
-        flat_state[..., 10:13],
-        flat_state[..., 13 : 13 + num_joints],
-        flat_state[..., 13 + num_joints :],
-    )
-
-
-def invariant_features(state) -> torch.Tensor:
-    """Heading- and position-invariant state features: height, tilt (6D), body-frame velocities, joints."""
-    base_pos_w, base_rot_mat_w, base_lin_vel_w, base_ang_vel_w, joint_pos, joint_vel = state
-    base_heading_rot_mat_w = yaw_mat(base_rot_mat_w)
-    world_to_base = base_rot_mat_w.transpose(-1, -2)
-    return torch.cat(
-        (
-            base_pos_w[..., 2:3],
-            mat_to_6d(mm3(base_heading_rot_mat_w.transpose(-1, -2), base_rot_mat_w)),
-            mv3(world_to_base, base_lin_vel_w),
-            mv3(world_to_base, base_ang_vel_w),
-            joint_pos,
-            joint_vel,
-        ),
-        -1,
-    )
-
-
-def invariant_feature_dim(num_joints: int) -> int:
-    return 1 + 6 + 3 + 3 + num_joints + num_joints
-
-
 class TrackingTask:
-    def __init__(
-        self,
-        kinematics: Kinematics,
-        motion: ReferenceMotion,
-        default_joint_pos: torch.Tensor,
-        num_simulation_parameters: int,
-        observation_noise: ObservationNoiseConfig = ObservationNoiseConfig(),
-        config: RewardConfig = RewardConfig(),
-    ):
-        self.kinematics, self.motion, self.config = (kinematics, motion, config)
-        self.default_joint_pos = default_joint_pos
-        joint_limit_center, joint_limit_half_range = (
-            (kinematics.joint_pos_lower_limit + kinematics.joint_pos_upper_limit) / 2,
-            (kinematics.joint_pos_upper_limit - kinematics.joint_pos_lower_limit) / 2,
+    def __init__(self, kinematics, motion, config):
+        self.kinematics = kinematics
+        self.motion = motion
+        self.config = config
+        joint_limit_center = (kinematics.joint_pos_lower_limit + kinematics.joint_pos_upper_limit) / 2
+        joint_limit_half_range = (kinematics.joint_pos_upper_limit - kinematics.joint_pos_lower_limit) / 2
+        self.joint_pos_soft_lower_limit = (
+            joint_limit_center - joint_limit_half_range * config.soft_limit_factor
         )
-        self.joint_pos_soft_lower_limit, self.joint_pos_soft_upper_limit = (
-            joint_limit_center - joint_limit_half_range * config.soft_limit_factor,
-            joint_limit_center + joint_limit_half_range * config.soft_limit_factor,
+        self.joint_pos_soft_upper_limit = (
+            joint_limit_center + joint_limit_half_range * config.soft_limit_factor
         )
-        device = default_joint_pos.device
-        num_joints = default_joint_pos.shape[0]
-        self.num_joints = num_joints
-        self.observation_dim, self.num_simulation_parameters = (
-            observation_dim(num_joints),
-            num_simulation_parameters,
-        )
-        self.critic_extra = (
-            num_joints + len(kinematics.tracked_body_indices) * 3 + 3 + 6 + self.num_simulation_parameters
-        )
-        self.observation_noise_limits = observation_noise_limits(observation_noise, num_joints).to(device)
-        self.observation_scale = observation_scale(num_joints).to(device)
-        self.feet: list[int] = []
-
-    def observation(self, state, last_action, simulation_parameters, motion_frame_index) -> torch.Tensor:
-        return build_observation(
-            state, last_action, simulation_parameters, motion_frame_index, self.motion, self.default_joint_pos
-        )
-
-    def add_noise(self, observation: torch.Tensor) -> torch.Tensor:
-        return observation + (2 * torch.rand_like(observation) - 1) * self.observation_noise_limits
+        self.feet = []
 
     def reward(
         self,
@@ -269,39 +176,3 @@ class TrackingTask:
             )
         )
         return 1 - survival_probability
-
-    def critic_features(self, state, motion_frame_index, simulation_parameters) -> torch.Tensor:
-        """Critic input: invariant state, goal, sim context, and robot-vs-reference errors."""
-        motion = self.motion
-        base_pos_w, base_rot_mat_w, base_lin_vel_w, base_ang_vel_w, joint_pos, joint_vel = state
-        base_heading_rot_mat_w = yaw_mat(base_rot_mat_w)
-        world_to_heading = base_heading_rot_mat_w.transpose(-1, -2)
-        ref_base_pos_w, ref_base_rot_mat_w = (
-            motion.base_pos_w[motion_frame_index],
-            motion.base_rot_mat_w[motion_frame_index],
-        )
-        body_pos_w = self.kinematics.forward(
-            base_pos_w, base_rot_mat_w, base_lin_vel_w, base_ang_vel_w, joint_pos, joint_vel
-        )[0]
-        ref_alignment_rot_mat_w = yaw_mat(mm3(base_rot_mat_w, ref_base_rot_mat_w.transpose(-1, -2)))
-        ref_anchor_pos_w = torch.cat((base_pos_w[..., :2], ref_base_pos_w[..., 2:3]), -1)
-        ref_body_pos_w_aligned = ref_anchor_pos_w.unsqueeze(-2) + mv3(
-            ref_alignment_rot_mat_w.unsqueeze(-3),
-            motion.body_pos_w[motion_frame_index] - ref_base_pos_w.unsqueeze(-2),
-        )
-        body_pos_error_heading = mv3(
-            world_to_heading.unsqueeze(-3), ref_body_pos_w_aligned - body_pos_w
-        ).flatten(-2)
-        base_pos_error_heading = mv3(world_to_heading, ref_base_pos_w - base_pos_w)
-        ref_base_rot_6d_relative = mat_to_6d(mm3(base_rot_mat_w.transpose(-1, -2), ref_base_rot_mat_w))
-        return torch.cat(
-            (
-                invariant_features(state),
-                motion.joint_pos[motion_frame_index] - joint_pos,
-                body_pos_error_heading,
-                base_pos_error_heading,
-                ref_base_rot_6d_relative,
-                simulation_parameters,
-            ),
-            -1,
-        )

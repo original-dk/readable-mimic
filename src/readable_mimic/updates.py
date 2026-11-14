@@ -1,10 +1,8 @@
 """Eager FP32 world-model, actor and critic update equations adapted from BlinkMimic."""
 
+from . import data_transforms as transforms
 import torch
 from torch import nn
-from .task import flatten_state, unflatten_state
-from .world_model import WorldModel
-from .objective import actor_objective
 
 
 def set_requires_grad(module, enabled):
@@ -12,16 +10,59 @@ def set_requires_grad(module, enabled):
         parameter.requires_grad_(enabled)
 
 
-class Updates:
+class TrainingUpdates:
+    def __init__(
+        self,
+        *,
+        config,
+        actor,
+        critic,
+        world_model,
+        buffer,
+        task,
+        motion,
+        robot,
+        actor_optimizer,
+        critic_optimizer,
+        world_model_optimizer,
+        actor_average,
+        mirror,
+        state_error_floor,
+    ):
+        self.config = config
+        self.actor = actor
+        self.critic = critic
+        self.world_model = world_model
+        self.buffer = buffer
+        self.task = task
+        self.motion = motion
+        self.robot = robot
+        self.actor_optimizer = actor_optimizer
+        self.critic_optimizer = critic_optimizer
+        self.world_model_optimizer = world_model_optimizer
+        self.actor_average = actor_average
+        self.mirror = mirror
+        self.state_error_floor = state_error_floor
+        self.device = config.device
+        self.horizon = config.horizon
+        self.history_length = config.hist
+        self.command_frames = config.goal_frames
+        self.default_joint_pos = torch.tensor(robot.default_joint_pos_list(), device=self.device)
+        self.observation_noise_limits = transforms.compute_observation_noise_limits(
+            robot.observation_noise, robot.num_joints
+        ).to(self.device)
+
     def world_model_rollout(self, start, action, last_action, simulation_parameters):
-        state = unflatten_state(start[:, 0])
+        state = transforms.unflatten_state(start[:, 0])
         predicted_states = []
         for step_index in range(self.config.wm_window):
             state = self.world_model.step(
                 state,
                 action[:, step_index],
                 last_action[:, step_index],
-                self.normalize_parameters(simulation_parameters[:, step_index]),
+                transforms.compute_normalized_simulation_parameters(
+                    simulation_parameters[:, step_index], self.robot
+                ),
             )
             predicted_states.append(state)
         return tuple(
@@ -35,7 +76,7 @@ class Updates:
 
     def world_model_loss(self, predicted_state, next_states, mask):
         error_scale = torch.maximum(self.world_model.increment_normalizer.std(), self.state_error_floor)
-        next_state = unflatten_state(next_states)
+        next_state = transforms.unflatten_state(next_states)
         squared_state_error = (self.world_model.state_error(predicted_state, next_state) / error_scale) ** 2
         squared_state_error = squared_state_error.mean(-1)
         return ((squared_state_error * mask).sum() / next_states.shape[0], squared_state_error[:, -1])
@@ -53,16 +94,24 @@ class Updates:
         action = self.actor(observation_history, command)
         next_state = self.world_model.step(state, action, last_action, normalized_simulation_parameters)
         next_motion_frame_index = motion_frame_index + 1
-        next_observation = self.task.add_noise(
-            self.task.observation(next_state, action, simulation_parameters, next_motion_frame_index)
+        next_observation = transforms.apply_observation_noise(
+            transforms.compute_observation(
+                next_state,
+                action,
+                simulation_parameters,
+                next_motion_frame_index,
+                self.motion,
+                self.default_joint_pos,
+            ),
+            self.observation_noise_limits,
         )
-        observation_history = torch.cat((observation_history[:, 1:], next_observation.unsqueeze(1)), 1)
+        observation_history = transforms.update_observation_history(observation_history, next_observation)
         return (
             next_state,
             action,
             observation_history,
             next_motion_frame_index,
-            self.motion.command(next_motion_frame_index, self.command_frames),
+            transforms.compute_command(next_motion_frame_index, self.command_frames, self.motion),
         )
 
     def reward_and_termination(self, state, motion_frame_index, action, last_action):
@@ -77,41 +126,15 @@ class Updates:
             self.task.soft_termination(state, motion_frame_index),
         )
 
-    def value_targets(self, state_values, detached_rewards, detached_terminations):
-        """GAE(lambda) returns over the imagined transitions; V is (H+1, B), bootstrapped from V[-1]."""
-        return_target = state_values[-1]
-        targets = []
-        for step_index in range(self.horizon - 1, -1, -1):
-            return_target = detached_rewards[step_index] + self.config.gamma * (
-                1 - detached_terminations[step_index]
-            ) * ((1 - self.config.lam) * state_values[step_index + 1] + self.config.lam * return_target)
-            targets.append(return_target)
-        return torch.stack(targets[::-1])
-
     def critic_loss(self, critic_features, value_targets):
         return ((self.critic(critic_features) - value_targets) ** 2).mean()
-
-    def world_model_normalization_data(
-        self, initial_state, next_state, action, last_action, simulation_parameters
-    ):
-        return (
-            self.world_model.inputs(
-                initial_state, action, last_action, self.normalize_parameters(simulation_parameters)
-            ),
-            self.world_model.targets(initial_state, next_state),
-            WorldModel.increments(initial_state, next_state),
-        )
-
-    def critic_input(self, state, motion_frame_index, normalized_simulation_parameters, command):
-        return torch.cat(
-            (self.task.critic_features(state, motion_frame_index, normalized_simulation_parameters), command),
-            -1,
-        )
 
     def mirror_windows(self, windows: dict, num_samples: int) -> dict:
         """Replace the first n windows by their mirror images (states, actions, sim context)."""
         out = dict(windows)
-        mirror_flat_state = lambda x: flatten_state(self.mirror.state(unflatten_state(x)))
+        mirror_flat_state = lambda x: transforms.flatten_state(
+            self.mirror.state(transforms.unflatten_state(x))
+        )
         for field_name, mirror_function in (
             ("state", mirror_flat_state),
             ("next_state", mirror_flat_state),
@@ -175,25 +198,23 @@ class Updates:
 
     def update_actor(self):
         start, history = self.sample_valid_starts(self.config.pi_batch)
-        state = unflatten_state(start["state"])
+        state = transforms.unflatten_state(start["state"])
         simulation_parameters, motion_frame_index, last_action = (
             start["simulation_parameters"],
             start["motion_frame_index"],
             start["last_action"],
         )
-        normalized_simulation_parameters = self.normalize_parameters(simulation_parameters)
+        normalized_simulation_parameters = transforms.compute_normalized_simulation_parameters(
+            simulation_parameters, self.robot
+        )
         with torch.no_grad():
-            observation_history = self.task.observation(
-                unflatten_state(history["state"]),
-                history["last_action"],
-                history["simulation_parameters"],
-                history["motion_frame_index"],
+            observation_history = transforms.compute_replay_observation_history(
+                history, self.motion, self.default_joint_pos, self.observation_noise_limits
             )
-        observation_history = self.task.add_noise(observation_history)
         set_requires_grad(self.world_model, False)
         set_requires_grad(self.critic, False)
         batch_size = self.config.pi_batch
-        initial_command = self.motion.command(motion_frame_index, self.command_frames)
+        initial_command = transforms.compute_command(motion_frame_index, self.command_frames, self.motion)
         command = initial_command
         initial_state = state
         rollout_states, rollout_actions, rollout_last_actions, rollout_frames, rollout_commands = (
@@ -236,9 +257,16 @@ class Updates:
             termination_probabilities.view(self.horizon, batch_size),
         )
         bootstrap_value = self.critic(
-            self.critic_input(state, motion_frame_index, normalized_simulation_parameters, command)
+            transforms.compute_critic_input(
+                state,
+                motion_frame_index,
+                normalized_simulation_parameters,
+                command,
+                self.motion,
+                self.task.kinematics,
+            )
         )
-        actor_return, survival_weights, final_survival = actor_objective(
+        actor_return, survival_weights, final_survival = transforms.compute_actor_return(
             rewards, termination_probabilities, bootstrap_value, self.config.gamma
         )
         reward_sum = (survival_weights * rewards).detach().sum(0)
@@ -313,13 +341,22 @@ class Updates:
             critic_parameters = (
                 normalized_simulation_parameters.unsqueeze(0).expand(self.horizon + 1, -1, -1).flatten(0, 1)
             )
-            critic_features = self.critic_input(
-                critic_states, critic_frames, critic_parameters, critic_commands
+            critic_features = transforms.compute_critic_input(
+                critic_states,
+                critic_frames,
+                critic_parameters,
+                critic_commands,
+                self.motion,
+                self.task.kinematics,
             ).view(self.horizon + 1, batch_size, -1)
         self.critic.norm.update(critic_features)
         with torch.no_grad():
-            targets = self.value_targets(
-                self.critic(critic_features), detached_rewards, detached_terminations
+            targets = transforms.compute_value_targets(
+                self.critic(critic_features),
+                detached_rewards,
+                detached_terminations,
+                self.config.gamma,
+                self.config.lam,
             )
         flat_critic_features, flat_value_targets = (
             critic_features[:-1].reshape(-1, critic_features.shape[-1]),

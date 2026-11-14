@@ -1,5 +1,7 @@
-"Collect -> world model -> imagined actor -> critic; no compilation or CUDA graphs."
+"""Collect -> world model -> imagined actor -> critic; no compilation or CUDA graphs."""
 
+from . import data_transforms as transforms
+from .updates import TrainingUpdates
 from dataclasses import replace
 import json
 import math
@@ -7,25 +9,19 @@ import time
 from pathlib import Path
 import torch
 from .buffer import ReplayBuffer
-from .task import TrackingTask, RewardConfig, invariant_feature_dim, unflatten_state
+from .task import TrackingTask, RewardConfig
 from .motion import CONTROL_DT, ReferenceMotion
 from .kinematics import Kinematics
-from .simulation_parameters import (
-    DomainRandomizationConfig,
-    simulation_parameter_count,
-    normalize_simulation_parameters,
-)
-from .observation import ObservationNoiseConfig
+from .simulation_parameters import DomainRandomizationConfig, simulation_parameter_count
 from .mirror import Mirror
 from .actor import Actor, actor_kwargs
 from .critic import Critic
 from .world_model import WorldModel
 from .optimizers import make_optimizer
 from .robot import get_robot
-from .updates import Updates
 
 
-class Trainer(Updates):
+class Trainer:
     def __init__(self, config):
         self.config = config
         self.device = config.device
@@ -43,14 +39,12 @@ class Trainer(Updates):
         self.kinematics = Kinematics(self.robot, self.device)
         self.motion = ReferenceMotion.from_dir(config.motion_dir, self.robot, self.kinematics, self.device)
         self.num_simulation_parameters = simulation_parameter_count(self.robot)
-        self.task = TrackingTask(
-            self.kinematics,
-            self.motion,
-            torch.tensor(self.robot.default_joint_pos_list(), device=self.device),
-            self.num_simulation_parameters,
-            self.robot.observation_noise,
-            RewardConfig(**config.reward),
-        )
+        self.default_joint_pos = torch.tensor(self.robot.default_joint_pos_list(), device=self.device)
+        self.observation_dim = transforms.compute_observation_dim(self.robot.num_joints)
+        self.observation_noise_limits = transforms.compute_observation_noise_limits(
+            self.robot.observation_noise, self.robot.num_joints
+        ).to(self.device)
+        self.task = TrackingTask(self.kinematics, self.motion, RewardConfig(**config.reward))
         self.task.feet = [
             self.robot.tracked_bodies.index(name)
             for name in ("left_ankle_roll_link", "right_ankle_roll_link")
@@ -58,7 +52,7 @@ class Trainer(Updates):
         if config.ref_contact_fix:
             self.motion.set_ref_foot_contact(self.task.feet)
         joint_count = self.robot.num_joints
-        command_dim = self.motion.command_dim(config.goal_frames)
+        command_dim = transforms.compute_command_dim(self.robot.num_joints, config.goal_frames)
         self.world_model = WorldModel(
             joint_count,
             self.num_simulation_parameters,
@@ -68,7 +62,7 @@ class Trainer(Updates):
             control_time_step=CONTROL_DT,
         ).to(self.device)
         self.actor = Actor(
-            self.task.observation_dim,
+            self.observation_dim,
             command_dim,
             joint_count,
             history_length=config.hist,
@@ -76,9 +70,11 @@ class Trainer(Updates):
             decoder_hidden_dims=self.widths(config.dec_hidden),
             **actor_kwargs(vars(config), self.robot),
         ).to(self.device)
-        self.critic = Critic(invariant_feature_dim(joint_count) + self.task.critic_extra + command_dim).to(
-            self.device
-        )
+        self.critic = Critic(
+            transforms.compute_critic_input_dim(
+                joint_count, len(self.robot.tracked_bodies), self.num_simulation_parameters, command_dim
+            )
+        ).to(self.device)
         self.world_model_optimizer = make_optimizer(
             config.wm_opt, self.world_model, [self.world_model.network], config.lr, (0.9, 0.999)
         )
@@ -109,15 +105,28 @@ class Trainer(Updates):
             config.buffer_steps, config.num_envs, self.device, joint_count, self.num_simulation_parameters
         )
         self.observation_history = torch.zeros(
-            config.num_envs, config.hist, self.task.observation_dim, device=self.device
+            config.num_envs, config.hist, self.observation_dim, device=self.device
         )
         self.iteration = 0
         self.collection_remainder = 0.0
         self.decay_start = None
         self.environment = None
-
-    def normalize_parameters(self, parameters):
-        return normalize_simulation_parameters(parameters, self.robot)
+        self.updates = TrainingUpdates(
+            config=config,
+            actor=self.actor,
+            critic=self.critic,
+            world_model=self.world_model,
+            buffer=self.buffer,
+            task=self.task,
+            motion=self.motion,
+            robot=self.robot,
+            actor_optimizer=self.actor_optimizer,
+            critic_optimizer=self.critic_optimizer,
+            world_model_optimizer=self.world_model_optimizer,
+            actor_average=self.actor_average,
+            mirror=self.mirror,
+            state_error_floor=self.state_error_floor,
+        )
 
     @staticmethod
     def widths(text):
@@ -145,24 +154,26 @@ class Trainer(Updates):
         episode_returns = []
         for _ in range(steps):
             observation = self.environment.observe()
-            history = torch.cat((self.observation_history[:, 1:], observation.unsqueeze(1)), 1)
-            fresh = self.environment.episode_step == 0
-            self.observation_history = torch.where(
-                fresh[:, None, None], observation[:, None].expand_as(history), history
+            self.observation_history = transforms.update_observation_history(
+                self.observation_history, observation, self.environment.episode_step == 0
             )
-            command = self.motion.command(self.environment.motion_frame_index, self.command_frames)
+            command = transforms.compute_command(
+                self.environment.motion_frame_index, self.command_frames, self.motion
+            )
             self.actor.observation_normalizer.update(observation)
             self.actor.command_normalizer.update(command)
             action = self.actor(self.observation_history, command)
             action = (action + self.config.action_noise * torch.randn_like(action)).clamp(-20, 20)
             transition = self.environment.step(action)
             self.buffer.add(transition)
-            inputs, targets, increments = self.world_model_normalization_data(
-                unflatten_state(transition["state"]),
-                unflatten_state(transition["next_state"]),
+            inputs, targets, increments = transforms.compute_world_model_training_data(
+                self.world_model,
+                transforms.unflatten_state(transition["state"]),
+                transforms.unflatten_state(transition["next_state"]),
                 transition["action"],
                 transition["last_action"],
                 transition["simulation_parameters"],
+                self.robot,
             )
             self.world_model.input_normalizer.update(inputs)
             self.world_model.output_normalizer.update(targets)
@@ -204,10 +215,12 @@ class Trainer(Updates):
             returns = self.collect(steps)
             return_window.extend(returns)
             for _ in range(config.wm_batches):
-                world_model_loss, _ = self.update_world_model()
+                world_model_loss, _ = self.updates.update_world_model()
             metrics = {"iteration": iteration + 1, "world_model_loss": float(world_model_loss)}
             if iteration >= config.wm_only_iters:
-                actor_loss, critic_loss, imagined_reward, gradient_norm, survival = self.update_actor()
+                actor_loss, critic_loss, imagined_reward, gradient_norm, survival = (
+                    self.updates.update_actor()
+                )
                 metrics.update(
                     actor_loss=float(actor_loss),
                     critic_loss=float(critic_loss),
@@ -278,3 +291,6 @@ class Trainer(Updates):
         self.collection_remainder = state["collection_remainder"]
         self.decay_start = state["decay_start"]
         torch.set_rng_state(state["torch_rng_state"].cpu())
+
+
+from .config import ObservationNoiseConfig

@@ -1,4 +1,5 @@
 from readable_mimic.simulation_parameters import default_simulation_parameters
+from readable_mimic import data_transforms as transforms
 
 "CPU integration of the actual FK, motion, replay and gradient updates (no fake WM)."
 from pathlib import Path
@@ -8,7 +9,6 @@ import numpy as np
 import pytest
 import torch
 from readable_mimic.config import load_config
-from readable_mimic.task import flatten_state, unflatten_state
 from readable_mimic.robot import RobotSpec
 from readable_mimic.trainer import Trainer
 
@@ -68,8 +68,8 @@ def tiny_trainer(tmp_path, monkeypatch):
         parameters = default_simulation_parameters(trainer.robot, trainer.device).expand(4, -1).clone()
         action = torch.zeros(4, 2)
         transition = dict(
-            state=flatten_state(state),
-            next_state=flatten_state(next_state),
+            state=transforms.flatten_state(state),
+            next_state=transforms.flatten_state(next_state),
             action=action,
             last_action=action,
             simulation_parameters=parameters,
@@ -80,11 +80,15 @@ def tiny_trainer(tmp_path, monkeypatch):
             transition_cut=torch.zeros(4, dtype=torch.bool),
         )
         trainer.buffer.add(transition)
-        observation = trainer.task.observation(state, action, parameters, frames)
+        observation = transforms.compute_observation(
+            state, action, parameters, frames, trainer.motion, trainer.default_joint_pos
+        )
         trainer.actor.observation_normalizer.update(observation)
-        trainer.actor.command_normalizer.update(trainer.motion.command(frames, config.goal_frames))
-        inputs, targets, increments = trainer.world_model_normalization_data(
-            state, next_state, action, action, parameters
+        trainer.actor.command_normalizer.update(
+            transforms.compute_command(frames, config.goal_frames, trainer.motion)
+        )
+        inputs, targets, increments = transforms.compute_world_model_training_data(
+            trainer.world_model, state, next_state, action, action, parameters, trainer.robot
         )
         trainer.world_model.input_normalizer.update(inputs)
         trainer.world_model.output_normalizer.update(targets)
@@ -124,7 +128,7 @@ def test_fk_matches_mujoco_and_has_gradients(tiny_trainer):
 def test_full_training_updates_and_checkpoint(tiny_trainer, tmp_path):
     trainer = tiny_trainer
     before_world_model = [value.detach().clone() for value in trainer.world_model.parameters()]
-    losses = trainer.update_world_model()
+    losses = trainer.updates.update_world_model()
     assert all((torch.isfinite(value).all() for value in losses))
     assert any(
         (not torch.equal(old, new) for old, new in zip(before_world_model, trainer.world_model.parameters()))
@@ -132,7 +136,7 @@ def test_full_training_updates_and_checkpoint(tiny_trainer, tmp_path):
     before_actor = [value.detach().clone() for value in trainer.actor.parameters()]
     before_critic = [value.detach().clone() for value in trainer.critic.parameters()]
     frozen_model = [value.detach().clone() for value in trainer.world_model.parameters()]
-    metrics = trainer.update_actor()
+    metrics = trainer.updates.update_actor()
     assert all((torch.isfinite(value).all() for value in metrics))
     assert any((not torch.equal(old, new) for old, new in zip(before_actor, trainer.actor.parameters())))
     assert any((not torch.equal(old, new) for old, new in zip(before_critic, trainer.critic.parameters())))
@@ -149,7 +153,7 @@ def test_full_training_updates_and_checkpoint(tiny_trainer, tmp_path):
 def test_state_and_replay_boundaries(tiny_trainer):
     trainer = tiny_trainer
     state = trainer.motion.ref_state(torch.tensor([10]))
-    restored = unflatten_state(flatten_state(state))
+    restored = transforms.unflatten_state(transforms.flatten_state(state))
     for original, result in zip(state, restored):
         torch.testing.assert_close(original, result)
     trainer.buffer.data["episode_step"].zero_()
@@ -199,8 +203,13 @@ def test_collect_and_training_loop(tiny_trainer, tmp_path, monkeypatch):
             )
 
         def observe(self):
-            return trainer.task.observation(
-                self.state(), self.last_action, self.parameters, self.motion_frame_index
+            return transforms.compute_observation(
+                self.state(),
+                self.last_action,
+                self.parameters,
+                self.motion_frame_index,
+                trainer.motion,
+                trainer.default_joint_pos,
             )
 
         def step(self, action):
@@ -217,8 +226,8 @@ def test_collect_and_training_loop(tiny_trainer, tmp_path, monkeypatch):
             self.episode_step += 1
             self.last_action = action.clone()
             return dict(
-                state=flatten_state(state),
-                next_state=flatten_state(next_state),
+                state=transforms.flatten_state(state),
+                next_state=transforms.flatten_state(next_state),
                 action=action,
                 last_action=last_action,
                 simulation_parameters=self.parameters,
@@ -286,10 +295,12 @@ def test_observation_fields_and_context_normalization(tiny_trainer):
     parameters = default_simulation_parameters(trainer.robot, "cpu")[None].clone()
     parameters[:, 1:3] = torch.tensor([[0.004, -0.006]])
     last_action = torch.tensor([[0.2, -0.3]])
-    observation = trainer.task.observation(state, last_action, parameters, torch.tensor([12]))
+    observation = transforms.compute_observation(
+        state, last_action, parameters, torch.tensor([12]), trainer.motion, trainer.default_joint_pos
+    )
     torch.testing.assert_close(observation[:, :2], state[4] - parameters[:, 1:3])
     torch.testing.assert_close(observation[:, 10:12], last_action)
-    normalized = trainer.normalize_parameters(parameters)
+    normalized = transforms.compute_normalized_simulation_parameters(parameters, trainer.robot)
     torch.testing.assert_close(normalized[:, 1:3], torch.tensor([[0.4, -0.6]]))
     assert observation.shape == (1, 18)
 
@@ -343,3 +354,71 @@ def test_data_names_follow_diagram():
                 for key in node.keys:
                     if isinstance(key, ast.Constant) and isinstance(key.value, str):
                         assert key.value not in forbidden_keys, (source_file, key.value)
+
+
+def test_shared_command_and_history_transforms(tiny_trainer):
+    trainer = tiny_trainer
+    last_frame = int(trainer.motion.clip_end[0])
+    frames = torch.tensor([12, last_frame])
+    future_frames = transforms.compute_future_motion_frames(frames, 2, trainer.motion)
+    torch.testing.assert_close(future_frames, torch.tensor([[13, 14], [last_frame, last_frame]]))
+    command = transforms.compute_command(frames, 2, trainer.motion)
+    assert command.shape == (2, transforms.compute_command_dim(2, 2))
+    torch.testing.assert_close(command[:, :19][:, 15:17], trainer.motion.joint_pos[future_frames[:, 0]])
+    observation = torch.tensor([[1.0, 2.0], [3.0, 4.0]])
+    history = transforms.compute_observation_history(observation, 3)
+    next_observation = observation + 10
+    updated = transforms.update_observation_history(history, next_observation, torch.tensor([False, True]))
+    torch.testing.assert_close(updated[0], torch.tensor([[1.0, 2.0], [1.0, 2.0], [11.0, 12.0]]))
+    torch.testing.assert_close(updated[1], torch.tensor([[13.0, 14.0], [13.0, 14.0], [13.0, 14.0]]))
+
+
+def test_shared_actor_return_and_value_targets():
+    rewards = torch.tensor([[4.0], [5.0]], requires_grad=True)
+    terminations = torch.tensor([[0.0], [0.5]])
+    bootstrap = torch.tensor([3.0], requires_grad=True)
+    actor_return, survival, final_survival = transforms.compute_actor_return(
+        rewards, terminations, bootstrap, 0.9
+    )
+    torch.testing.assert_close(actor_return, torch.tensor([4 + 0.9 * 5 + 0.9**2 * 0.5 * 3]))
+    actor_return.sum().backward()
+    torch.testing.assert_close(rewards.grad, torch.tensor([[1.0], [0.9]]))
+    torch.testing.assert_close(bootstrap.grad, torch.tensor([0.9**2 * 0.5]))
+    targets = transforms.compute_value_targets(
+        torch.tensor([[1.0], [2.0], [3.0]]), rewards.detach(), terminations, 0.9, 0.5
+    )
+    torch.testing.assert_close(targets, torch.tensor([[7.7575], [6.35]]))
+
+
+def test_updater_dependencies_are_explicit_and_transforms_are_centralized():
+    import ast
+
+    source_directory = Path(__file__).parents[1] / "src/readable_mimic"
+    update_tree = ast.parse((source_directory / "updates.py").read_text(encoding="utf-8"))
+    update_class = next(node for node in update_tree.body if isinstance(node, ast.ClassDef))
+    constructor = next(node for node in update_class.body if getattr(node, "name", None) == "__init__")
+    declared = {
+        node.attr
+        for node in ast.walk(constructor)
+        if isinstance(node, ast.Attribute)
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "self"
+        and isinstance(node.ctx, ast.Store)
+    }
+    methods = {node.name for node in update_class.body if isinstance(node, ast.FunctionDef)}
+    used = {
+        node.attr
+        for node in ast.walk(update_class)
+        if isinstance(node, ast.Attribute)
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "self"
+        and isinstance(node.ctx, ast.Load)
+    }
+    assert used <= declared | methods, used - declared - methods
+    trainer_tree = ast.parse((source_directory / "trainer.py").read_text(encoding="utf-8"))
+    trainer_class = next(node for node in trainer_tree.body if isinstance(node, ast.ClassDef))
+    assert trainer_class.bases == []
+    transform_tree = ast.parse((source_directory / "data_transforms.py").read_text(encoding="utf-8"))
+    assert not any(isinstance(node, ast.Name) and node.id == "self" for node in ast.walk(transform_tree))
+    assert not (source_directory / "objective.py").exists()
+    assert not (source_directory / "observation.py").exists()

@@ -33,8 +33,8 @@ uv run pytest -q
 | buffer.py | 时间×环境的循环 Buffer 和历史恢复 |
 | environment.py | MuJoCo-Warp 采样，均匀 bin reset |
 | motion.py | 参考动作重采样及 command |
-| observation.py | 直接拼接当前 obs，定义观测噪声范围 |
-| task.py | 解析奖励、终止、Critic features |
+| data_transforms.py | obs、command、history、Critic 输入、Actor 回报、价值目标和状态转换 |
+| task.py | 跟踪奖励和终止条件 |
 | simulation_parameters.py | 摩擦、关节偏移、质心偏移的采样、应用和归一化 |
 | kinematics.py | 上游 FK 算法，重命名状态参数 |
 | rotations.py | 四元数、旋转矩阵、SO(3) 运算 |
@@ -71,7 +71,7 @@ checkpoint 恢复网络、标准化统计、优化器、迭代和学习率控制
 ## 当前数据流中的对象
 
 环境直接保存 `num_envs`、`num_joints`、`last_action`、`episode_step` 和 `simulation_parameters`。
-`observation.py` 从当前状态拼接 obs；Trainer 保存 history。
+`data_transforms.py` 统一转换数据；Trainer 保存 history。
 不再包含 ObsPipeline、XiLayout、传感滤波/延迟状态或动态参数注册。
 
 `simulation_parameters` 是网络和 Buffer 使用的数值向量，顺序固定为：
@@ -89,3 +89,16 @@ checkpoint 恢复网络、标准化统计、优化器、迭代和学习率控制
 奖励详情字典的键与变量名称一致，不保留 `track`、`e_*` 等旧键。
 训练超参数仍采用上游的配置键；奖励与观测数据相关配置使用本项目名称，数值不变。
 外部 mjlab API（如 write_root_link_pose_to_sim）保持依赖库规定的名称。
+
+## 数据转换与训练更新
+
+所有张量输入、历史与训练目标转换集中在 `data_transforms.py`：
+`compute_observation`、`compute_command`、`compute_observation_history`、
+`update_observation_history`、`compute_replay_observation_history`、`compute_critic_input`、
+`compute_actor_return`、`compute_value_targets`、状态打包与参数归一化。
+这些函数的输入都通过参数传入，不读取 Trainer 或更新器的内部状态。
+
+`Trainer` 不再继承更新类。它通过关键字参数创建 `TrainingUpdates`，
+后者在自身构造函数中定义所有模型、优化器、Buffer 和配置依赖。
+训练调用为 `self.updates.update_world_model()` 和 `self.updates.update_actor()`。
+删除仅承载一个函数的 objective.py，以及转换逻辑分散的 observation.py。

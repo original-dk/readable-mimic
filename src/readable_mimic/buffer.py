@@ -1,14 +1,14 @@
 """Fixed-size GPU replay buffer of simulator transitions, laid out as (time, env)."""
 
 from __future__ import annotations
+from . import data_transforms as transforms
 import torch
-from .task import state_dim
 
 
 def fields(num_joints: int, num_simulation_parameters: int) -> dict:
     out = {
-        "state": (state_dim(num_joints), torch.float32),
-        "next_state": (state_dim(num_joints), torch.float32),
+        "state": (transforms.compute_state_dim(num_joints), torch.float32),
+        "next_state": (transforms.compute_state_dim(num_joints), torch.float32),
         "action": (num_joints, torch.float32),
         "last_action": (num_joints, torch.float32),
         "simulation_parameters": (num_simulation_parameters, torch.float32),
@@ -78,9 +78,7 @@ class ReplayBuffer:
     def starts_at(self, ages: torch.Tensor, environment_indices: torch.Tensor, history_length: int):
         row_indices = self._row(ages)
         episode_step = self.data["episode_step"][row_indices, environment_indices].long()
-        lookback = torch.arange(history_length - 1, -1, -1, device=self.device)[None]
-        lookback = torch.minimum(torch.minimum(lookback, episode_step[:, None]), ages[:, None])
-        history_rows = self._row(ages[:, None] - lookback)
+        history_rows = self._row(transforms.compute_history_ages(ages, episode_step, history_length))
         fields = ("state", "last_action", "simulation_parameters", "motion_frame_index")
         start = {field: self.data[field][row_indices, environment_indices] for field in fields}
         history = {field: self.data[field][history_rows, environment_indices[:, None]] for field in fields}

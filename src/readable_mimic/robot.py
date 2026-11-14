@@ -5,6 +5,7 @@ Each robot lives in its own package ``readable_mimic/<name>/`` whose ``<name>_co
 """
 
 from __future__ import annotations
+from .config import ObservationNoiseConfig
 import importlib
 import re
 from dataclasses import dataclass
@@ -13,7 +14,6 @@ from typing import Callable
 import numpy as np
 from mjlab.entity import EntityCfg
 from .simulation_parameters import DomainRandomizationConfig
-from .observation import ObservationNoiseConfig
 
 MotionArrays = tuple[np.ndarray, np.ndarray, np.ndarray, float]
 
