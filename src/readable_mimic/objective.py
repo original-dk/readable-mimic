@@ -5,7 +5,9 @@ from __future__ import annotations
 import torch
 
 
-def actor_objective(r: torch.Tensor, d: torch.Tensor, v_boot: torch.Tensor | None, gamma: float, loop_cumprod: bool = False):
+def actor_objective(
+    r: torch.Tensor, d: torch.Tensor, v_boot: torch.Tensor | None, gamma: float, loop_cumprod: bool = False
+):
     """SHAC objective J = sum_{t<H} gamma^t c_t r_t + gamma^H c_H V(z_H), c_t = prod_{k<t} (1 - d_k).
     r, d: (H, B); v_boot: (B,) critic value of the last imagined state, or None (no bootstrap). Returns (J, c_t, c_H).
     ``loop_cumprod`` (--cuda_graph): the survival products as a loop of multiplications (same products; cumprod's

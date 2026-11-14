@@ -135,7 +135,9 @@ def _actuators() -> tuple[BuiltinPositionActuatorCfg, ...]:
 
 def get_robot_cfg() -> EntityCfg:
     return EntityCfg(
-        init_state=EntityCfg.InitialStateCfg(pos=(0.0, 0.0, 0.76), joint_pos=DEFAULT_JOINT_POS, joint_vel={".*": 0.0}),
+        init_state=EntityCfg.InitialStateCfg(
+            pos=(0.0, 0.0, 0.76), joint_pos=DEFAULT_JOINT_POS, joint_vel={".*": 0.0}
+        ),
         spec_fn=get_spec,
         articulation=EntityArticulationInfoCfg(actuators=_actuators(), soft_joint_pos_limit_factor=0.9),
     )

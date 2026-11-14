@@ -5,7 +5,7 @@ from .trainer import Trainer
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--config', default='config.json')
+    parser.add_argument("--config", default="config.json")
     arguments = parser.parse_args()
     config = load_config(arguments.config)
     trainer = Trainer(config)
@@ -14,5 +14,5 @@ def main():
     trainer.run()
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

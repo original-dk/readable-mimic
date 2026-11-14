@@ -27,7 +27,9 @@ os.remove(tmp)
 
 xml = open(out).read()
 # free-floating pelvis
-xml = re.sub(r'(<body name="pelvis"[^>]*>)', r'\1\n      <freejoint name="floating_base_joint"/>', xml, count=1)
+xml = re.sub(
+    r'(<body name="pelvis"[^>]*>)', r'\1\n      <freejoint name="floating_base_joint"/>', xml, count=1
+)
 if '<body name="pelvis"' not in xml:
     # URDF root link becomes worldbody children; wrap them in a pelvis body
     sys.exit("pelvis body not found; inspect " + out)

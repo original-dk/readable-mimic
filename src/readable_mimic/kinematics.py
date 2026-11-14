@@ -60,32 +60,60 @@ class Kinematics:
         self.joint_pos_lower_limit = torch.tensor(lo, dtype=torch.float32, device=device)
         self.joint_pos_upper_limit = torch.tensor(hi, dtype=torch.float32, device=device)
 
-    def forward(self, base_pos_w, base_rot_mat_w, base_lin_vel_w, base_ang_vel_w, joint_pos, joint_vel, all_bodies: bool = False):
+    def forward(
+        self,
+        base_pos_w,
+        base_rot_mat_w,
+        base_lin_vel_w,
+        base_ang_vel_w,
+        joint_pos,
+        joint_vel,
+        all_bodies: bool = False,
+    ):
         """Tracked-body world positions, rotations, linear (link-origin) and angular velocities.
 
         Args:
-            p, R, v, w: root position (B,3), rotation (B,3,3), world lin/ang velocity (B,3).
-            q, qd: joint positions/velocities (B,J) in joint_names order.
+            base_pos_w, base_rot_mat_w, base_lin_vel_w, base_ang_vel_w: root world state.
+            joint_pos, joint_vel: joint state (B,J) in joint_names order.
         """
-        P, Rs, V, W = [None] * self.num_bodies, [None] * self.num_bodies, [None] * self.num_bodies, [None] * self.num_bodies
+        body_positions_w, body_rotations_w, body_linear_velocities_w, body_angular_velocities_w = (
+            [None] * self.num_bodies,
+            [None] * self.num_bodies,
+            [None] * self.num_bodies,
+            [None] * self.num_bodies,
+        )
         for i in range(self.num_bodies):
-            par = self.parent[i]
-            if par < 0:
-                P[i], Rs[i], V[i], W[i] = base_pos_w, base_rot_mat_w, base_lin_vel_w, base_ang_vel_w
+            parent_index = self.parent[i]
+            if parent_index < 0:
+                (
+                    body_positions_w[i],
+                    body_rotations_w[i],
+                    body_linear_velocities_w[i],
+                    body_angular_velocities_w[i],
+                ) = base_pos_w, base_rot_mat_w, base_lin_vel_w, base_ang_vel_w
                 continue
             j = self.joint_idx[i]
-            Rp = Rs[par]
-            pi = P[par] + mv3(Rp, self.off_p[i])
-            R_off = mm3(Rp, self.off_R[i])
-            Ri = mm3(R_off, axis_angle_to_mat(self.axes[i], joint_pos[..., j]))
-            axis_w = mv3(R_off, self.axes[i])
-            wi = W[par] + axis_w * joint_vel[..., j : j + 1]
-            vi = V[par] + torch.cross(W[par], pi - P[par], dim=-1)
-            P[i], Rs[i], V[i], W[i] = pi, Ri, vi, wi
+            parent_rot_mat_w = body_rotations_w[parent_index]
+            body_pos_w = body_positions_w[parent_index] + mv3(parent_rot_mat_w, self.off_p[i])
+            joint_origin_rot_mat_w = mm3(parent_rot_mat_w, self.off_R[i])
+            body_rot_mat_w = mm3(joint_origin_rot_mat_w, axis_angle_to_mat(self.axes[i], joint_pos[..., j]))
+            joint_axis_w = mv3(joint_origin_rot_mat_w, self.axes[i])
+            body_ang_vel_w = (
+                body_angular_velocities_w[parent_index] + joint_axis_w * joint_vel[..., j : j + 1]
+            )
+            body_lin_vel_w = body_linear_velocities_w[parent_index] + torch.cross(
+                body_angular_velocities_w[parent_index], body_pos_w - body_positions_w[parent_index], dim=-1
+            )
+            (
+                body_positions_w[i],
+                body_rotations_w[i],
+                body_linear_velocities_w[i],
+                body_angular_velocities_w[i],
+            ) = body_pos_w, body_rot_mat_w, body_lin_vel_w, body_ang_vel_w
         idx = range(self.num_bodies) if all_bodies else self.tracked_idx
         return (
-            torch.stack([P[i] for i in idx], -2),
-            torch.stack([Rs[i] for i in idx], -3),
-            torch.stack([V[i] for i in idx], -2),
-            torch.stack([W[i] for i in idx], -2),
+            torch.stack([body_positions_w[i] for i in idx], -2),
+            torch.stack([body_rotations_w[i] for i in idx], -3),
+            torch.stack([body_linear_velocities_w[i] for i in idx], -2),
+            torch.stack([body_angular_velocities_w[i] for i in idx], -2),
         )

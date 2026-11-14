@@ -35,7 +35,14 @@ class Mirror:
     def state(self, S):
         base_pos_w, base_rot_mat_w, base_lin_vel_w, base_ang_vel_w, joint_pos, joint_vel = S
         M = self.M
-        return (base_pos_w @ M, M @ base_rot_mat_w @ M, base_lin_vel_w @ M, -(base_ang_vel_w @ M), self.joints(joint_pos), self.joints(joint_vel))
+        return (
+            base_pos_w @ M,
+            M @ base_rot_mat_w @ M,
+            base_lin_vel_w @ M,
+            -(base_ang_vel_w @ M),
+            self.joints(joint_pos),
+            self.joints(joint_vel),
+        )
 
     def simulation_parameters(self, simulation_parameters: torch.Tensor) -> torch.Tensor:
         out = simulation_parameters.clone()

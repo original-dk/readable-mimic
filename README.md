@@ -13,6 +13,9 @@ uv run python -m readable_mimic.train --config config.json
 uv run pytest -q
 ```
 
+配置对照和已知差异见 `CONFIG_PARITY.md`。运行 `uv run pytest -q -s` 可看到
+原生 MuJoCo CPU 采样后两轮训练的实时损失；该 CPU 环境仅用于测试，不替代 G1 仿真后端。
+
 默认训练配置需要 NVIDIA CUDA 设备。CPU 测试使用小型 MuJoCo 机器人和生成的运动数据，
 覆盖实际 FK、WM 多步更新、可微 imagined rollout、Actor / Critic 更新及保存恢复，
 不代表已完成 G1 训练或复现论文指标。

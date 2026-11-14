@@ -109,9 +109,15 @@ class XiLayout:
             add("kp", [1.0] * J, [0.2] * J)
             add("kd", [1.0] * J, [0.5] * J)
         if c.armature_range is not None:
-            add("armature", [sum(c.armature_range) / 2] * J, [(c.armature_range[1] - c.armature_range[0]) / 2] * J)
+            add(
+                "armature",
+                [sum(c.armature_range) / 2] * J,
+                [(c.armature_range[1] - c.armature_range[0]) / 2] * J,
+            )
         if c.damping_range is not None:
-            add("damping", [sum(c.damping_range) / 2] * J, [(c.damping_range[1] - c.damping_range[0]) / 2] * J)
+            add(
+                "damping", [sum(c.damping_range) / 2] * J, [(c.damping_range[1] - c.damping_range[0]) / 2] * J
+            )
         if s.imu is not None:
             add("imu_tilt", [0.0, 0.0], [max(s.imu.tilt, 1e-6)] * 2)
             add("gyro_bias", [0.0] * 3, [max(s.imu.gyro_bias, 1e-6)] * 3)
@@ -147,9 +153,13 @@ class DomainRandomizer:
         geom_names = ent.geom_names
         self.friction_geoms = (ent.indexing.geom_ids if c.friction_geoms is None else
                                ent.indexing.geom_ids[[i for i, n in enumerate(geom_names) if re.fullmatch(c.friction_geoms, n)]])  # fmt: skip
-        self.ground_geoms = torch.nonzero(torch.as_tensor(sim.mj_model.geom_bodyid == 0, device=dev)).flatten()
+        self.ground_geoms = torch.nonzero(
+            torch.as_tensor(sim.mj_model.geom_bodyid == 0, device=dev)
+        ).flatten()
         if c.solref_geoms is not None:
-            self.solref_geoms = ent.indexing.geom_ids[[i for i, n in enumerate(geom_names) if re.fullmatch(c.solref_geoms, n)]]
+            self.solref_geoms = ent.indexing.geom_ids[
+                [i for i, n in enumerate(geom_names) if re.fullmatch(c.solref_geoms, n)]
+            ]
         self.dof_ids = ent.indexing.joint_v_adr
 
         # mjlab dr terms used per episode, with their resolved entity configs
@@ -158,7 +168,9 @@ class DomainRandomizer:
             (t1, t2, t3) = robot.com_range
             cfg = SceneEntityCfg("robot", body_names=(robot.com_body,))
             alpha = (math.log(c.com_mass_range[0]) / 2, math.log(c.com_mass_range[1]) / 2)
-            self._terms.append((dr.pseudo_inertia, cfg, dict(alpha_range=alpha, t1_range=t1, t2_range=t2, t3_range=t3)))
+            self._terms.append(
+                (dr.pseudo_inertia, cfg, dict(alpha_range=alpha, t1_range=t1, t2_range=t2, t3_range=t3))
+            )
         if c.link_mass_range is not None:
             cfg = SceneEntityCfg("robot", body_names=tuple(f"^{re.escape(b)}$" for b in layout.link_bodies))
             alpha = (math.log(c.link_mass_range[0]) / 2, math.log(c.link_mass_range[1]) / 2)
@@ -169,10 +181,18 @@ class DomainRandomizer:
             self._terms.append((dr.pd_gains, cfg, dict(kp_range=kp, kd_range=kd, operation="scale")))
         if c.armature_range is not None:
             cfg = SceneEntityCfg("robot", joint_names=(".*",))
-            self._terms.append((dr.joint_armature, cfg, dict(ranges=c.armature_range, operation="scale", shared_random=False)))
+            self._terms.append(
+                (
+                    dr.joint_armature,
+                    cfg,
+                    dict(ranges=c.armature_range, operation="scale", shared_random=False),
+                )
+            )
         if c.damping_range is not None:
             cfg = SceneEntityCfg("robot", joint_names=(".*",))
-            self._terms.append((dr.joint_damping, cfg, dict(ranges=c.damping_range, operation="scale", shared_random=False)))
+            self._terms.append(
+                (dr.joint_damping, cfg, dict(ranges=c.damping_range, operation="scale", shared_random=False))
+            )
         fields = {"geom_friction"}
         if c.com_mass_range is None and not eval_mode:
             fields.add("body_ipos")
@@ -187,12 +207,18 @@ class DomainRandomizer:
     # ------------------------------------------------------------------ once per env
     def startup(self, simulation_parameters: torch.Tensor):
         c, sim, N, dev = self.cfg, self.env.sim, self.env.num_envs, self.env.device
-        simulation_parameters[:, self.layout.slices["friction"]] = 1.0 if self.eval_mode else torch.empty(N, 1, device=dev).uniform_(*c.friction_range)
+        simulation_parameters[:, self.layout.slices["friction"]] = (
+            1.0 if self.eval_mode else torch.empty(N, 1, device=dev).uniform_(*c.friction_range)
+        )
         # ground (world body): lowest friction of the range, since MuJoCo takes the max of a pair
         sim.model.geom_friction[:, self.ground_geoms, 0] = c.friction_range[0] if not self.eval_mode else 1.0
-        sim.model.geom_friction[:, self.friction_geoms, 0] = simulation_parameters[:, self.layout.slices["friction"]]
+        sim.model.geom_friction[:, self.friction_geoms, 0] = simulation_parameters[
+            :, self.layout.slices["friction"]
+        ]
         if c.com_mass_range is None and not self.eval_mode:
-            com = torch.stack([torch.empty(N, device=dev).uniform_(lo, hi) for lo, hi in self.spec.com_range], -1)
+            com = torch.stack(
+                [torch.empty(N, device=dev).uniform_(lo, hi) for lo, hi in self.spec.com_range], -1
+            )
             simulation_parameters[:, self.layout.slices["com"]] = com
             default_com = sim.get_default_field("body_ipos")[self.com_body_id]
             sim.model.body_ipos[:, self.com_body_id] = default_com + com
@@ -202,7 +228,9 @@ class DomainRandomizer:
             if name in self.layout.slices:
                 simulation_parameters[:, self.layout.slices[name]] = 1.0
         if "solref" in self.layout.slices:
-            simulation_parameters[:, self.layout.slices["solref"]] = sim.get_default_field("geom_solref")[self.solref_geoms[0]]
+            simulation_parameters[:, self.layout.slices["solref"]] = sim.get_default_field("geom_solref")[
+                self.solref_geoms[0]
+            ]
         if "qd_tau_scale" in self.layout.slices:
             simulation_parameters[:, self.layout.slices["qd_tau_scale"]] = 1.0
 
@@ -212,7 +240,9 @@ class DomainRandomizer:
         if self.eval_mode:
             return
         sl = self.layout.slices["joint_offset"]
-        new = (2 * torch.rand(simulation_parameters.shape[0], self.J, device=simulation_parameters.device) - 1) * self.joint_offset_half
+        new = (
+            2 * torch.rand(simulation_parameters.shape[0], self.J, device=simulation_parameters.device) - 1
+        ) * self.joint_offset_half
         simulation_parameters[:, sl] = torch.where(mask.unsqueeze(-1), new, simulation_parameters[:, sl])
 
     def reset(self, simulation_parameters: torch.Tensor, env_ids: torch.Tensor):
@@ -220,7 +250,9 @@ class DomainRandomizer:
             return
         c, sim, env, L = self.cfg, self.env.sim, self.env, self.layout
         n, dev = len(env_ids), env.device
-        simulation_parameters[env_ids, L.slices["joint_offset"]] = (2 * torch.rand(n, self.J, device=dev) - 1) * self.joint_offset_half
+        simulation_parameters[env_ids, L.slices["joint_offset"]] = (
+            2 * torch.rand(n, self.J, device=dev) - 1
+        ) * self.joint_offset_half
         if c.solref_geoms is not None:
             tc = torch.empty(n, 1, device=dev).uniform_(*c.solref_timeconst)
             dr_ = torch.empty(n, 1, device=dev).uniform_(*c.solref_dampratio)
@@ -234,27 +266,49 @@ class DomainRandomizer:
         # read the applied values back into xi
         if c.com_mass_range is not None:
             b = self.com_body_id
-            simulation_parameters[env_ids, L.slices["com_mass"]] = (sim.model.body_mass[env_ids, b] / sim.get_default_field("body_mass")[b]).unsqueeze(-1)
-            simulation_parameters[env_ids, L.slices["com"]] = sim.model.body_ipos[env_ids, b] - sim.get_default_field("body_ipos")[b]
+            simulation_parameters[env_ids, L.slices["com_mass"]] = (
+                sim.model.body_mass[env_ids, b] / sim.get_default_field("body_mass")[b]
+            ).unsqueeze(-1)
+            simulation_parameters[env_ids, L.slices["com"]] = (
+                sim.model.body_ipos[env_ids, b] - sim.get_default_field("body_ipos")[b]
+            )
         if c.link_mass_range is not None:
             b = self.link_body_ids
-            simulation_parameters[env_ids, L.slices["link_mass"]] = sim.model.body_mass[env_ids[:, None], b] / sim.get_default_field("body_mass")[b]
+            simulation_parameters[env_ids, L.slices["link_mass"]] = (
+                sim.model.body_mass[env_ids[:, None], b] / sim.get_default_field("body_mass")[b]
+            )
         if c.pd_gain_scale:
             kp = torch.ones(n, self.J, device=dev)
             kd = torch.ones(n, self.J, device=dev)
             for act in env.robot.actuators:
                 kp[:, act.target_ids] = act.stiffness[env_ids] / act.default_stiffness[env_ids]
                 kd[:, act.target_ids] = act.damping[env_ids] / act.default_damping[env_ids]
-            simulation_parameters[env_ids, L.slices["kp"]], simulation_parameters[env_ids, L.slices["kd"]] = kp, kd
+            simulation_parameters[env_ids, L.slices["kp"]], simulation_parameters[env_ids, L.slices["kd"]] = (
+                kp,
+                kd,
+            )
         if c.armature_range is not None:
-            simulation_parameters[env_ids, L.slices["armature"]] = sim.model.dof_armature[env_ids[:, None], self.dof_ids] / sim.get_default_field("dof_armature")[self.dof_ids]
+            simulation_parameters[env_ids, L.slices["armature"]] = (
+                sim.model.dof_armature[env_ids[:, None], self.dof_ids]
+                / sim.get_default_field("dof_armature")[self.dof_ids]
+            )
         if c.damping_range is not None:
             default = sim.get_default_field("dof_damping")[self.dof_ids]
-            simulation_parameters[env_ids, L.slices["damping"]] = torch.where(default > 0, sim.model.dof_damping[env_ids[:, None], self.dof_ids] / default.clamp(min=1e-9), 1.0)
+            simulation_parameters[env_ids, L.slices["damping"]] = torch.where(
+                default > 0,
+                sim.model.dof_damping[env_ids[:, None], self.dof_ids] / default.clamp(min=1e-9),
+                1.0,
+            )
         # sensing terms (they shape what the policy reads, so the world model and critic get them too)
         s = self.spec.sensing
         if s.imu is not None:
-            simulation_parameters[env_ids, L.slices["imu_tilt"]] = torch.empty(n, 2, device=dev).uniform_(-s.imu.tilt, s.imu.tilt)
-            simulation_parameters[env_ids, L.slices["gyro_bias"]] = torch.empty(n, 3, device=dev).uniform_(-s.imu.gyro_bias, s.imu.gyro_bias)
+            simulation_parameters[env_ids, L.slices["imu_tilt"]] = torch.empty(n, 2, device=dev).uniform_(
+                -s.imu.tilt, s.imu.tilt
+            )
+            simulation_parameters[env_ids, L.slices["gyro_bias"]] = torch.empty(n, 3, device=dev).uniform_(
+                -s.imu.gyro_bias, s.imu.gyro_bias
+            )
         if s.joint_vel_filter is not None:
-            simulation_parameters[env_ids, L.slices["qd_tau_scale"]] = torch.empty(n, 1, device=dev).uniform_(*s.joint_vel_filter.tau_scale_range)
+            simulation_parameters[env_ids, L.slices["qd_tau_scale"]] = torch.empty(n, 1, device=dev).uniform_(
+                *s.joint_vel_filter.tau_scale_range
+            )

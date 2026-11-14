@@ -27,7 +27,14 @@ def obs_dim(J: int) -> int:
 def obs_scale(J: int) -> torch.Tensor:
     # normalization of the obs before the policy (qd and angular velocity are large)
     return torch.cat(
-        (torch.ones(J), torch.full((J,), 0.1), torch.full((3,), 0.25), torch.ones(3), torch.ones(J), torch.ones(6))
+        (
+            torch.ones(J),
+            torch.full((J,), 0.1),
+            torch.full((3,), 0.25),
+            torch.ones(3),
+            torch.ones(J),
+            torch.ones(6),
+        )
     )
 
 
@@ -52,12 +59,21 @@ class RewardCfg:
 
 def flatten_state(S) -> torch.Tensor:
     base_pos_w, base_rot_mat_w, base_lin_vel_w, base_ang_vel_w, joint_pos, joint_vel = S
-    return torch.cat((base_pos_w, mat_to_quat(base_rot_mat_w), base_lin_vel_w, base_ang_vel_w, joint_pos, joint_vel), -1)
+    return torch.cat(
+        (base_pos_w, mat_to_quat(base_rot_mat_w), base_lin_vel_w, base_ang_vel_w, joint_pos, joint_vel), -1
+    )
 
 
 def unflatten_state(x: torch.Tensor):
     J = (x.shape[-1] - 13) // 2
-    return x[..., 0:3], quat_to_mat(x[..., 3:7]), x[..., 7:10], x[..., 10:13], x[..., 13 : 13 + J], x[..., 13 + J :]
+    return (
+        x[..., 0:3],
+        quat_to_mat(x[..., 3:7]),
+        x[..., 7:10],
+        x[..., 10:13],
+        x[..., 13 : 13 + J],
+        x[..., 13 + J :],
+    )
 
 
 def invariant_features(S) -> torch.Tensor:
@@ -82,13 +98,15 @@ def inv_dim(J: int) -> int:
     return 1 + 6 + 3 + 3 + J + J
 
 
-
 class MDP:
     def __init__(self, kin: Kinematics, motion: MotionLib, default_joint_pos: torch.Tensor, xi_dim: int,
                  sensing: SensingCfg = SensingCfg(), cfg: RewardCfg = RewardCfg()):  # fmt: skip
         self.kin, self.motion, self.cfg = kin, motion, cfg
         self.default_joint_pos = default_joint_pos
-        mid, half = (kin.joint_pos_lower_limit + kin.joint_pos_upper_limit) / 2, (kin.joint_pos_upper_limit - kin.joint_pos_lower_limit) / 2
+        mid, half = (
+            (kin.joint_pos_lower_limit + kin.joint_pos_upper_limit) / 2,
+            (kin.joint_pos_upper_limit - kin.joint_pos_lower_limit) / 2,
+        )
         self.soft_lo, self.soft_hi = mid - half * cfg.soft_limit_factor, mid + half * cfg.soft_limit_factor
         dev = default_joint_pos.device
         J = default_joint_pos.shape[0]
@@ -108,7 +126,17 @@ class MDP:
         dq0 = simulation_parameters[..., 1 : 1 + joint_pos.shape[-1]]
         g_b = -base_rot_mat_w[..., 2, :]  # R^T (0,0,-1)
         rel = mat_to_6d(mm3(Rt, self.motion.base_rot_mat_w[motion_frame_index]))
-        return torch.cat((joint_pos - self.default_joint_pos - dq0, joint_vel, mv3(Rt, base_ang_vel_w), g_b, last_action, rel), -1)
+        return torch.cat(
+            (
+                joint_pos - self.default_joint_pos - dq0,
+                joint_vel,
+                mv3(Rt, base_ang_vel_w),
+                g_b,
+                last_action,
+                rel,
+            ),
+            -1,
+        )
 
     def add_noise(self, o: torch.Tensor) -> torch.Tensor:
         return o + (2 * torch.rand_like(o) - 1) * self.obs_noise
@@ -122,12 +150,16 @@ class MDP:
         the reference foot is down. Evaluation keeps ``w_contact = 0``, i.e. the paper's reward."""
         c, m = self.cfg, self.motion
         base_pos_w, base_rot_mat_w, base_lin_vel_w, base_ang_vel_w, joint_pos, joint_vel = S
-        bp, bR, bv, bw = self.kin.forward(base_pos_w, base_rot_mat_w, base_lin_vel_w, base_ang_vel_w, joint_pos, joint_vel)
+        bp, bR, bv, bw = self.kin.forward(
+            base_pos_w, base_rot_mat_w, base_lin_vel_w, base_ang_vel_w, joint_pos, joint_vel
+        )
         rp, rR = m.base_pos_w[motion_frame_index], m.base_rot_mat_w[motion_frame_index]
         # reference bodies re-anchored to the robot's root (xy + yaw), as in BeyondMimic
         dR = yaw_mat(mm3(base_rot_mat_w, rR.transpose(-1, -2)))
         anchor = torch.cat((base_pos_w[..., :2], rp[..., 2:3]), -1)
-        ref_bp = anchor.unsqueeze(-2) + mv3(dR.unsqueeze(-3), m.body_pos_w[motion_frame_index] - rp.unsqueeze(-2))
+        ref_bp = anchor.unsqueeze(-2) + mv3(
+            dR.unsqueeze(-3), m.body_pos_w[motion_frame_index] - rp.unsqueeze(-2)
+        )
         ref_bR = mm3(dR.unsqueeze(-3), m.body_rot_mat_w[motion_frame_index])
         e_pos = ((ref_bp - bp) ** 2).sum(-1).mean(-1)
         e_ori = rot_angle_sq(ref_bR, bR).mean(-1)
@@ -149,7 +181,9 @@ class MDP:
         if w_contact > 0:
             fz, rz = bp[..., self.feet, 2], m.body_pos_w[motion_frame_index][..., self.feet, 2]
             c_sim = torch.sigmoid((CONTACT_Z - fz) / 0.005)
-            rc = getattr(m, "ref_contact", None)  # MotionLib.set_ref_contact (--ref_contact_fix), else the fixed 4.5 cm
+            rc = getattr(
+                m, "ref_contact", None
+            )  # MotionLib.set_ref_contact (--ref_contact_fix), else the fixed 4.5 cm
             c_ref = rc[motion_frame_index] if rc is not None else (rz < CONTACT_Z).float()
             slip = (bv[..., self.feet, :2] ** 2).sum(-1)
             r_contact = (1 - (c_sim - c_ref) ** 2) + c_ref * torch.exp(-slip / 0.3**2)
@@ -178,7 +212,9 @@ class MDP:
         rp, rR = self.motion.base_pos_w[motion_frame_index], self.motion.base_rot_mat_w[motion_frame_index]
         e_z = (rp[..., 2] - base_pos_w[..., 2]).abs()
         e_tilt = (rR[..., 2, 2] - base_rot_mat_w[..., 2, 2]).abs()
-        alive = (1 - torch.sigmoid((e_z - self.cfg.term_height) / tz)) * (1 - torch.sigmoid((e_tilt - self.cfg.term_tilt) / tt))
+        alive = (1 - torch.sigmoid((e_z - self.cfg.term_height) / tz)) * (
+            1 - torch.sigmoid((e_tilt - self.cfg.term_tilt) / tt)
+        )
         return 1 - alive
 
     def critic_features(self, S, motion_frame_index, simulation_parameters) -> torch.Tensor:
@@ -188,11 +224,25 @@ class MDP:
         H = yaw_mat(base_rot_mat_w)
         Ht = H.transpose(-1, -2)
         rp, rR = m.base_pos_w[motion_frame_index], m.base_rot_mat_w[motion_frame_index]
-        bp = self.kin.forward(base_pos_w, base_rot_mat_w, base_lin_vel_w, base_ang_vel_w, joint_pos, joint_vel)[0]
+        bp = self.kin.forward(
+            base_pos_w, base_rot_mat_w, base_lin_vel_w, base_ang_vel_w, joint_pos, joint_vel
+        )[0]
         dR = yaw_mat(mm3(base_rot_mat_w, rR.transpose(-1, -2)))
         anchor = torch.cat((base_pos_w[..., :2], rp[..., 2:3]), -1)
-        ref_bp = anchor.unsqueeze(-2) + mv3(dR.unsqueeze(-3), m.body_pos_w[motion_frame_index] - rp.unsqueeze(-2))
+        ref_bp = anchor.unsqueeze(-2) + mv3(
+            dR.unsqueeze(-3), m.body_pos_w[motion_frame_index] - rp.unsqueeze(-2)
+        )
         e_body = mv3(Ht.unsqueeze(-3), ref_bp - bp).flatten(-2)
         e_root = mv3(Ht, rp - base_pos_w)
         rel = mat_to_6d(mm3(base_rot_mat_w.transpose(-1, -2), rR))
-        return torch.cat((invariant_features(S), m.joint_pos[motion_frame_index] - joint_pos, e_body, e_root, rel, simulation_parameters), -1)
+        return torch.cat(
+            (
+                invariant_features(S),
+                m.joint_pos[motion_frame_index] - joint_pos,
+                e_body,
+                e_root,
+                rel,
+                simulation_parameters,
+            ),
+            -1,
+        )

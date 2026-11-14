@@ -1,4 +1,5 @@
 """Muon for hidden matrices, Adam for boundary layers and vectors."""
+
 import torch
 from torch import nn
 
@@ -11,8 +12,9 @@ class MuonAdam:
             hidden_ids.update(id(layer.weight) for layer in layers[1:-1])
         matrices = [parameter for parameter in model.parameters() if id(parameter) in hidden_ids]
         remaining = [parameter for parameter in model.parameters() if id(parameter) not in hidden_ids]
-        self.muon = torch.optim.Muon(matrices, lr=learning_rate, weight_decay=0.0,
-                                     adjust_lr_fn='match_rms_adamw')
+        self.muon = torch.optim.Muon(
+            matrices, lr=learning_rate, weight_decay=0.0, adjust_lr_fn="match_rms_adamw"
+        )
         self.adam = torch.optim.Adam(remaining, lr=learning_rate, betas=betas)
 
     @property
@@ -28,16 +30,16 @@ class MuonAdam:
         self.adam.step()
 
     def state_dict(self):
-        return {'muon': self.muon.state_dict(), 'adam': self.adam.state_dict()}
+        return {"muon": self.muon.state_dict(), "adam": self.adam.state_dict()}
 
     def load_state_dict(self, state):
-        self.muon.load_state_dict(state['muon'])
-        self.adam.load_state_dict(state['adam'])
+        self.muon.load_state_dict(state["muon"])
+        self.adam.load_state_dict(state["adam"])
 
 
 def make_optimizer(name, model, networks, learning_rate, betas):
     factories = {
-        'adam': lambda: torch.optim.Adam(model.parameters(), lr=learning_rate, betas=betas),
-        'muon': lambda: MuonAdam(model, networks, learning_rate, betas),
+        "adam": lambda: torch.optim.Adam(model.parameters(), lr=learning_rate, betas=betas),
+        "muon": lambda: MuonAdam(model, networks, learning_rate, betas),
     }
     return factories[name]()

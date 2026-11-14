@@ -13,7 +13,16 @@ class WorldModel(nn.Module):
     action's target during the first physics steps of a control step.
     """
 
-    def __init__(self, num_j: int, xi_dim: int, use_prev_action: bool=False, hidden=(2048, 2048, 2048), contact_modes: bool=False, structured: bool=False, dt: float=0.02):
+    def __init__(
+        self,
+        num_j: int,
+        xi_dim: int,
+        use_prev_action: bool = False,
+        hidden=(2048, 2048, 2048),
+        contact_modes: bool = False,
+        structured: bool = False,
+        dt: float = 0.02,
+    ):
         """``contact_modes`` (InstantTrack): the last layer predicts the two feet's next-step ground contact
         and one increment head per contact mode (flight, left, right, double support); the increment is the
         mixture of the heads weighted by the predicted mode probabilities, so each head stays smooth within
@@ -35,8 +44,11 @@ class WorldModel(nn.Module):
 
     def inputs(self, S, action, last_action, normalized_simulation_parameters):
         if self.use_prev_action:
-            return torch.cat((invariant_features(S), action, last_action, normalized_simulation_parameters), -1)
+            return torch.cat(
+                (invariant_features(S), action, last_action, normalized_simulation_parameters), -1
+            )
         return torch.cat((invariant_features(S), action, normalized_simulation_parameters), -1)
+
     DRIFT_W = 0.625
 
     def _drift(self, S, v1, w1, qd1):
@@ -45,7 +57,11 @@ class WorldModel(nn.Module):
         base_pos_w, base_rot_mat_w, base_lin_vel_w, base_ang_vel_w, joint_pos, joint_vel = S
         H = yaw_mat(base_rot_mat_w)
         action, b = (self.dt * (1 - self.DRIFT_W), self.dt * self.DRIFT_W)
-        return (mv3(H.transpose(-1, -2), action * base_lin_vel_w + b * v1), mv3(base_rot_mat_w.transpose(-1, -2), action * base_ang_vel_w + b * w1), action * joint_vel + b * qd1)
+        return (
+            mv3(H.transpose(-1, -2), action * base_lin_vel_w + b * v1),
+            mv3(base_rot_mat_w.transpose(-1, -2), action * base_ang_vel_w + b * w1),
+            action * joint_vel + b * qd1,
+        )
 
     def targets(self, S, S1):
         """Regression targets of the network: the frame-local increments, or with ``structured`` the
@@ -62,11 +78,22 @@ class WorldModel(nn.Module):
     def increments(S, S1):
         """Frame-local increments from S to S1."""
         from .rotations import so3_log
+
         base_pos_w, base_rot_mat_w, base_lin_vel_w, base_ang_vel_w, joint_pos, joint_vel = S
         p1, R1, v1, w1, q1, qd1 = S1
         H = yaw_mat(base_rot_mat_w)
         Rt = base_rot_mat_w.transpose(-1, -2)
-        return torch.cat((mv3(H.transpose(-1, -2), p1 - base_pos_w), so3_log(mm3(Rt, R1)), mv3(Rt, v1 - base_lin_vel_w), mv3(Rt, w1 - base_ang_vel_w), q1 - joint_pos, qd1 - joint_vel), -1)
+        return torch.cat(
+            (
+                mv3(H.transpose(-1, -2), p1 - base_pos_w),
+                so3_log(mm3(Rt, R1)),
+                mv3(Rt, v1 - base_lin_vel_w),
+                mv3(Rt, w1 - base_ang_vel_w),
+                q1 - joint_pos,
+                qd1 - joint_vel,
+            ),
+            -1,
+        )
 
     def step(self, S, action, last_action, normalized_simulation_parameters):
         return self.step_c(S, action, last_action, normalized_simulation_parameters)[0]
@@ -74,7 +101,9 @@ class WorldModel(nn.Module):
     def step_c(self, S, action, last_action, normalized_simulation_parameters):
         """Next state and next-step foot-contact logits (B, 2), or None without ``contact_modes``."""
         base_pos_w, base_rot_mat_w, base_lin_vel_w, base_ang_vel_w, joint_pos, joint_vel = S
-        y = run_mlp(self.net, self.in_norm(self.inputs(S, action, last_action, normalized_simulation_parameters)))
+        y = run_mlp(
+            self.net, self.in_norm(self.inputs(S, action, last_action, normalized_simulation_parameters))
+        )
         logits = None
         if self.contact_modes:
             logits = y[..., -2:]
@@ -102,8 +131,19 @@ class WorldModel(nn.Module):
     def state_error(S_hat, S):
         """Frame-local state error components (same layout as ``targets``)."""
         from .rotations import so3_log
+
         base_pos_w, base_rot_mat_w, base_lin_vel_w, base_ang_vel_w, joint_pos, joint_vel = S
         ph, Rh, vh, wh, qh, qdh = S_hat
         H = yaw_mat(base_rot_mat_w)
         Rt = base_rot_mat_w.transpose(-1, -2)
-        return torch.cat((mv3(H.transpose(-1, -2), ph - base_pos_w), so3_log(mm3(Rt, Rh)), mv3(Rt, vh - base_lin_vel_w), mv3(Rt, wh - base_ang_vel_w), qh - joint_pos, qdh - joint_vel), -1)
+        return torch.cat(
+            (
+                mv3(H.transpose(-1, -2), ph - base_pos_w),
+                so3_log(mm3(Rt, Rh)),
+                mv3(Rt, vh - base_lin_vel_w),
+                mv3(Rt, wh - base_ang_vel_w),
+                qh - joint_pos,
+                qdh - joint_vel,
+            ),
+            -1,
+        )

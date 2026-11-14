@@ -21,9 +21,13 @@ GOAL_Q_OFFSET = 15  # index of the joint positions q(f+1) in the goal vector (fi
 
 
 class MotionLib:
-    def __init__(self, files: list[str], kin: Kinematics, device: str, load_motion: Callable[[str], MotionArrays]):
+    def __init__(
+        self, files: list[str], kin: Kinematics, device: str, load_motion: Callable[[str], MotionArrays]
+    ):
         self.device = device
-        self.names = [os.path.splitext(os.path.basename(motion_frame_index))[0] for motion_frame_index in files]
+        self.names = [
+            os.path.splitext(os.path.basename(motion_frame_index))[0] for motion_frame_index in files
+        ]
         ps, qs, js = [], [], []
         lens = []
         for motion_frame_index in files:
@@ -42,37 +46,76 @@ class MotionLib:
             ps.append(base_pos_w), qs.append(quat), js.append(j)
             lens.append(n)
         self.clip_len = torch.tensor(lens, device=device)
-        self.clip_start = torch.cumsum(torch.cat((torch.zeros(1, dtype=torch.long), torch.tensor(lens[:-1], dtype=torch.long))), 0).to(device)  # dtype: one clip gives an empty (float) tensor
+        self.clip_start = torch.cumsum(
+            torch.cat((torch.zeros(1, dtype=torch.long), torch.tensor(lens[:-1], dtype=torch.long))), 0
+        ).to(device)  # dtype: one clip gives an empty (float) tensor
         self.clip_end = self.clip_start + self.clip_len - 1  # last valid frame (inclusive)
         self.num_frames = int(sum(lens))
-        self.clip_id = torch.cat([torch.full((n,), i, dtype=torch.long) for i, n in enumerate(lens)]).to(device)
+        self.clip_id = torch.cat([torch.full((n,), i, dtype=torch.long) for i, n in enumerate(lens)]).to(
+            device
+        )
 
-        base_pos_w_clips, base_rot_mat_w_clips, base_lin_vel_w_clips, base_ang_vel_w_clips, jq, jqd = [], [], [], [], [], []
+        base_pos_w_clips, base_rot_mat_w_clips, base_lin_vel_w_clips, base_ang_vel_w_clips, jq, jqd = (
+            [],
+            [],
+            [],
+            [],
+            [],
+            [],
+        )
         for base_pos_w, quat, j in zip(ps, qs, js):
             base_rot_mat_w = quat_to_mat(quat)
             base_lin_vel_w = _gradient(base_pos_w, CONTROL_DT)
             joint_vel = _gradient(j, CONTROL_DT)
             # angular velocity (world) by central differences of rotations
             base_ang_vel_w = torch.zeros_like(base_pos_w)
-            base_ang_vel_w[1:-1] = so3_log(base_rot_mat_w[2:] @ base_rot_mat_w[:-2].transpose(-1, -2)) / (2 * CONTROL_DT)
+            base_ang_vel_w[1:-1] = so3_log(base_rot_mat_w[2:] @ base_rot_mat_w[:-2].transpose(-1, -2)) / (
+                2 * CONTROL_DT
+            )
             base_ang_vel_w[0] = so3_log(base_rot_mat_w[1] @ base_rot_mat_w[0].T) / CONTROL_DT
             base_ang_vel_w[-1] = so3_log(base_rot_mat_w[-1] @ base_rot_mat_w[-2].T) / CONTROL_DT
-            base_pos_w_clips.append(base_pos_w), base_rot_mat_w_clips.append(base_rot_mat_w), base_lin_vel_w_clips.append(base_lin_vel_w), base_ang_vel_w_clips.append(base_ang_vel_w), jq.append(j), jqd.append(joint_vel)
+            (
+                base_pos_w_clips.append(base_pos_w),
+                base_rot_mat_w_clips.append(base_rot_mat_w),
+                base_lin_vel_w_clips.append(base_lin_vel_w),
+                base_ang_vel_w_clips.append(base_ang_vel_w),
+                jq.append(j),
+                jqd.append(joint_vel),
+            )
         cat = lambda xs: torch.cat(xs).to(device)  # noqa: E731
-        self.base_pos_w, self.base_rot_mat_w, self.base_lin_vel_w, self.base_ang_vel_w = cat(base_pos_w_clips), cat(base_rot_mat_w_clips), cat(base_lin_vel_w_clips), cat(base_ang_vel_w_clips)
+        self.base_pos_w, self.base_rot_mat_w, self.base_lin_vel_w, self.base_ang_vel_w = (
+            cat(base_pos_w_clips),
+            cat(base_rot_mat_w_clips),
+            cat(base_lin_vel_w_clips),
+            cat(base_ang_vel_w_clips),
+        )
         self.joint_pos, self.joint_vel = cat(jq), cat(jqd)
         with torch.no_grad():
             bp, bR, bv, bw = [], [], [], []
             for s in range(0, self.num_frames, 65536):
                 e = min(s + 65536, self.num_frames)
-                out = kin.forward(self.base_pos_w[s:e], self.base_rot_mat_w[s:e], self.base_lin_vel_w[s:e], self.base_ang_vel_w[s:e], self.joint_pos[s:e], self.joint_vel[s:e])
+                out = kin.forward(
+                    self.base_pos_w[s:e],
+                    self.base_rot_mat_w[s:e],
+                    self.base_lin_vel_w[s:e],
+                    self.base_ang_vel_w[s:e],
+                    self.joint_pos[s:e],
+                    self.joint_vel[s:e],
+                )
                 bp.append(out[0]), bR.append(out[1]), bv.append(out[2]), bw.append(out[3])
-            self.body_pos_w, self.body_rot_mat_w, self.body_lin_vel_w, self.body_ang_vel_w = torch.cat(bp), torch.cat(bR), torch.cat(bv), torch.cat(bw)
+            self.body_pos_w, self.body_rot_mat_w, self.body_lin_vel_w, self.body_ang_vel_w = (
+                torch.cat(bp),
+                torch.cat(bR),
+                torch.cat(bv),
+                torch.cat(bw),
+            )
         # per-frame static goal parts: q, qd, root velocities in the root frame
         Rt = self.base_rot_mat_w.transpose(-1, -2)
         self.base_lin_vel = (Rt @ self.base_lin_vel_w.unsqueeze(-1)).squeeze(-1)
         self.base_ang_vel = (Rt @ self.base_ang_vel_w.unsqueeze(-1)).squeeze(-1)
-        self.root_gz = self.base_rot_mat_w[:, 2, 2]  # -(projected gravity z) of the reference root: g_b = R^T (0,0,-1)
+        self.root_gz = self.base_rot_mat_w[
+            :, 2, 2
+        ]  # -(projected gravity z) of the reference root: g_b = R^T (0,0,-1)
         # 1 s bins
         bin_clip, bin_start = [], []
         for c in range(len(lens)):
@@ -94,10 +137,12 @@ class MotionLib:
     def from_dir(path: str, robot: RobotSpec, kin: Kinematics, device: str) -> MotionLib:
         files = sorted(glob.glob(os.path.join(path, robot.motion_glob)))
         if not files:
-            raise FileNotFoundError(f'No reference motion files found in {path}; run tools/download_data.py.')
+            raise FileNotFoundError(f"No reference motion files found in {path}; run tools/download_data.py.")
         return MotionLib(files, kin, device, robot.load_motion)
 
-    def set_ref_contact(self, feet: list[int], margin: float = 0.015, vmax: float = 0.5, joint_pos: float = 0.05) -> None:
+    def set_ref_contact(
+        self, feet: list[int], margin: float = 0.015, vmax: float = 0.5, joint_pos: float = 0.05
+    ) -> None:
         """Speed-branch reference foot contact (num_frames, len(feet)): height below the clip's own floor (the
         q-quantile of that foot's height in the clip) + margin, and horizontal speed below vmax. A fixed 4.5 cm
         threshold misses most stance frames of clips whose retargeted feet sit ~1 cm higher (LAFAN1 subject1:
@@ -126,12 +171,27 @@ class MotionLib:
         dp = mv3(Ht, self.base_pos_w[fut] - self.base_pos_w[motion_frame_index].unsqueeze(1))
         rot = mat_to_6d(mm3(Ht, self.base_rot_mat_w[fut]))
         feats = torch.cat(
-            (dp, rot, self.base_lin_vel[fut], self.base_ang_vel[fut], self.joint_pos[fut], self.joint_vel[fut] * 0.1), -1
+            (
+                dp,
+                rot,
+                self.base_lin_vel[fut],
+                self.base_ang_vel[fut],
+                self.joint_pos[fut],
+                self.joint_vel[fut] * 0.1,
+            ),
+            -1,
         )  # (B,K,15+2J)
         return feats.reshape(motion_frame_index.shape[0], -1)
 
     def ref_state(self, motion_frame_index: torch.Tensor):
-        return self.base_pos_w[motion_frame_index], self.base_rot_mat_w[motion_frame_index], self.base_lin_vel_w[motion_frame_index], self.base_ang_vel_w[motion_frame_index], self.joint_pos[motion_frame_index], self.joint_vel[motion_frame_index]
+        return (
+            self.base_pos_w[motion_frame_index],
+            self.base_rot_mat_w[motion_frame_index],
+            self.base_lin_vel_w[motion_frame_index],
+            self.base_ang_vel_w[motion_frame_index],
+            self.joint_pos[motion_frame_index],
+            self.joint_vel[motion_frame_index],
+        )
 
 
 def _gradient(x: torch.Tensor, dt: float) -> torch.Tensor:

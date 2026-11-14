@@ -1,13 +1,9 @@
 from __future__ import annotations
-import torch
 import torch.nn as nn
-from .mdp import inv_dim, invariant_features
-from .rotations import mm3, mv3, so3_exp, yaw_mat
 from .common import mlp, RunningNorm, run_mlp
 
 
 class Critic(nn.Module):
-
     def __init__(self, in_dim: int):
         super().__init__()
         self.net = mlp(in_dim, [256, 128], 1)

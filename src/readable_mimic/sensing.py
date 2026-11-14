@@ -135,7 +135,9 @@ class ObsPipeline:
         if imu is not None:
             m = mujoco.MjModel.from_xml_path(robot.mjcf_path)
             sid = m.site(imu.site).id
-            assert m.body(m.site_bodyid[sid]).name == robot.tracked_bodies[0], "IMU site must be on the root body"
+            assert m.body(m.site_bodyid[sid]).name == robot.tracked_bodies[0], (
+                "IMU site must be on the root body"
+            )
             self.site_pos = torch.tensor(m.site_pos[sid], dtype=torch.float32, device=device)
             self.site_rot = quat_to_mat(torch.tensor(m.site_quat[sid], dtype=torch.float32, device=device))
         self.sizes = {"qd_f": J, "g_hat": 3, "w_f": 3, "a_f": 3, "prev_raw": self.obs_dim, "lag": 4}
@@ -162,7 +164,11 @@ class ObsPipeline:
         p0, R0, v0, w0 = S0[:4]
         R1, v1, w1 = S1[1], S1[2], S1[3]
         r_w = (R1 @ self.site_pos.unsqueeze(-1)).squeeze(-1)
-        acc = (v1 - v0) / dt + torch.cross((w1 - w0) / dt, r_w, dim=-1) + torch.cross(w1, torch.cross(w1, r_w, dim=-1), dim=-1)
+        acc = (
+            (v1 - v0) / dt
+            + torch.cross((w1 - w0) / dt, r_w, dim=-1)
+            + torch.cross(w1, torch.cross(w1, r_w, dim=-1), dim=-1)
+        )
         acc = acc + torch.tensor([0.0, 0.0, GRAVITY], device=acc.device)
         Rs_t = (R1 @ self.site_rot).transpose(-1, -2)
         return (Rs_t @ w1.unsqueeze(-1)).squeeze(-1), (Rs_t @ acc.unsqueeze(-1)).squeeze(-1)
@@ -177,13 +183,25 @@ class ObsPipeline:
             M = self._mount(simulation_parameters)
             Mt = M.transpose(-1, -2)
             st["g_hat"] = (S[1] @ M)[..., 2, :]
-            st["w_f"] = (Mt @ gyro_site.unsqueeze(-1)).squeeze(-1) + self.layout.get(simulation_parameters, "gyro_bias")
+            st["w_f"] = (Mt @ gyro_site.unsqueeze(-1)).squeeze(-1) + self.layout.get(
+                simulation_parameters, "gyro_bias"
+            )
             st["a_f"] = (Mt @ accel_site.unsqueeze(-1)).squeeze(-1)
         else:
             st["g_hat"] = st["w_f"] = st["a_f"] = torch.zeros(n, 3, device=simulation_parameters.device)
         return st
 
-    def filter_update(self, st: dict, joint_vel, gyro_site, accel_site, simulation_parameters, dt: float, noise: bool, ctrl_rate: bool = False) -> dict:
+    def filter_update(
+        self,
+        st: dict,
+        joint_vel,
+        gyro_site,
+        accel_site,
+        simulation_parameters,
+        dt: float,
+        noise: bool,
+        ctrl_rate: bool = False,
+    ) -> dict:
         st = dict(st)
         jf = self.cfg.joint_vel_filter
         if jf is not None:
@@ -191,7 +209,9 @@ class ObsPipeline:
             k = torch.where(tau > 0, 1.0 - torch.exp(-dt / tau.clamp(min=1e-9)), 1.0)
             if noise and jf.raw_noise_std > 0:
                 std = torch.full_like(k, jf.raw_noise_std)
-                if ctrl_rate:  # same filtered noise variance as per-physics-step noise: var = std^2 k / (2 - k)
+                if (
+                    ctrl_rate
+                ):  # same filtered noise variance as per-physics-step noise: var = std^2 k / (2 - k)
                     k_p = torch.where(tau > 0, 1.0 - torch.exp(-self.physics_dt / tau.clamp(min=1e-9)), 1.0)
                     std = std * torch.sqrt((k_p / (2 - k_p)) * ((2 - k) / k))
                 joint_vel = joint_vel + torch.randn_like(joint_vel) * std
@@ -199,7 +219,9 @@ class ObsPipeline:
         imu = self.cfg.imu
         if imu is not None:
             Mt = self._mount(simulation_parameters).transpose(-1, -2)
-            gyro = (Mt @ gyro_site.unsqueeze(-1)).squeeze(-1) + self.layout.get(simulation_parameters, "gyro_bias")
+            gyro = (Mt @ gyro_site.unsqueeze(-1)).squeeze(-1) + self.layout.get(
+                simulation_parameters, "gyro_bias"
+            )
             accel = (Mt @ accel_site.unsqueeze(-1)).squeeze(-1)
             k_lp = 1.0 - math.exp(-dt / imu.lowpass_tau)
             k_tilt = 1.0 - math.exp(-dt / imu.tilt_tau)
@@ -217,7 +239,9 @@ class ObsPipeline:
         dq0 = self.layout.get(simulation_parameters, "joint_offset")
         if self.cfg.imu is not None:
             R_site = base_rot_mat_w @ self._mount(simulation_parameters)
-            R_att = R_site @ _align(st["g_hat"], R_site[..., 2, :])  # estimated attitude: up direction = g_hat
+            R_att = R_site @ _align(
+                st["g_hat"], R_site[..., 2, :]
+            )  # estimated attitude: up direction = g_hat
             ang_vel = st["w_f"]
         else:
             R_att = base_rot_mat_w
@@ -225,7 +249,9 @@ class ObsPipeline:
         qd_obs = st["qd_f"] if self.cfg.joint_vel_filter is not None else joint_vel
         g_b = -R_att[..., 2, :]
         rel = mat_to_6d(R_att.transpose(-1, -2) @ self.mdp.motion.base_rot_mat_w[motion_frame_index])
-        return torch.cat((joint_pos - self.mdp.default_joint_pos - dq0, qd_obs, ang_vel, g_b, last_action, rel), -1)
+        return torch.cat(
+            (joint_pos - self.mdp.default_joint_pos - dq0, qd_obs, ang_vel, g_b, last_action, rel), -1
+        )
 
     def observe(self, st: dict, raw: torch.Tensor, noise: bool, delay: bool) -> tuple[torch.Tensor, dict]:
         st = dict(st)
