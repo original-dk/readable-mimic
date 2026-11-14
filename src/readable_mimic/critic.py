@@ -1,13 +1,13 @@
 from __future__ import annotations
 import torch.nn as nn
-from .common import mlp, RunningNorm, run_mlp
+from .common import mlp, RunningNorm
 
 
 class Critic(nn.Module):
-    def __init__(self, in_dim: int):
+    def __init__(self, input_dim: int):
         super().__init__()
-        self.net = mlp(in_dim, [256, 128], 1)
-        self.norm = RunningNorm(in_dim)
+        self.network = mlp(input_dim, [256, 128], 1)
+        self.norm = RunningNorm(input_dim)
 
     def forward(self, x):
-        return run_mlp(self.net, self.norm(x)).squeeze(-1)
+        return self.network(self.norm(x)).squeeze(-1)

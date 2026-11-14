@@ -54,34 +54,9 @@
       0.3,
       1.2
     ],
-    "friction_geoms": null,
     "joint_offset": {
       ".*": 0.01
     },
-    "com_mass_range": null,
-    "link_mass_range": null,
-    "link_mass_exclude": [],
-    "solref_geoms": null,
-    "solref_timeconst": [
-      0.02,
-      0.02
-    ],
-    "solref_dampratio": [
-      1.0,
-      1.0
-    ],
-    "pd_gain_scale": [],
-    "armature_range": null,
-    "damping_range": null,
-    "push_interval_s": null,
-    "push_velocity": [
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0
-    ],
     "reset_pos": [
       0.05,
       0.05,
@@ -104,16 +79,6 @@
     ],
     "reset_joint_pos": 0.1,
     "reset_joint_vel": 0.0
-  },
-  "sensing": {
-    "noise_joint_pos": 0.01,
-    "noise_joint_vel": 0.5,
-    "noise_ang_vel": 0.2,
-    "noise_gravity": 0.05,
-    "noise_ref_ori": 0.05,
-    "delay_hold_prob": null,
-    "imu": null,
-    "joint_vel_filter": null
   },
   "reward": {
     "body_pos_std": 0.3,
@@ -141,5 +106,12 @@
     "ls_iterations": 50,
     "tolerance": 1e-06,
     "ccd_iterations": 35
+  },
+  "observation_noise": {
+    "noise_joint_pos": 0.01,
+    "noise_joint_vel": 0.5,
+    "noise_ang_vel": 0.2,
+    "noise_gravity": 0.05,
+    "noise_ref_ori": 0.05
   }
 }

@@ -9,7 +9,7 @@ class MuonAdam:
         hidden_ids = set()
         for network in networks:
             layers = [layer for layer in network.modules() if isinstance(layer, nn.Linear)]
-            hidden_ids.update(id(layer.weight) for layer in layers[1:-1])
+            hidden_ids.update((id(layer.weight) for layer in layers[1:-1]))
         matrices = [parameter for parameter in model.parameters() if id(parameter) in hidden_ids]
         remaining = [parameter for parameter in model.parameters() if id(parameter) not in hidden_ids]
         self.muon = torch.optim.Muon(

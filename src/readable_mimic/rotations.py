@@ -135,13 +135,13 @@ def mat_to_6d(rotation_matrix: torch.Tensor) -> torch.Tensor:
     return rotation_matrix[..., :, :2].reshape(rotation_matrix.shape[:-2] + (6,))
 
 
-def quat_slerp(q0: torch.Tensor, q1: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
-    dot = (q0 * q1).sum(-1, keepdim=True)
-    q1 = torch.where(dot < 0, -q1, q1)
+def quat_slerp(q0: torch.Tensor, next_joint_pos: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+    dot = (q0 * next_joint_pos).sum(-1, keepdim=True)
+    next_joint_pos = torch.where(dot < 0, -next_joint_pos, next_joint_pos)
     dot = dot.abs().clamp(max=1.0)
     theta = torch.acos(dot)
     s = torch.sin(theta)
     t = t[..., None]
     w0 = torch.where(s < 1e-06, 1 - t, torch.sin((1 - t) * theta) / (s + 1e-12))
-    w1 = torch.where(s < 1e-06, t, torch.sin(t * theta) / (s + 1e-12))
-    return F.normalize(w0 * q0 + w1 * q1, dim=-1)
+    next_base_ang_vel_w = torch.where(s < 1e-06, t, torch.sin(t * theta) / (s + 1e-12))
+    return F.normalize(w0 * q0 + next_base_ang_vel_w * next_joint_pos, dim=-1)

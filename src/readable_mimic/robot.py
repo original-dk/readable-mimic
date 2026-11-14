@@ -5,20 +5,16 @@ Each robot lives in its own package ``readable_mimic/<name>/`` whose ``<name>_co
 """
 
 from __future__ import annotations
-
 import importlib
 import re
 from dataclasses import dataclass
 from dataclasses import field
 from typing import Callable
-
 import numpy as np
 from mjlab.entity import EntityCfg
+from .simulation_parameters import DomainRandomizationConfig
+from .observation import ObservationNoiseConfig
 
-from .dr import DomainRandCfg
-from .sensing import SensingCfg
-
-# (root position (T,3), root quaternion wxyz (T,4), joint positions (T,J) in joint_names order, fps)
 MotionArrays = tuple[np.ndarray, np.ndarray, np.ndarray, float]
 
 
@@ -26,43 +22,43 @@ MotionArrays = tuple[np.ndarray, np.ndarray, np.ndarray, float]
 class RobotSpec:
     name: str
     mjcf_path: str
-    """Robot MJCF; the simulated entity and the torch FK are both built from it."""
+    "Robot MJCF; the simulated entity and the torch FK are both built from it."
     joint_names: tuple[str, ...]
-    """Actuated joints in motion-file / action order (must equal the MJCF joint order)."""
+    "Actuated joints in motion-file / action order (must equal the MJCF joint order)."
     tracked_bodies: tuple[str, ...]
-    """Bodies in the tracking reward; the first one is the root (anchor) body."""
+    "Bodies in the tracking reward; the first one is the root (anchor) body."
     default_joint_pos: dict[str, float]
-    """Regex -> nominal joint position; actions are offsets from it."""
+    "Regex -> nominal joint position; actions are offsets from it."
     action_scale: dict[str, float]
-    """Joint name -> action scale (rad per unit action)."""
-    com_body: str
-    """Body whose center of mass is randomized (part of the sim context xi)."""
-    com_range: tuple[tuple[float, float], tuple[float, float], tuple[float, float]]
+    "Joint name -> action scale (rad per unit action)."
+    center_of_mass_body: str
+    "Body whose center of mass is randomized (part of the sim context xi)."
+    center_of_mass_offset_range: tuple[tuple[float, float], tuple[float, float], tuple[float, float]]
     robot_cfg: Callable[[], EntityCfg]
     motion_dir: str
     motion_glob: str
     load_motion: Callable[[str], MotionArrays]
-    dr: DomainRandCfg = field(default_factory=DomainRandCfg)
-    """Simulator randomization (default: the paper's G1 setup)."""
-    sensing: SensingCfg = field(default_factory=SensingCfg)
-    """How the policy observation is sensed (default: true state plus Table A.1 noise)."""
+    domain_randomization: DomainRandomizationConfig = field(default_factory=DomainRandomizationConfig)
+    "Simulator randomization (default: the paper's G1 setup)."
+    observation_noise: ObservationNoiseConfig = field(default_factory=ObservationNoiseConfig)
+    "How the policy observation is sensed (default: true state plus Table A.1 noise)."
     njmax: int = 500
     nconmax: int = 128
-    """MuJoCo-Warp constraint / contact capacity per world."""
+    "MuJoCo-Warp constraint / contact capacity per world."
 
     @property
     def num_joints(self) -> int:
         return len(self.joint_names)
 
     def default_joint_pos_list(self) -> list[float]:
-        out = []
+        joint_positions = []
         for name in self.joint_names:
-            val = 0.0
-            for pat, base_lin_vel_w in self.default_joint_pos.items():
-                if re.fullmatch(pat, name):
-                    val = base_lin_vel_w
-            out.append(val)
-        return out
+            joint_position = 0.0
+            for pattern, configured_joint_pos in self.default_joint_pos.items():
+                if re.fullmatch(pattern, name):
+                    joint_position = configured_joint_pos
+            joint_positions.append(joint_position)
+        return joint_positions
 
     def action_scale_list(self) -> list[float]:
         return [self.action_scale[n] for n in self.joint_names]
@@ -70,8 +66,8 @@ class RobotSpec:
     @property
     def has_action_delay(self) -> bool:
         """Whether any actuator delays its command (then s_{t+1} also depends on a_{t-1})."""
-        art = self.robot_cfg().articulation
-        return art is not None and any(act.delay_max_lag > 0 for act in art.actuators)
+        articulation = self.robot_cfg().articulation
+        return articulation is not None and any((act.delay_max_lag > 0 for act in articulation.actuators))
 
 
 def get_robot(name: str) -> RobotSpec:

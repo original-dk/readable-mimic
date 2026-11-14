@@ -1,21 +1,25 @@
-"""Collect -> world model -> imagined actor -> critic; no compilation or CUDA graphs."""
+"Collect -> world model -> imagined actor -> critic; no compilation or CUDA graphs."
 
 from dataclasses import replace
 import json
 import math
 import time
 from pathlib import Path
-
 import torch
-
 from .buffer import ReplayBuffer
-from .mdp import MDP, RewardCfg, inv_dim, unflatten_state
-from .motion import CONTROL_DT, MotionLib
+from .task import TrackingTask, RewardConfig, invariant_feature_dim, unflatten_state
+from .motion import CONTROL_DT, ReferenceMotion
 from .kinematics import Kinematics
-from .dr import DomainRandCfg, XiLayout
-from .sensing import SensingCfg
+from .simulation_parameters import (
+    DomainRandomizationConfig,
+    simulation_parameter_count,
+    normalize_simulation_parameters,
+)
+from .observation import ObservationNoiseConfig
 from .mirror import Mirror
-from .networks import Actor, Critic, WorldModel, policy_kwargs
+from .actor import Actor, actor_kwargs
+from .critic import Critic
+from .world_model import WorldModel
 from .optimizers import make_optimizer
 from .robot import get_robot
 from .updates import Updates
@@ -32,52 +36,58 @@ class Trainer(Updates):
         self.goal_frames = config.goal_frames
         self.robot = get_robot(config.robot)
         self.robot = replace(
-            self.robot, dr=DomainRandCfg(**config.domain_randomization), sensing=SensingCfg(**config.sensing)
+            self.robot,
+            domain_randomization=DomainRandomizationConfig(**config.domain_randomization),
+            observation_noise=ObservationNoiseConfig(**config.observation_noise),
         )
         self.kinematics = Kinematics(self.robot, self.device)
-        self.motion = MotionLib.from_dir(config.motion_dir, self.robot, self.kinematics, self.device)
-        self.parameter_layout = XiLayout(self.robot, self.device)
-        self.normalize_parameters = self.parameter_layout.normalize
-        self.mdp = MDP(
+        self.motion = ReferenceMotion.from_dir(config.motion_dir, self.robot, self.kinematics, self.device)
+        self.num_simulation_parameters = simulation_parameter_count(self.robot)
+        self.task = TrackingTask(
             self.kinematics,
             self.motion,
             torch.tensor(self.robot.default_joint_pos_list(), device=self.device),
-            self.parameter_layout.dim,
-            self.robot.sensing,
-            RewardCfg(**config.reward),
+            self.num_simulation_parameters,
+            self.robot.observation_noise,
+            RewardConfig(**config.reward),
         )
-        assert not self.robot.sensing.stateful, "First version uses the paper observation noise only."
-        self.mdp.feet = [
+        self.task.feet = [
             self.robot.tracked_bodies.index(name)
             for name in ("left_ankle_roll_link", "right_ankle_roll_link")
         ]
         if config.ref_contact_fix:
-            self.motion.set_ref_contact(self.mdp.feet)
+            self.motion.set_ref_contact(self.task.feet)
         joint_count = self.robot.num_joints
         command_dim = self.motion.command_dim(config.goal_frames)
         self.world_model = WorldModel(
             joint_count,
-            self.parameter_layout.dim,
-            use_prev_action=self.robot.has_action_delay,
-            hidden=self.widths(config.wm_hidden),
+            self.num_simulation_parameters,
+            use_last_action=self.robot.has_action_delay,
+            hidden_dims=self.widths(config.wm_hidden),
             structured=config.wm_structured,
-            dt=CONTROL_DT,
+            control_time_step=CONTROL_DT,
         ).to(self.device)
         self.actor = Actor(
-            self.mdp.obs_dim,
+            self.task.observation_dim,
             command_dim,
             joint_count,
-            hist=config.hist,
-            enc_hidden=self.widths(config.enc_hidden),
-            dec_hidden=self.widths(config.dec_hidden),
-            **policy_kwargs(vars(config), self.robot),
+            history_length=config.hist,
+            encoder_hidden_dims=self.widths(config.enc_hidden),
+            decoder_hidden_dims=self.widths(config.dec_hidden),
+            **actor_kwargs(vars(config), self.robot),
         ).to(self.device)
-        self.critic = Critic(inv_dim(joint_count) + self.mdp.critic_extra + command_dim).to(self.device)
+        self.critic = Critic(invariant_feature_dim(joint_count) + self.task.critic_extra + command_dim).to(
+            self.device
+        )
         self.world_model_optimizer = make_optimizer(
-            config.wm_opt, self.world_model, [self.world_model.net], config.lr, (0.9, 0.999)
+            config.wm_opt, self.world_model, [self.world_model.network], config.lr, (0.9, 0.999)
         )
         self.actor_optimizer = make_optimizer(
-            config.pi_opt, self.actor, [self.actor.enc, self.actor.dec], config.lr, (config.pi_beta1, 0.95)
+            config.pi_opt,
+            self.actor,
+            [self.actor.command_encoder, self.actor.action_decoder],
+            config.lr,
+            (config.pi_beta1, 0.95),
         )
         self.critic_optimizer = torch.optim.Adam(self.critic.parameters(), lr=config.lr)
         self.actor_average = torch.optim.swa_utils.AveragedModel(
@@ -85,10 +95,8 @@ class Trainer(Updates):
             multi_avg_fn=torch.optim.swa_utils.get_ema_multi_avg_fn(config.pi_ema),
             use_buffers=True,
         )
-        self.mirror = (
-            Mirror(self.robot, self.parameter_layout.slices, self.device) if config.wm_mirror else None
-        )
-        self.error_floor = torch.tensor(
+        self.mirror = Mirror(self.robot, self.device) if config.wm_mirror else None
+        self.state_error_floor = torch.tensor(
             [0.003] * 3
             + [0.005] * 3
             + [0.02] * 3
@@ -98,35 +106,37 @@ class Trainer(Updates):
             device=self.device,
         )
         self.buffer = ReplayBuffer(
-            config.buffer_steps, config.num_envs, self.device, joint_count, self.parameter_layout.dim
+            config.buffer_steps, config.num_envs, self.device, joint_count, self.num_simulation_parameters
         )
         self.observation_history = torch.zeros(
-            config.num_envs, config.hist, self.mdp.obs_dim, device=self.device
+            config.num_envs, config.hist, self.task.observation_dim, device=self.device
         )
         self.iteration = 0
         self.collection_remainder = 0.0
         self.decay_start = None
         self.environment = None
 
+    def normalize_parameters(self, parameters):
+        return normalize_simulation_parameters(parameters, self.robot)
+
     @staticmethod
     def widths(text):
-        return tuple(int(value) for value in text.split(","))
+        return tuple((int(value) for value in text.split(",")))
 
     def create_environment(self):
-        from .environment import TrackingSim, make_sim
+        from .environment import TrackingEnvironment, make_sim
 
-        if self.device.startswith("cuda") and not torch.cuda.is_available():
+        if self.device.startswith("cuda") and (not torch.cuda.is_available()):
             raise RuntimeError(
                 "G1 training requires a CUDA-enabled PyTorch and an NVIDIA GPU. CPU tests: uv run pytest -q"
             )
-        self.environment = TrackingSim(
+        self.environment = TrackingEnvironment(
             make_sim(self.robot, self.config.simulation),
             self.config.num_envs,
             self.robot,
             self.motion,
-            self.mdp,
+            self.task,
             self.device,
-            gamma=self.config.gamma,
             max_episode_steps=self.config.max_episode_steps,
         )
 
@@ -141,24 +151,24 @@ class Trainer(Updates):
                 fresh[:, None, None], observation[:, None].expand_as(history), history
             )
             command = self.motion.command(self.environment.motion_frame_index, self.goal_frames)
-            self.actor.obs_norm.update(observation)
-            self.actor.goal_norm.update(command)
+            self.actor.observation_normalizer.update(observation)
+            self.actor.command_normalizer.update(command)
             action = self.actor(self.observation_history, command)
             action = (action + self.config.action_noise * torch.randn_like(action)).clamp(-20, 20)
             transition = self.environment.step(action)
             self.buffer.add(transition)
-            inputs, targets, increments = self.wm_norm_data(
+            inputs, targets, increments = self.world_model_normalization_data(
                 unflatten_state(transition["state"]),
                 unflatten_state(transition["next_state"]),
                 transition["action"],
                 transition["last_action"],
                 transition["simulation_parameters"],
             )
-            self.world_model.in_norm.update(inputs)
-            self.world_model.out_norm.update(targets)
-            self.world_model.inc_norm.update(increments)
-            if "ep_ret_norm" in transition:
-                episode_returns.append(float(transition["ep_ret_norm"].mean()))
+            self.world_model.input_normalizer.update(inputs)
+            self.world_model.output_normalizer.update(targets)
+            self.world_model.increment_normalizer.update(increments)
+            if "normalized_episode_return" in transition:
+                episode_returns.append(float(transition["normalized_episode_return"].mean()))
         return episode_returns
 
     def set_learning_rate(self, iteration):
@@ -194,10 +204,10 @@ class Trainer(Updates):
             returns = self.collect(steps)
             return_window.extend(returns)
             for _ in range(config.wm_batches):
-                world_model_loss, _ = self.wm_update()
+                world_model_loss, _ = self.update_world_model()
             metrics = {"iteration": iteration + 1, "world_model_loss": float(world_model_loss)}
             if iteration >= config.wm_only_iters:
-                actor_loss, critic_loss, imagined_reward, gradient_norm, survival = self.policy_update()
+                actor_loss, critic_loss, imagined_reward, gradient_norm, survival = self.update_actor()
                 metrics.update(
                     actor_loss=float(actor_loss),
                     critic_loss=float(critic_loss),

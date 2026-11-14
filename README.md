@@ -24,7 +24,7 @@ uv run pytest -q
 
 | 文件 | 职责 |
 |---|---|
-| config.json | 训练、奖励、观测噪声、随机化配置；沿用上游训练配置键名 |
+| config.json | 训练、奖励、observation_noise、domain_randomization；训练超参数保留上游键名 |
 | trainer.py | 构建模块、采样、学习率、日志、保存恢复 |
 | actor.py | command encoder 和 history decoder |
 | critic.py | 状态价值网络 |
@@ -33,7 +33,9 @@ uv run pytest -q
 | buffer.py | 时间×环境的循环 Buffer 和历史恢复 |
 | environment.py | MuJoCo-Warp 采样，均匀 bin reset |
 | motion.py | 参考动作重采样及 command |
-| mdp.py | obs、解析奖励、终止、Critic features |
+| observation.py | 直接拼接当前 obs，定义观测噪声范围 |
+| task.py | 解析奖励、终止、Critic features |
+| simulation_parameters.py | 摩擦、关节偏移、质心偏移的采样、应用和归一化 |
 | kinematics.py | 上游 FK 算法，重命名状态参数 |
 | rotations.py | 四元数、旋转矩阵、SO(3) 运算 |
 | mirror.py | 左右镜像增强 |
@@ -65,3 +67,17 @@ Muon 内部正交化遵循 torch.optim.Muon 原实现，FP32 指网络与状态�
 checkpoint 恢复网络、标准化统计、优化器、迭代和学习率控制状态；
 与上游一样，环境与 replay 重新 warm-up，属于 warm restart，不是逐步精确续跑。
 数据由外部下载：LAFAN1 遵循 CC BY-NC-ND 4.0，机器人资产遵循其原许可证。
+
+## 当前数据流中的对象
+
+环境直接保存 `num_envs`、`num_joints`、`last_action`、`episode_step` 和 `simulation_parameters`。
+`observation.py` 从当前状态拼接 obs；Trainer 保存 history。
+不再包含 ObsPipeline、XiLayout、传感滤波/延迟状态或动态参数注册。
+
+`simulation_parameters` 是网络和 Buffer 使用的数值向量，顺序固定为：
+`[friction (1), joint_pos_offset (num_joints), center_of_mass_offset (3)]`。
+只有到 WM / Critic 的输入处才归一化，物理仿真和 Buffer 保存原始值。
+向量切片仅用于这三个明确字段，不再维护额外的 layout 对象。
+
+本次修改了网络参数名称和 observation_noise 配置结构。旧版代码由 Git 历史保留，
+旧版 checkpoint 不直接加载到新命名版本；需要续跑旧模型时先切回对应提交。

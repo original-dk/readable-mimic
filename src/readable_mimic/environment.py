@@ -1,44 +1,24 @@
-"""Motion-tracking simulator on mjlab (MuJoCo-Warp).
+"""Actor action -> MuJoCo step -> state / reward / replay transition."""
 
-The environment is a thin batched wrapper: it applies the joint setpoint, steps MuJoCo-Warp, labels
-the transition with the analytic reward/termination of :mod:`readable_mimic.mdp`, and resets episodes to
-reference-motion states drawn uniformly over time bins. Domain randomization
-(:mod:`readable_mimic.dr`) and the policy's sensing (:mod:`readable_mimic.sensing`) follow ``RobotSpec``.
-"""
-
-from __future__ import annotations
 import torch
 from mjlab.scene import Scene, SceneCfg
 from mjlab.sim import MujocoCfg, Simulation, SimulationCfg
 from mjlab.terrains import TerrainEntityCfg
-from .dr import DomainRandomizer, XiLayout
-from .mdp import MAX_STEP_REWARD, MDP, flatten_state
-from .motion import CONTROL_DT, MotionLib
-from .robot import RobotSpec
+from .motion import CONTROL_DT
+from .task import MAX_STEP_REWARD, flatten_state
 from .rotations import mat_to_quat, quat_to_mat, so3_exp
-from .sensing import ObsPipeline
+from .simulation_parameters import initialize_simulation_parameters, randomize_joint_pos_offsets
 
 DECIMATION = 4
 PHYSICS_DT = CONTROL_DT / DECIMATION
 
 
 class EagerSimulation(Simulation):
-    """Disable mjlab's automatic simulator graph capture as well as training graphs."""
-
     def _should_use_cuda_graph(self):
         return False
 
 
-def make_scene_cfg(robot: RobotSpec, num_envs: int) -> SceneCfg:
-    return SceneCfg(
-        num_envs=num_envs,
-        env_spacing=0.0,
-        terrain=TerrainEntityCfg(terrain_type="plane"),
-        entities={"robot": robot.robot_cfg()},
-    )
-
-
-def make_sim(robot: RobotSpec, settings: dict) -> SimulationCfg:
+def make_sim(robot, settings):
     settings = dict(settings)
     settings.pop("control_dt")
     settings.pop("decimation")
@@ -49,275 +29,151 @@ def make_sim(robot: RobotSpec, settings: dict) -> SimulationCfg:
     )
 
 
-class TrackingSim:
-    """Batched motion-tracking simulator for the robot of ``robot``."""
-
-    def __init__(
-        self,
-        sim_cfg: SimulationCfg,
-        num_envs: int,
-        robot: RobotSpec,
-        motion: MotionLib,
-        mdp: MDP,
-        device: str,
-        gamma: float = 0.99,
-        eval_mode: bool = False,
-        max_episode_steps: int = 500,
-        reset_noise: bool = True,
-        randomize: bool | None = None,
-    ):
-        """``randomize`` (default: not eval_mode) switches domain randomization, observation noise and
-        delay, and pushes; ``eval_mode`` switches evaluation bookkeeping (no auto-reset, episode starts
-        exactly on the reference)."""
+class TrackingEnvironment:
+    def __init__(self, simulation_config, num_envs, robot, motion, task, device, max_episode_steps=500):
+        self.num_envs = num_envs
+        self.num_joints = robot.num_joints
         self.device = device
-        self.scene = Scene(make_scene_cfg(robot, num_envs), device=device)
-        self.sim = EagerSimulation(num_envs=num_envs, cfg=sim_cfg, model=self.scene.compile(), device=device)
-        self.scene.initialize(mj_model=self.sim.mj_model, model=self.sim.model, data=self.sim.data)
+        self.robot_description = robot
+        self.motion = motion
+        self.task = task
+        self.max_episode_steps = max_episode_steps
+        scene_config = SceneCfg(
+            num_envs=num_envs,
+            env_spacing=0.0,
+            terrain=TerrainEntityCfg(terrain_type="plane"),
+            entities={"robot": robot.robot_cfg()},
+        )
+        self.scene = Scene(scene_config, device=device)
+        self.simulation = EagerSimulation(
+            num_envs=num_envs, cfg=simulation_config, model=self.scene.compile(), device=device
+        )
+        self.scene.initialize(
+            mj_model=self.simulation.mj_model, model=self.simulation.model, data=self.simulation.data
+        )
         self.robot = self.scene["robot"]
-        assert list(self.robot.joint_names) == list(robot.joint_names), self.robot.joint_names
-        self.N = num_envs
-        self.J = robot.num_joints
-        self.spec = robot
-        self.motion, self.mdp, self.gamma = (motion, mdp, gamma)
-        self.eval_mode = eval_mode
-        self.randomize = not eval_mode if randomize is None else randomize
-        self.max_episode_steps = max_episode_steps if not eval_mode else 10**9
-        self.reset_noise = reset_noise and (not eval_mode)
-        dev = self.device
+        assert list(self.robot.joint_names) == list(robot.joint_names)
         self.default_joint_pos = self.robot.data.default_joint_pos[0].clone()
-        self.alpha = torch.tensor(robot.action_scale_list(), device=dev)
-        self.layout = XiLayout(robot, dev)
-        assert self.layout.dim == mdp.xi_dim, (self.layout.dim, mdp.xi_dim)
-        self.simulation_parameters = torch.zeros(self.N, self.layout.dim, device=dev)
-        self.randomizer = DomainRandomizer(robot, self.layout, self, eval_mode=not self.randomize)
-        self.randomizer.startup(self.simulation_parameters)
-        self.pipe = ObsPipeline(robot, mdp, self.layout, dev, PHYSICS_DT)
-        self.obs_fresh = torch.ones(self.N, dtype=torch.bool, device=dev)
-        self._obs = self._obs_state = None
-        if robot.sensing.imu is not None:
-            m = self.sim.mj_model
-            adr = lambda name: int(m.sensor_adr[m.sensor(f"robot/{name}").id])
-            self._gyro_adr, self._accel_adr = (
-                adr(robot.sensing.imu.gyro_sensor),
-                adr(robot.sensing.imu.accel_sensor),
-            )
-        self.push_timer = torch.zeros(self.N, device=dev)
-        self.push_enabled = robot.dr.push_interval_s is not None and self.randomize
-        if self.push_enabled:
-            self.push_timer.uniform_(*robot.dr.push_interval_s)
-        self.motion_frame_index = torch.zeros(self.N, dtype=torch.long, device=dev)
-        self.episode_step = torch.zeros(self.N, dtype=torch.long, device=dev)
-        self.last_action = torch.zeros(self.N, self.J, device=dev)
-        self.start_bin = torch.zeros(self.N, dtype=torch.long, device=dev)
-        self.ep_disc_ret = torch.zeros(self.N, device=dev)
-        self.ep_ret = torch.zeros(self.N, device=dev)
-        self.G_max = MAX_STEP_REWARD / (1 - gamma)
-        self.done_eval = torch.zeros(self.N, dtype=torch.bool, device=dev)
-        self.failed_eval = torch.zeros(self.N, dtype=torch.bool, device=dev)
-        self.reset(torch.arange(self.N, device=dev))
-
-    @property
-    def num_envs(self) -> int:
-        return self.N
+        self.action_scale = torch.tensor(robot.action_scale_list(), device=device)
+        self.simulation_parameters = initialize_simulation_parameters(self)
+        self.motion_frame_index = torch.zeros(num_envs, dtype=torch.long, device=device)
+        self.episode_step = torch.zeros(num_envs, dtype=torch.long, device=device)
+        self.last_action = torch.zeros(num_envs, self.num_joints, device=device)
+        self.episode_return = torch.zeros(num_envs, device=device)
+        self.reset(torch.arange(num_envs, device=device))
 
     def state(self):
-        idx = self.robot.indexing
-        root_q = self.sim.data.qpos[:, idx.free_joint_q_adr]
-        root_joint_velocity = self.sim.data.qvel[:, idx.free_joint_v_adr]
-        base_pos_w = root_q[:, :3] - self.scene.env_origins
-        base_rot_mat_w = quat_to_mat(root_q[:, 3:7])
-        base_ang_vel_w = (base_rot_mat_w @ root_joint_velocity[:, 3:6].unsqueeze(-1)).squeeze(-1)
-        d = self.robot.data
+        robot_indices = self.robot.indexing
+        root_joint_pos = self.simulation.data.qpos[:, robot_indices.free_joint_q_adr]
+        root_joint_vel = self.simulation.data.qvel[:, robot_indices.free_joint_v_adr]
+        base_pos_w = root_joint_pos[:, :3] - self.scene.env_origins
+        base_rot_mat_w = quat_to_mat(root_joint_pos[:, 3:7])
+        base_lin_vel_w = root_joint_vel[:, :3].clone()
+        base_ang_vel_w = (base_rot_mat_w @ root_joint_vel[:, 3:6, None]).squeeze(-1)
+        joint_pos = self.robot.data.joint_pos.clone()
+        joint_vel = self.robot.data.joint_vel.clone()
+        return (base_pos_w, base_rot_mat_w, base_lin_vel_w, base_ang_vel_w, joint_pos, joint_vel)
+
+    def sample_motion_frames(self, num_samples):
+        bin_indices = torch.randint(self.motion.num_bins, (num_samples,), device=self.device)
+        start_frames = self.motion.bin_start[bin_indices]
+        end_frames = torch.minimum(start_frames + 50, self.motion.clip_end[self.motion.bin_clip[bin_indices]])
         return (
-            base_pos_w,
-            base_rot_mat_w,
-            root_joint_velocity[:, :3].clone(),
-            base_ang_vel_w,
-            d.joint_pos.clone(),
-            d.joint_vel.clone(),
+            start_frames + (torch.rand(num_samples, device=self.device) * (end_frames - start_frames)).long()
         )
 
-    def sample_frames(self, n: int, gate: torch.Tensor | None = None) -> tuple[torch.Tensor, torch.Tensor]:
-        bins = torch.randint(self.motion.num_bins, (n,), device=self.device)
-        start = self.motion.bin_start[bins]
-        end = torch.minimum(start + 50, self.motion.clip_end[self.motion.bin_clip[bins]])
-        frames = start + (torch.rand(n, device=self.device) * (end - start)).long()
-        return (frames, bins)
-
-    def reset(self, env_ids: torch.Tensor, frames: torch.Tensor | None = None):
-        if len(env_ids) == 0:
-            return
-        n = len(env_ids)
-        dev = self.device
-        if frames is None:
-            frames, bins = self.sample_frames(n)
-        else:
-            bins = self.motion.frame_bin[frames]
-        m, c = (self.motion, self.spec.dr)
+    def reset(self, environment_indices):
+        num_resets = len(environment_indices)
+        reset_config = self.robot_description.domain_randomization
+        motion_frames = self.sample_motion_frames(num_resets)
         base_pos_w, base_rot_mat_w, base_lin_vel_w, base_ang_vel_w, joint_pos, joint_vel = (
-            x.clone() for x in m.ref_state(frames)
+            values.clone() for values in self.motion.ref_state(motion_frames)
         )
-        if self.reset_noise:
-            u = lambda half: torch.stack([torch.empty(n, device=dev).uniform_(-h, h) for h in half], -1)
-            base_pos_w = base_pos_w + u(c.reset_pos)
-            base_rot_mat_w = so3_exp(u(c.reset_rot)) @ base_rot_mat_w
-            base_lin_vel_w = base_lin_vel_w + u(c.reset_lin_vel)
-            base_ang_vel_w = base_ang_vel_w + u(c.reset_ang_vel)
-            joint_pos = joint_pos + torch.empty_like(joint_pos).uniform_(
-                -c.reset_joint_pos, c.reset_joint_pos
+
+        def uniform_noise(limits):
+            return torch.stack(
+                [torch.empty(num_resets, device=self.device).uniform_(-limit, limit) for limit in limits], -1
             )
-            if c.reset_joint_vel > 0:
-                joint_vel = joint_vel + torch.empty_like(joint_vel).uniform_(
-                    -c.reset_joint_vel, c.reset_joint_vel
-                )
-        joint_pos = torch.clamp(
-            joint_pos, self.mdp.kin.joint_pos_lower_limit, self.mdp.kin.joint_pos_upper_limit
+
+        base_pos_w += uniform_noise(reset_config.reset_pos)
+        base_rot_mat_w = so3_exp(uniform_noise(reset_config.reset_rot)) @ base_rot_mat_w
+        base_lin_vel_w += uniform_noise(reset_config.reset_lin_vel)
+        base_ang_vel_w += uniform_noise(reset_config.reset_ang_vel)
+        joint_pos += torch.empty_like(joint_pos).uniform_(
+            -reset_config.reset_joint_pos, reset_config.reset_joint_pos
         )
-        self.sim.reset(env_ids)
-        self.scene.reset(env_ids)
-        pose = torch.cat((base_pos_w + self.scene.env_origins[env_ids], mat_to_quat(base_rot_mat_w)), -1)
-        self.robot.write_root_link_pose_to_sim(pose, env_ids=env_ids)
+        joint_vel += torch.empty_like(joint_vel).uniform_(
+            -reset_config.reset_joint_vel, reset_config.reset_joint_vel
+        )
+        joint_pos = joint_pos.clamp(
+            self.task.kinematics.joint_pos_lower_limit, self.task.kinematics.joint_pos_upper_limit
+        )
+        self.simulation.reset(environment_indices)
+        self.scene.reset(environment_indices)
+        root_pose_w = torch.cat(
+            (base_pos_w + self.scene.env_origins[environment_indices], mat_to_quat(base_rot_mat_w)), -1
+        )
+        self.robot.write_root_link_pose_to_sim(root_pose_w, env_ids=environment_indices)
         self.robot.write_root_link_velocity_to_sim(
-            torch.cat((base_lin_vel_w, base_ang_vel_w), -1), env_ids=env_ids
+            torch.cat((base_lin_vel_w, base_ang_vel_w), -1), env_ids=environment_indices
         )
-        self.robot.write_joint_position_to_sim(joint_pos, env_ids=env_ids)
-        self.robot.write_joint_velocity_to_sim(joint_vel, env_ids=env_ids)
-        self.robot.set_joint_position_target(joint_pos, env_ids=env_ids)
-        self.motion_frame_index[env_ids] = frames
-        self.episode_step.index_fill_(0, env_ids, 0)
-        self.last_action.index_fill_(0, env_ids, 0.0)
-        self.start_bin[env_ids] = bins
-        self.ep_disc_ret.index_fill_(0, env_ids, 0.0)
-        self.ep_ret.index_fill_(0, env_ids, 0.0)
-        self.randomizer.reset(self.simulation_parameters, env_ids)
-        self.obs_fresh.index_fill_(0, env_ids, True)
+        self.robot.write_joint_position_to_sim(joint_pos, env_ids=environment_indices)
+        self.robot.write_joint_velocity_to_sim(joint_vel, env_ids=environment_indices)
+        self.robot.set_joint_position_target(joint_pos, env_ids=environment_indices)
+        self.motion_frame_index[environment_indices] = motion_frames
+        self.episode_step[environment_indices] = 0
+        self.last_action[environment_indices] = 0
+        self.episode_return[environment_indices] = 0
+        randomize_joint_pos_offsets(self.simulation_parameters, environment_indices, self.robot_description)
 
-    def refresh(self):
-        """Recompute derived quantities (body poses) so the robot's mjlab data match ``state()`` after a reset."""
-        self.sim.forward()
+    def observe(self):
+        observation = self.task.observation(
+            self.state(), self.last_action, self.simulation_parameters, self.motion_frame_index
+        )
+        return self.task.add_noise(observation)
 
-    def _imu_site(self) -> tuple[torch.Tensor, torch.Tensor]:
-        d = self.sim.data.sensordata
-        return (d[:, self._gyro_adr : self._gyro_adr + 3], d[:, self._accel_adr : self._accel_adr + 3])
-
-    def observe(self) -> torch.Tensor:
-        """Policy observation of the current state (training: noisy; eval: noise- and delay-free)."""
-        S = self.state()
-        if not self.pipe.stateful:
-            o = self.mdp.obs(S, self.last_action, self.simulation_parameters, self.motion_frame_index)
-            self._obs = self.mdp.add_noise(o) if self.randomize else o
-            return self._obs
-        if self._obs_state is None or self.obs_fresh.any():
-            fresh = self.obs_fresh.unsqueeze(-1)
-            Rs = S[1] @ self.pipe.site_rot if self.spec.sensing.imu is not None else S[1]
-            gyro = (Rs.transpose(-1, -2) @ S[3].unsqueeze(-1)).squeeze(-1)
-            accel = Rs[..., 2, :] * 9.81
-            init = self.pipe.init_state(S, self.simulation_parameters, gyro, accel)
-            init["prev_raw"] = self.pipe.raw_obs(
-                init, S, self.last_action, self.simulation_parameters, self.motion_frame_index
-            )
-            st = (
-                init
-                if self._obs_state is None
-                else {k: torch.where(fresh, init[k], x) for k, x in self._obs_state.items()}
-            )
-        else:
-            st = self._obs_state
-        raw = self.pipe.raw_obs(st, S, self.last_action, self.simulation_parameters, self.motion_frame_index)
-        self._obs, self._obs_state = self.pipe.observe(st, raw, noise=self.randomize, delay=self.randomize)
-        self.obs_fresh[:] = False
-        return self._obs
-
-    def _push(self, done: torch.Tensor) -> torch.Tensor:
-        """Root velocity kicks at random intervals (between steps, after s1 is recorded)."""
-        self.push_timer -= CONTROL_DT
-        due = (self.push_timer <= 0) & ~done
-        ids = due.nonzero(as_tuple=False).squeeze(-1)
-        if len(ids) > 0:
-            c = self.spec.dr
-            _, _, base_lin_vel_w, base_ang_vel_w, _, _ = self.state()
-            kick = torch.stack(
-                [torch.empty(len(ids), device=self.device).uniform_(-h, h) for h in c.push_velocity], -1
-            )
-            vel = torch.cat((base_lin_vel_w[ids], base_ang_vel_w[ids]), -1) + kick
-            self.robot.write_root_link_velocity_to_sim(vel, env_ids=ids)
-            self.push_timer[ids] = torch.empty(len(ids), device=self.device).uniform_(*c.push_interval_s)
-        return due
-
-    def step(self, action: torch.Tensor) -> dict:
-        out = self.step_core(action)
-        if self.eval_mode:
-            self.failed_eval |= out["term"] & ~self.done_eval
-            self.done_eval |= out["done"]
-            return out
-        return self.step_tail(out)
-
-    def step_core(self, action: torch.Tensor) -> dict:
-        """The step up to the episode ends: no host synchronization (pushes aside), so it can be captured in a CUDA
-        graph (train.py --collect_graph). The simulator wrapper rebinds f, episode_step and a_prev."""
-        if self.pipe.stateful and self._obs is None:
-            self.observe()
-        o, o_state = (self._obs, self._obs_state)
-        self._obs = None
-        S = self.state()
-        motion_frame_index = self.motion_frame_index.clone()
-        simulation_parameters = self.simulation_parameters.clone()
+    def step(self, action):
+        state = self.state()
         last_action = self.last_action.clone()
+        motion_frame_index = self.motion_frame_index.clone()
         episode_step = self.episode_step.clone()
-        target = self.default_joint_pos + simulation_parameters[:, 1 : 1 + self.J] + self.alpha * action
-        self.robot.set_joint_position_target(target)
+        joint_pos_offset = self.simulation_parameters[:, 1 : 1 + self.num_joints]
+        target_joint_pos = self.default_joint_pos + joint_pos_offset + self.action_scale * action
+        self.robot.set_joint_position_target(target_joint_pos)
         for _ in range(DECIMATION):
             self.scene.write_data_to_sim()
-            self.sim.step()
+            self.simulation.step()
             self.scene.update(PHYSICS_DT)
-            if self.pipe.stateful:
-                gyro, accel = self._imu_site() if self.spec.sensing.imu is not None else (None, None)
-                self._obs_state = self.pipe.filter_update(
-                    self._obs_state,
-                    self.robot.data.joint_vel,
-                    gyro,
-                    accel,
-                    self.simulation_parameters,
-                    PHYSICS_DT,
-                    noise=self.randomize,
-                )
-        S1 = self.state()
-        f1 = motion_frame_index + 1
-        r, terms = self.mdp.reward(S1, f1, action, last_action, terms=True)
-        term = self.mdp.termination(S1, f1)
-        clip_end = self.motion.clip_end[self.motion.clip_id[motion_frame_index]]
-        timeout = (f1 >= clip_end) | (episode_step + 1 >= self.max_episode_steps)
-        done = term | timeout
-        out = {
-            "state": flatten_state(S),
-            "action": action.clone(),
-            "last_action": last_action,
-            "motion_frame_index": motion_frame_index,
-            "next_state": flatten_state(S1),
-            "reward": r,
-            "term": term,
-            "done": done,
-            "episode_step": episode_step,
-            "simulation_parameters": simulation_parameters,
-            "terms": terms,
-            "transition_cut": done,
-        }
-        if self.pipe.stateful:
-            out["observation"], out["observation_pipeline_state"] = (o, self.pipe.pack(o_state))
-        if self.push_enabled:
-            out["transition_cut"] = done | self._push(done)
-        self.ep_disc_ret += self.gamma ** episode_step.float() * r
-        self.ep_ret += r
-        self.motion_frame_index = f1
-        self.episode_step = episode_step + 1
+        next_state = self.state()
+        next_motion_frame_index = motion_frame_index + 1
+        reward = self.task.reward(next_state, next_motion_frame_index, action, last_action)
+        termination = self.task.termination(next_state, next_motion_frame_index)
+        clip_end_frame = self.motion.clip_end[self.motion.clip_id[motion_frame_index]]
+        timeout = (next_motion_frame_index >= clip_end_frame) | (episode_step + 1 >= self.max_episode_steps)
+        done = termination | timeout
+        transition = dict(
+            state=flatten_state(state),
+            next_state=flatten_state(next_state),
+            action=action.clone(),
+            last_action=last_action,
+            motion_frame_index=motion_frame_index,
+            episode_step=episode_step,
+            simulation_parameters=self.simulation_parameters.clone(),
+            reward=reward,
+            termination=termination,
+            done=done,
+            transition_cut=done,
+        )
+        self.motion_frame_index = next_motion_frame_index
+        self.episode_step += 1
         self.last_action = action.clone()
-        return out
-
-    def step_tail(self, out: dict) -> dict:
-        done_indices = out["done"].nonzero(as_tuple=False).squeeze(-1)
-        if len(done_indices) > 0:
-            episode_length = self.episode_step[done_indices].float()
-            out["ep_len"] = episode_length
-            out["ep_ret_norm"] = self.ep_ret[done_indices] / (episode_length * MAX_STEP_REWARD)
-            self.reset(done_indices)
-        return out
+        self.episode_return += reward
+        completed_environment_indices = done.nonzero().flatten()
+        if len(completed_environment_indices) > 0:
+            episode_length = self.episode_step[completed_environment_indices].float()
+            transition["episode_length"] = episode_length
+            transition["normalized_episode_return"] = self.episode_return[completed_environment_indices] / (
+                episode_length * MAX_STEP_REWARD
+            )
+            self.reset(completed_environment_indices)
+        return transition

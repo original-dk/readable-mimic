@@ -1,27 +1,21 @@
-"""CPU integration of the actual FK, motion, replay and gradient updates (no fake WM)."""
+from readable_mimic.simulation_parameters import default_simulation_parameters
 
+"CPU integration of the actual FK, motion, replay and gradient updates (no fake WM)."
 from pathlib import Path
 from types import SimpleNamespace
-
 import mujoco
 import numpy as np
 import pytest
 import torch
-
 from readable_mimic.config import load_config
-from readable_mimic.mdp import flatten_state, unflatten_state
+from readable_mimic.task import flatten_state, unflatten_state
 from readable_mimic.robot import RobotSpec
 from readable_mimic.trainer import Trainer
 
 
 @pytest.fixture
 def tiny_trainer(tmp_path, monkeypatch):
-    xml = """<mujoco><worldbody><body name="pelvis"><freejoint/>
-    <geom type="sphere" size="0.05" mass="1"/>
-    <body name="left_ankle_roll_link" pos="0 .1 -.2"><joint name="left_pitch_joint" axis="0 1 0" range="-2 2"/>
-    <geom type="sphere" size=".04" mass=".2"/></body>
-    <body name="right_ankle_roll_link" pos="0 -.1 -.2"><joint name="right_pitch_joint" axis="0 1 0" range="-2 2"/>
-    <geom type="sphere" size=".04" mass=".2"/></body></body></worldbody></mujoco>"""
+    xml = '<mujoco><worldbody><body name="pelvis"><freejoint/>\n    <geom type="sphere" size="0.05" mass="1"/>\n    <body name="left_ankle_roll_link" pos="0 .1 -.2"><joint name="left_pitch_joint" axis="0 1 0" range="-2 2"/>\n    <geom type="sphere" size=".04" mass=".2"/></body>\n    <body name="right_ankle_roll_link" pos="0 -.1 -.2"><joint name="right_pitch_joint" axis="0 1 0" range="-2 2"/>\n    <geom type="sphere" size=".04" mass=".2"/></body></body></worldbody></mujoco>'
     model_path = tmp_path / "robot.xml"
     model_path.write_text(xml)
     motion = np.zeros((120, 9), dtype=np.float32)
@@ -33,7 +27,7 @@ def tiny_trainer(tmp_path, monkeypatch):
 
     def load_motion(path):
         data = np.loadtxt(path, delimiter=",")
-        return data[:, :3], data[:, 3:7], data[:, 7:], 50.0
+        return (data[:, :3], data[:, 3:7], data[:, 7:], 50.0)
 
     robot = RobotSpec(
         "tiny",
@@ -71,7 +65,7 @@ def tiny_trainer(tmp_path, monkeypatch):
         frames = torch.arange(4) + step + 10
         state = trainer.motion.ref_state(frames)
         next_state = trainer.motion.ref_state(frames + 1)
-        parameters = trainer.parameter_layout.center.expand(4, -1).clone()
+        parameters = default_simulation_parameters(trainer.robot, trainer.device).expand(4, -1).clone()
         action = torch.zeros(4, 2)
         transition = dict(
             state=flatten_state(state),
@@ -79,20 +73,22 @@ def tiny_trainer(tmp_path, monkeypatch):
             action=action,
             last_action=action,
             simulation_parameters=parameters,
-            reward=trainer.mdp.reward(next_state, frames + 1, action, action),
+            reward=trainer.task.reward(next_state, frames + 1, action, action),
             motion_frame_index=frames,
             episode_step=torch.full((4,), step),
             done=torch.zeros(4, dtype=torch.bool),
             transition_cut=torch.zeros(4, dtype=torch.bool),
         )
         trainer.buffer.add(transition)
-        observation = trainer.mdp.obs(state, action, parameters, frames)
-        trainer.actor.obs_norm.update(observation)
-        trainer.actor.goal_norm.update(trainer.motion.command(frames, config.goal_frames))
-        inputs, targets, increments = trainer.wm_norm_data(state, next_state, action, action, parameters)
-        trainer.world_model.in_norm.update(inputs)
-        trainer.world_model.out_norm.update(targets)
-        trainer.world_model.inc_norm.update(increments)
+        observation = trainer.task.observation(state, action, parameters, frames)
+        trainer.actor.observation_normalizer.update(observation)
+        trainer.actor.command_normalizer.update(trainer.motion.command(frames, config.goal_frames))
+        inputs, targets, increments = trainer.world_model_normalization_data(
+            state, next_state, action, action, parameters
+        )
+        trainer.world_model.input_normalizer.update(inputs)
+        trainer.world_model.output_normalizer.update(targets)
+        trainer.world_model.increment_normalizer.update(increments)
     return trainer
 
 
@@ -113,15 +109,14 @@ def test_fk_matches_mujoco_and_has_gradients(tiny_trainer):
     positions, rotations, linear, angular = trainer.kinematics.forward(*state)
     for index, name in enumerate(trainer.robot.tracked_bodies):
         body = model.body(name).id
-        np.testing.assert_allclose(positions[0, index].detach(), data.xpos[body], atol=1e-6)
-        np.testing.assert_allclose(rotations[0, index].detach(), data.xmat[body].reshape(3, 3), atol=1e-6)
+        np.testing.assert_allclose(positions[0, index].detach(), data.xpos[body], atol=1e-06)
+        np.testing.assert_allclose(rotations[0, index].detach(), data.xmat[body].reshape(3, 3), atol=1e-06)
         velocity = np.zeros(6)
         mujoco.mj_objectVelocity(model, data, mujoco.mjtObj.mjOBJ_BODY, body, velocity, 0)
-        # mj_objectVelocity reports body COM linear velocity; FK uses link origin.
         offset = data.xpos[body] - data.xipos[body]
         origin_linear = velocity[3:] + np.cross(velocity[:3], offset)
-        np.testing.assert_allclose(angular[0, index].detach(), velocity[:3], atol=1e-6)
-        np.testing.assert_allclose(linear[0, index].detach(), origin_linear, atol=1e-6)
+        np.testing.assert_allclose(angular[0, index].detach(), velocity[:3], atol=1e-06)
+        np.testing.assert_allclose(linear[0, index].detach(), origin_linear, atol=1e-06)
     rotations.sum().backward()
     assert torch.isfinite(state[4].grad).all()
 
@@ -129,26 +124,26 @@ def test_fk_matches_mujoco_and_has_gradients(tiny_trainer):
 def test_full_training_updates_and_checkpoint(tiny_trainer, tmp_path):
     trainer = tiny_trainer
     before_world_model = [value.detach().clone() for value in trainer.world_model.parameters()]
-    losses = trainer.wm_update()
-    assert all(torch.isfinite(value).all() for value in losses)
+    losses = trainer.update_world_model()
+    assert all((torch.isfinite(value).all() for value in losses))
     assert any(
-        not torch.equal(old, new) for old, new in zip(before_world_model, trainer.world_model.parameters())
+        (not torch.equal(old, new) for old, new in zip(before_world_model, trainer.world_model.parameters()))
     )
     before_actor = [value.detach().clone() for value in trainer.actor.parameters()]
     before_critic = [value.detach().clone() for value in trainer.critic.parameters()]
     frozen_model = [value.detach().clone() for value in trainer.world_model.parameters()]
-    metrics = trainer.policy_update()
-    assert all(torch.isfinite(value).all() for value in metrics)
-    assert any(not torch.equal(old, new) for old, new in zip(before_actor, trainer.actor.parameters()))
-    assert any(not torch.equal(old, new) for old, new in zip(before_critic, trainer.critic.parameters()))
-    assert all(torch.equal(old, new) for old, new in zip(frozen_model, trainer.world_model.parameters()))
+    metrics = trainer.update_actor()
+    assert all((torch.isfinite(value).all() for value in metrics))
+    assert any((not torch.equal(old, new) for old, new in zip(before_actor, trainer.actor.parameters())))
+    assert any((not torch.equal(old, new) for old, new in zip(before_critic, trainer.critic.parameters())))
+    assert all((torch.equal(old, new) for old, new in zip(frozen_model, trainer.world_model.parameters())))
     path = tmp_path / "last.pt"
     trainer.save(path)
-    expected = trainer.actor.dec[-1].weight.detach().clone()
+    expected = trainer.actor.action_decoder[-1].weight.detach().clone()
     with torch.no_grad():
-        trainer.actor.dec[-1].weight.add_(1)
+        trainer.actor.action_decoder[-1].weight.add_(1)
     trainer.load(path)
-    torch.testing.assert_close(trainer.actor.dec[-1].weight, expected)
+    torch.testing.assert_close(trainer.actor.action_decoder[-1].weight, expected)
 
 
 def test_state_and_replay_boundaries(tiny_trainer):
@@ -174,11 +169,15 @@ def test_collect_and_training_loop(tiny_trainer, tmp_path, monkeypatch):
         def __init__(self):
             self.model = mujoco.MjModel.from_xml_path(trainer.robot.mjcf_path)
             self.model.opt.timestep = 0.005
+            self.model.opt.integrator = mujoco.mjtIntegrator.mjINT_IMPLICITFAST
+            self.model.dof_armature[6:] = 0.01
             self.data = [mujoco.MjData(self.model) for _ in range(4)]
             self.episode_step = torch.zeros(4, dtype=torch.long)
             self.motion_frame_index = torch.full((4,), 10, dtype=torch.long)
             self.last_action = torch.zeros(4, 2)
-            self.parameters = trainer.parameter_layout.center.expand(4, -1).clone()
+            self.parameters = (
+                default_simulation_parameters(trainer.robot, trainer.device).expand(4, -1).clone()
+            )
             for data in self.data:
                 data.qpos[:3] = [0, 0, 0.7]
                 data.qpos[3:7] = [1, 0, 0, 0]
@@ -200,7 +199,9 @@ def test_collect_and_training_loop(tiny_trainer, tmp_path, monkeypatch):
             )
 
         def observe(self):
-            return trainer.mdp.obs(self.state(), self.last_action, self.parameters, self.motion_frame_index)
+            return trainer.task.observation(
+                self.state(), self.last_action, self.parameters, self.motion_frame_index
+            )
 
         def step(self, action):
             state = self.state()
@@ -225,7 +226,7 @@ def test_collect_and_training_loop(tiny_trainer, tmp_path, monkeypatch):
                 episode_step=steps,
                 done=torch.zeros(4, dtype=torch.bool),
                 transition_cut=torch.zeros(4, dtype=torch.bool),
-                reward=trainer.mdp.reward(next_state, frames + 1, action, last_action),
+                reward=trainer.task.reward(next_state, frames + 1, action, last_action),
             )
 
     monkeypatch.setattr(
@@ -241,3 +242,53 @@ def test_collect_and_training_loop(tiny_trainer, tmp_path, monkeypatch):
     assert trainer.iteration == 2
     assert (tmp_path / "run/last.pt").is_file()
     assert len((tmp_path / "run/metrics.jsonl").read_text().splitlines()) == 2
+
+
+def test_simulation_parameters_match_applied_physics(tiny_trainer):
+    from readable_mimic.simulation_parameters import (
+        initialize_simulation_parameters,
+        randomize_joint_pos_offsets,
+    )
+
+    trainer = tiny_trainer
+    default_body_positions = torch.zeros(3, 3)
+    simulation = SimpleNamespace(
+        model=SimpleNamespace(geom_friction=torch.zeros(4, 3, 3), body_ipos=torch.zeros(4, 3, 3)),
+        mj_model=SimpleNamespace(geom_bodyid=np.array([0, 1, 2])),
+        expand_model_fields=lambda names: None,
+        get_default_field=lambda name: default_body_positions,
+    )
+    environment = SimpleNamespace(
+        robot_description=trainer.robot,
+        simulation=simulation,
+        num_envs=4,
+        device="cpu",
+        robot=SimpleNamespace(
+            indexing=SimpleNamespace(geom_ids=torch.tensor([1, 2]), body_ids=torch.tensor([1, 2])),
+            find_bodies=lambda name: ([0], [name]),
+        ),
+    )
+    parameters = initialize_simulation_parameters(environment)
+    torch.testing.assert_close(simulation.model.geom_friction[:, 1, 0], parameters[:, 0])
+    torch.testing.assert_close(simulation.model.geom_friction[:, 2, 0], parameters[:, 0])
+    torch.testing.assert_close(simulation.model.body_ipos[:, 1], parameters[:, 3:6])
+    before = parameters.clone()
+    randomize_joint_pos_offsets(parameters, torch.tensor([1, 3]), trainer.robot)
+    torch.testing.assert_close(parameters[[0, 2]], before[[0, 2]])
+    torch.testing.assert_close(parameters[:, 0], before[:, 0])
+    torch.testing.assert_close(parameters[:, 3:], before[:, 3:])
+    assert parameters[:, 1:3].abs().le(0.01).all()
+
+
+def test_observation_fields_and_context_normalization(tiny_trainer):
+    trainer = tiny_trainer
+    state = trainer.motion.ref_state(torch.tensor([12]))
+    parameters = default_simulation_parameters(trainer.robot, "cpu")[None].clone()
+    parameters[:, 1:3] = torch.tensor([[0.004, -0.006]])
+    last_action = torch.tensor([[0.2, -0.3]])
+    observation = trainer.task.observation(state, last_action, parameters, torch.tensor([12]))
+    torch.testing.assert_close(observation[:, :2], state[4] - parameters[:, 1:3])
+    torch.testing.assert_close(observation[:, 10:12], last_action)
+    normalized = trainer.normalize_parameters(parameters)
+    torch.testing.assert_close(normalized[:, 1:3], torch.tensor([[0.4, -0.6]]))
+    assert observation.shape == (1, 18)

@@ -2,8 +2,8 @@
 
 import torch
 from torch import nn
-from .mdp import flatten_state, unflatten_state
-from .networks import WorldModel
+from .task import flatten_state, unflatten_state
+from .world_model import WorldModel
 from .objective import actor_objective
 
 
@@ -13,24 +13,34 @@ def set_requires_grad(module, enabled):
 
 
 class Updates:
-    def wm_rollout(self, start, action, last_action, simulation_parameters):
+    def world_model_rollout(self, start, action, last_action, simulation_parameters):
         state = unflatten_state(start[:, 0])
-        preds = []
-        for j in range(self.config.wm_window):
+        predicted_states = []
+        for step_index in range(self.config.wm_window):
             state = self.world_model.step(
-                state, action[:, j], last_action[:, j], self.normalize_parameters(simulation_parameters[:, j])
+                state,
+                action[:, step_index],
+                last_action[:, step_index],
+                self.normalize_parameters(simulation_parameters[:, step_index]),
             )
-            preds.append(state)
-        return tuple((torch.stack([P[i] for P in preds], 1) for i in range(6)))
+            predicted_states.append(state)
+        return tuple(
+            (
+                torch.stack(
+                    [predicted_step_state[component_index] for predicted_step_state in predicted_states], 1
+                )
+                for component_index in range(6)
+            )
+        )
 
-    def wm_err(self, predicted_state, next_states, mask):
-        std = torch.maximum(self.world_model.inc_norm.std(), self.error_floor)
+    def world_model_loss(self, predicted_state, next_states, mask):
+        error_scale = torch.maximum(self.world_model.increment_normalizer.std(), self.state_error_floor)
         next_state = unflatten_state(next_states)
-        e = (self.world_model.state_error(predicted_state, next_state) / std) ** 2
-        e = e.mean(-1)
-        return ((e * mask).sum() / next_states.shape[0], e[:, -1])
+        squared_state_error = (self.world_model.state_error(predicted_state, next_state) / error_scale) ** 2
+        squared_state_error = squared_state_error.mean(-1)
+        return ((squared_state_error * mask).sum() / next_states.shape[0], squared_state_error[:, -1])
 
-    def imag_step(
+    def imagine_step(
         self,
         state,
         observation_history,
@@ -42,34 +52,44 @@ class Updates:
     ):
         action = self.actor(observation_history, command)
         next_state = self.world_model.step(state, action, last_action, normalized_simulation_parameters)
-        f1 = motion_frame_index + 1
-        next_observation = self.mdp.add_noise(self.mdp.obs(next_state, action, simulation_parameters, f1))
+        next_motion_frame_index = motion_frame_index + 1
+        next_observation = self.task.add_noise(
+            self.task.observation(next_state, action, simulation_parameters, next_motion_frame_index)
+        )
         observation_history = torch.cat((observation_history[:, 1:], next_observation.unsqueeze(1)), 1)
-        return (next_state, action, observation_history, f1, self.motion.command(f1, self.goal_frames))
-
-    def reward_term(self, state, motion_frame_index, action, last_action):
         return (
-            self.mdp.reward(
-                state, motion_frame_index, action, last_action, w_contact=self.config.contact_reward
-            ),
-            self.mdp.soft_termination(state, motion_frame_index),
+            next_state,
+            action,
+            observation_history,
+            next_motion_frame_index,
+            self.motion.command(next_motion_frame_index, self.goal_frames),
         )
 
-    def gae_targets(self, state_values, detached_rewards, detached_terminations):
+    def reward_and_termination(self, state, motion_frame_index, action, last_action):
+        return (
+            self.task.reward(
+                state, motion_frame_index, action, last_action, w_contact=self.config.contact_reward
+            ),
+            self.task.soft_termination(state, motion_frame_index),
+        )
+
+    def value_targets(self, state_values, detached_rewards, detached_terminations):
         """GAE(lambda) returns over the imagined transitions; V is (H+1, B), bootstrapped from V[-1]."""
         return_target = state_values[-1]
         targets = []
-        for t in range(self.horizon - 1, -1, -1):
-            return_target = detached_rewards[t] + self.config.gamma * (1 - detached_terminations[t]) * (
-                (1 - self.config.lam) * state_values[t + 1] + self.config.lam * return_target
-            )
+        for step_index in range(self.horizon - 1, -1, -1):
+            return_target = detached_rewards[step_index] + self.config.gamma * (
+                1 - detached_terminations[step_index]
+            ) * ((1 - self.config.lam) * state_values[step_index + 1] + self.config.lam * return_target)
             targets.append(return_target)
         return torch.stack(targets[::-1])
 
     def critic_loss(self, critic_features, value_targets):
         return ((self.critic(critic_features) - value_targets) ** 2).mean()
 
-    def wm_norm_data(self, initial_state, next_state, action, last_action, simulation_parameters):
+    def world_model_normalization_data(
+        self, initial_state, next_state, action, last_action, simulation_parameters
+    ):
         return (
             self.world_model.inputs(
                 initial_state, action, last_action, self.normalize_parameters(simulation_parameters)
@@ -80,64 +100,74 @@ class Updates:
 
     def critic_input(self, state, motion_frame_index, normalized_simulation_parameters, command):
         return torch.cat(
-            (self.mdp.critic_features(state, motion_frame_index, normalized_simulation_parameters), command),
+            (self.task.critic_features(state, motion_frame_index, normalized_simulation_parameters), command),
             -1,
         )
 
-    def mirror_windows(self, windows: dict, n: int) -> dict:
+    def mirror_windows(self, windows: dict, num_samples: int) -> dict:
         """Replace the first n windows by their mirror images (states, actions, sim context)."""
         out = dict(windows)
-        ms = lambda x: flatten_state(self.mirror.state(unflatten_state(x)))
-        for k, fn in (
-            ("state", ms),
-            ("next_state", ms),
+        mirror_flat_state = lambda x: flatten_state(self.mirror.state(unflatten_state(x)))
+        for field_name, mirror_function in (
+            ("state", mirror_flat_state),
+            ("next_state", mirror_flat_state),
             ("action", self.mirror.joints),
             ("last_action", self.mirror.joints),
             ("simulation_parameters", self.mirror.simulation_parameters),
         ):
-            out[k] = torch.cat((fn(windows[k][:n]), windows[k][n:]))
+            out[field_name] = torch.cat(
+                (mirror_function(windows[field_name][:num_samples]), windows[field_name][num_samples:])
+            )
         return out
 
-    def wm_update(self):
+    def update_world_model(self):
         windows = self.buffer.sample_windows(self.config.wm_batch, self.config.wm_window)
         if self.mirror is not None:
             windows = self.mirror_windows(windows, int(self.config.wm_batch * self.config.wm_mirror))
-        predicted_state = self.wm_rollout(
+        predicted_state = self.world_model_rollout(
             windows["state"], windows["action"], windows["last_action"], windows["simulation_parameters"]
         )
-        loss, e_last = self.wm_err(predicted_state, windows["next_state"], windows["mask"])
+        loss, e_last = self.world_model_loss(predicted_state, windows["next_state"], windows["mask"])
         self.world_model_optimizer.zero_grad(set_to_none=True)
         loss.backward()
         nn.utils.clip_grad_norm_(self.world_model.parameters(), 1.0)
         self.world_model_optimizer.step()
-        m = windows["mask"][:, -1]
-        return (loss.detach() / self.config.wm_window, (e_last.detach() * m).sum() / m.sum().clamp(min=1))
+        last_step_mask = windows["mask"][:, -1]
+        return (
+            loss.detach() / self.config.wm_window,
+            (e_last.detach() * last_step_mask).sum() / last_step_mask.sum().clamp(min=1),
+        )
 
     def sample_valid_starts(self, batch_size: int):
-        starts, hists, n = ([], [], 0)
+        starts, histories, num_samples = ([], [], 0)
         for attempt in range(100):
-            if n >= batch_size:
+            if num_samples >= batch_size:
                 break
             start, history = self.buffer.sample_starts(2 * batch_size, self.history_length)
             motion_frame_index = start["motion_frame_index"]
-            ok = (
+            valid_starts = (
                 motion_frame_index + self.horizon
                 <= self.motion.clip_end[self.motion.clip_id[motion_frame_index]]
             )
-            idx = ok.nonzero(as_tuple=False).squeeze(-1)[: batch_size - n]
+            selected_indices = valid_starts.nonzero(as_tuple=False).squeeze(-1)[: batch_size - num_samples]
             (
-                starts.append({k: value[idx] for k, value in start.items()}),
-                hists.append({k: value[idx] for k, value in history.items()}),
+                starts.append({field_name: value[selected_indices] for field_name, value in start.items()}),
+                histories.append(
+                    {field_name: value[selected_indices] for field_name, value in history.items()}
+                ),
             )
-            n += len(idx)
-        if n < batch_size:
+            num_samples += len(selected_indices)
+        if num_samples < batch_size:
             raise RuntimeError("No valid rollout starts: collect more data or reduce horizon.")
-        cat = lambda ds: {
-            k: torch.cat([termination_probabilities[k] for termination_probabilities in ds]) for k in ds[0]
+        concatenate_batches = lambda batches: {
+            field_name: torch.cat(
+                [termination_probabilities[field_name] for termination_probabilities in batches]
+            )
+            for field_name in batches[0]
         }
-        return (cat(starts), cat(hists))
+        return (concatenate_batches(starts), concatenate_batches(histories))
 
-    def policy_update(self):
+    def update_actor(self):
         start, history = self.sample_valid_starts(self.config.pi_batch)
         state = unflatten_state(start["state"])
         simulation_parameters, motion_frame_index, last_action = (
@@ -147,13 +177,13 @@ class Updates:
         )
         normalized_simulation_parameters = self.normalize_parameters(simulation_parameters)
         with torch.no_grad():
-            observation_history = self.mdp.obs(
+            observation_history = self.task.observation(
                 unflatten_state(history["state"]),
                 history["last_action"],
                 history["simulation_parameters"],
                 history["motion_frame_index"],
             )
-        observation_history = self.mdp.add_noise(observation_history)
+        observation_history = self.task.add_noise(observation_history)
         set_requires_grad(self.world_model, False)
         set_requires_grad(self.critic, False)
         batch_size = self.config.pi_batch
@@ -167,9 +197,9 @@ class Updates:
             [],
             [],
         )
-        for t in range(self.horizon):
+        for step_index in range(self.horizon):
             rollout_last_actions.append(last_action)
-            state, last_action, observation_history, motion_frame_index, command = self.imag_step(
+            state, last_action, observation_history, motion_frame_index, command = self.imagine_step(
                 state,
                 observation_history,
                 last_action,
@@ -185,9 +215,14 @@ class Updates:
                 rollout_commands.append(command),
             )
         flat = lambda xs: torch.stack(xs).flatten(0, 1)
-        all_states = tuple((flat([step_state[i] for step_state in rollout_states]) for i in range(6)))
+        all_states = tuple(
+            (
+                flat([step_state[component_index] for step_state in rollout_states])
+                for component_index in range(6)
+            )
+        )
         all_frames = flat(rollout_frames)
-        rewards, termination_probabilities = self.reward_term(
+        rewards, termination_probabilities = self.reward_and_termination(
             all_states, all_frames, flat(rollout_actions), flat(rollout_last_actions)
         )
         rewards, termination_probabilities = (
@@ -198,7 +233,7 @@ class Updates:
             self.critic_input(state, motion_frame_index, normalized_simulation_parameters, command)
         )
         actor_return, survival_weights, final_survival = actor_objective(
-            rewards, termination_probabilities, bootstrap_value, self.config.gamma, loop_cumprod=False
+            rewards, termination_probabilities, bootstrap_value, self.config.gamma
         )
         reward_sum = (survival_weights * rewards).detach().sum(0)
         detached_rewards, detached_terminations = (rewards.detach(), termination_probabilities.detach())
@@ -253,12 +288,14 @@ class Updates:
                 (
                     torch.cat(
                         (
-                            initial_state[i].unsqueeze(0),
-                            torch.stack([step_state[i].detach() for step_state in rollout_states]),
+                            initial_state[component_index].unsqueeze(0),
+                            torch.stack(
+                                [step_state[component_index].detach() for step_state in rollout_states]
+                            ),
                         ),
                         0,
                     ).flatten(0, 1)
-                    for i in range(6)
+                    for component_index in range(6)
                 )
             )
             critic_frames = torch.cat(
@@ -275,18 +312,24 @@ class Updates:
             ).view(self.horizon + 1, batch_size, -1)
         self.critic.norm.update(critic_features)
         with torch.no_grad():
-            targets = self.gae_targets(self.critic(critic_features), detached_rewards, detached_terminations)
+            targets = self.value_targets(
+                self.critic(critic_features), detached_rewards, detached_terminations
+            )
         flat_critic_features, flat_value_targets = (
             critic_features[:-1].reshape(-1, critic_features.shape[-1]),
             targets.reshape(-1),
         )
-        n = flat_critic_features.shape[0]
-        mb = n // self.config.critic_minibatches
+        num_samples = flat_critic_features.shape[0]
+        minibatch_size = num_samples // self.config.critic_minibatches
         for _ in range(self.config.critic_epochs):
-            perm = torch.randperm(n, device=self.device)
-            for i in range(self.config.critic_minibatches):
-                idx = perm[i * mb : (i + 1) * mb]
-                value_loss = self.critic_loss(flat_critic_features[idx], flat_value_targets[idx])
+            sample_permutation = torch.randperm(num_samples, device=self.device)
+            for component_index in range(self.config.critic_minibatches):
+                selected_indices = sample_permutation[
+                    component_index * minibatch_size : (component_index + 1) * minibatch_size
+                ]
+                value_loss = self.critic_loss(
+                    flat_critic_features[selected_indices], flat_value_targets[selected_indices]
+                )
                 self.critic_optimizer.zero_grad(set_to_none=True)
                 value_loss.backward()
                 nn.utils.clip_grad_norm_(self.critic.parameters(), 1.0)
