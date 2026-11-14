@@ -1,0 +1,22 @@
+[build-system]
+requires = ["uv_build>=0.8.19,<0.10.0"]
+build-backend = "uv_build"
+
+[project]
+name = "readable-mimic"
+version = "0.1.0"
+description = "Modular FP32 actor-critic world-model motion tracking"
+requires-python = ">=3.11,<3.14"
+dependencies = ["torch==2.9.0", "warp-lang==1.16.0", "mjlab>=1.6.0", "numpy", "mujoco"]
+
+[dependency-groups]
+dev = ["pytest>=8", "ruff>=0.14"]
+
+[project.scripts]
+readable-mimic = "readable_mimic.train:main"
+
+[tool.ruff]
+line-length = 110
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

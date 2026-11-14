@@ -1,0 +1,133 @@
+{
+  "robot": "g1",
+  "num_envs": 4096,
+  "iterations": 3500,
+  "buffer_steps": 1000,
+  "utd": 0.4,
+  "horizon": 32,
+  "goal_frames": 10,
+  "hist": 10,
+  "wm_window": 8,
+  "wm_batches": 5,
+  "wm_batch": 2048,
+  "pi_batch": 2048,
+  "lr": 0.0004,
+  "gamma": 0.99,
+  "lam": 0.95,
+  "action_noise": 0.1,
+  "critic_epochs": 5,
+  "critic_minibatches": 4,
+  "wm_hidden": "1024,1024,1024",
+  "enc_hidden": "2048,1024,512,256",
+  "dec_hidden": "2048,1024,512,256",
+  "fail_reset": 0.0,
+  "pi_beta1": 0.9,
+  "pi_clip_value": 0.1,
+  "pi_ema": 0.995,
+  "warmup_steps": 64,
+  "contact_reward": 0.25,
+  "wm_structured": true,
+  "wm_mirror": 0.5,
+  "pi_opt": "muon",
+  "wm_opt": "muon",
+  "wm_only_iters": 0,
+  "bin_fix": true,
+  "pi_lr_mult": 4.0,
+  "lr_decay_ret": 0.75,
+  "lr_decay_len": 300,
+  "lr_decay_by": 1400,
+  "ref_contact_fix": true,
+  "pi_ref_skip": true,
+  "lr_decay_iters": 250000,
+  "ckpt_every": 100,
+  "ckpt_minutes": 0,
+  "max_hours": null,
+  "log_every": 50,
+  "motion_dir": "data/lafan1_g1",
+  "log_dir": "runs/main",
+  "seed": 0,
+  "resume": null,
+  "amp": "none",
+  "device": "cuda:0",
+  "num_threads": 4,
+  "domain_randomization": {
+    "friction_range": [
+      0.3,
+      1.2
+    ],
+    "friction_geoms": null,
+    "joint_offset": {
+      ".*": 0.01
+    },
+    "com_mass_range": null,
+    "link_mass_range": null,
+    "link_mass_exclude": [],
+    "solref_geoms": null,
+    "solref_timeconst": [
+      0.02,
+      0.02
+    ],
+    "solref_dampratio": [
+      1.0,
+      1.0
+    ],
+    "pd_gain_scale": [],
+    "armature_range": null,
+    "damping_range": null,
+    "push_interval_s": null,
+    "push_velocity": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "reset_pos": [
+      0.05,
+      0.05,
+      0.01
+    ],
+    "reset_rot": [
+      0.1,
+      0.1,
+      0.2
+    ],
+    "reset_lin_vel": [
+      0.5,
+      0.5,
+      0.2
+    ],
+    "reset_ang_vel": [
+      0.52,
+      0.52,
+      0.78
+    ],
+    "reset_joint_pos": 0.1,
+    "reset_joint_vel": 0.0
+  },
+  "sensing": {
+    "noise_joint_pos": 0.01,
+    "noise_joint_vel": 0.5,
+    "noise_ang_vel": 0.2,
+    "noise_gravity": 0.05,
+    "noise_ref_ori": 0.05,
+    "delay_hold_prob": null,
+    "imu": null,
+    "joint_vel_filter": null
+  },
+  "reward": {
+    "body_pos_std": 0.3,
+    "body_ori_std": 0.4,
+    "body_linvel_std": 1.0,
+    "body_angvel_std": 3.14,
+    "root_pos_std": 0.3,
+    "root_ori_std": 0.4,
+    "w_action_rate": -0.1,
+    "w_joint_limit": -2.0,
+    "soft_limit_factor": 0.9,
+    "term_height": 0.25,
+    "term_tilt": 0.8
+  },
+  "max_episode_steps": 500
+}
