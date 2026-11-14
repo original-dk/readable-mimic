@@ -31,8 +31,8 @@
 在 g1_constants.py 中，属于机器人描述；实验参数在 config.json 中。
 第一版仅支持原论文的 stateless sensing，不支持额外 IMU 滤波/传感延迟配置。
 
-学习率回报触发当前按本次采样的已完成 episode 平均回报判断，上游按日志窗口均值判断；
-最晚触发 iteration 1400 相同。这是当前简化差异。
+学习率回报触发与上游一致，先取每次采样完成 episode 的平均回报，再取日志窗口均值；
+触发检查发生在日志边界，最晚触发 iteration 1400。
 所有 checkpoint 同步完整写入；不包含上游的轻量异步写入。
 
 本机测试环境：Windows、Intel Graphics、torch 2.9.0 CPU、mjlab 1.6.0、warp-lang 1.16.0。

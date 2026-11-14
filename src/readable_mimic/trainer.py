@@ -158,7 +158,7 @@ class Trainer(Updates):
             self.world_model.out_norm.update(targets)
             self.world_model.inc_norm.update(increments)
             if "ep_ret_norm" in transition:
-                episode_returns.extend(transition["ep_ret_norm"].tolist())
+                episode_returns.append(float(transition["ep_ret_norm"].mean()))
         return episode_returns
 
     def set_learning_rate(self, iteration):
@@ -183,7 +183,7 @@ class Trainer(Updates):
         output.mkdir(parents=True, exist_ok=True)
         (output / "config.json").write_text(json.dumps(vars(config), indent=2), encoding="utf-8")
         self.create_environment()
-        self.collect(config.warmup_steps)
+        return_window = self.collect(config.warmup_steps)
         start_time = time.monotonic()
         next_checkpoint_time = start_time + config.ckpt_minutes * 60
         for iteration in range(self.iteration, config.iterations):
@@ -192,6 +192,7 @@ class Trainer(Updates):
             steps = int(self.collection_remainder)
             self.collection_remainder -= steps
             returns = self.collect(steps)
+            return_window.extend(returns)
             for _ in range(config.wm_batches):
                 world_model_loss, _ = self.wm_update()
             metrics = {"iteration": iteration + 1, "world_model_loss": float(world_model_loss)}
@@ -204,16 +205,18 @@ class Trainer(Updates):
                     gradient_norm=float(gradient_norm),
                     survival=float(survival),
                 )
-            average_return = sum(returns) / max(len(returns), 1)
-            deadline = config.lr_decay_by > 0 and iteration + 1 >= config.lr_decay_by
-            if (
-                self.decay_start is None
-                and config.lr_decay_ret > 0
-                and (average_return >= config.lr_decay_ret or deadline)
-            ):
-                self.decay_start = iteration + 1
             self.iteration = iteration + 1
             if self.iteration % config.log_every == 0:
+                average_return = sum(return_window) / max(len(return_window), 1)
+                deadline = config.lr_decay_by > 0 and self.iteration >= config.lr_decay_by
+                if (
+                    self.decay_start is None
+                    and config.lr_decay_ret > 0
+                    and (average_return >= config.lr_decay_ret or deadline)
+                ):
+                    self.decay_start = self.iteration
+                metrics["episode_return"] = average_return
+                return_window.clear()
                 print(json.dumps(metrics), flush=True)
                 with (output / "metrics.jsonl").open("a", encoding="utf-8") as stream:
                     stream.write(json.dumps(metrics) + "\n")
