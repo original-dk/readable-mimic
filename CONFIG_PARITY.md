@@ -40,3 +40,19 @@
 本机测试环境：Windows、Intel Graphics、torch 2.9.0 CPU、mjlab 1.6.0、warp-lang 1.16.0。
 Linux 安装通过 uv 的平台条件源使用 torch 2.9.0 CUDA 12.8。
 GPU G1 学习曲线和最终回报尚未验证，不能据此宣称已复现论文结果。
+
+## 数据相关配置名称映射（数值保持不变）
+
+| 上游名称 | 本项目名称 |
+|---|---|
+| body_ori_std | body_rot_std |
+| body_linvel_std / body_angvel_std | body_lin_vel_std / body_ang_vel_std |
+| root_pos_std / root_ori_std | base_pos_std / base_rot_std |
+| w_action_rate / w_joint_limit | action_rate_weight / joint_limit_weight |
+| term_height / term_tilt | termination_height_threshold / termination_tilt_threshold |
+| noise_joint_pos / noise_joint_vel | joint_pos_noise / joint_vel_noise |
+| noise_ang_vel / noise_gravity | base_ang_vel_noise / projected_gravity_noise |
+| noise_ref_ori | ref_base_rot_noise |
+| joint_offset | joint_pos_offset |
+
+以上更名已同步到 config.json、配置类和调用处；旧配置文件需使用该映射迁移。

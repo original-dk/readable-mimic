@@ -162,9 +162,9 @@ def get_robot_cfg() -> EntityCfg:
 def load_lafan1_csv(path: str) -> MotionArrays:
     """LAFAN1 G1 retarget: 30 fps rows of root position, root quaternion (xyzw), 29 joint angles."""
     raw = np.loadtxt(path, delimiter=",")
-    base_pos_w, q_xyzw, j = (raw[:, :3], raw[:, 3:7], raw[:, 7:36])
-    quat = np.concatenate((q_xyzw[:, 3:4], q_xyzw[:, :3]), -1)
-    return (base_pos_w, quat, j, 30.0)
+    base_pos_w, base_quat_xyzw, joint_pos = (raw[:, :3], raw[:, 3:7], raw[:, 7:36])
+    base_quat_w = np.concatenate((base_quat_xyzw[:, 3:4], base_quat_xyzw[:, :3]), -1)
+    return (base_pos_w, base_quat_w, joint_pos, 30.0)
 
 
 SPEC = RobotSpec(

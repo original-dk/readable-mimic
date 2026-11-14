@@ -9,7 +9,7 @@ from .common import mlp, RunningNorm
 class WorldModel(nn.Module):
     """Deterministic dynamics s_{t+1} = f(s_t, a_t, xi) predicting frame-local state increments.
 
-    With ``use_prev_action`` the model also sees a_{t-1}: delayed actuators still track the previous
+    With ``use_last_action`` the model also sees a_{t-1}: delayed actuators still track the previous
     action's target during the first physics steps of a control step.
     """
 
@@ -80,19 +80,19 @@ class WorldModel(nn.Module):
         num_joints = self.num_joints
         (
             delta_base_pos_heading,
-            delta_base_rotation,
+            delta_base_rot,
             delta_base_lin_vel,
             delta_base_ang_vel,
             delta_joint_pos,
             delta_joint_vel,
         ) = increments.split((3, 3, 3, 3, num_joints, num_joints), -1)
-        base_pos_drift_heading, base_rotation_drift, joint_pos_drift = self._drift(
+        base_pos_drift_heading, base_rot_drift, joint_pos_drift = self._drift(
             state, next_state[2], next_state[3], next_state[5]
         )
         return torch.cat(
             (
                 delta_base_pos_heading - base_pos_drift_heading,
-                delta_base_rotation - base_rotation_drift,
+                delta_base_rot - base_rot_drift,
                 delta_base_lin_vel,
                 delta_base_ang_vel,
                 delta_joint_pos - joint_pos_drift,
@@ -141,7 +141,7 @@ class WorldModel(nn.Module):
         base_heading_rot_mat_w = yaw_mat(base_rot_mat_w)
         (
             delta_base_pos_heading,
-            delta_base_rotation,
+            delta_base_rot,
             delta_base_lin_vel,
             delta_base_ang_vel,
             delta_joint_pos,
@@ -151,16 +151,16 @@ class WorldModel(nn.Module):
         next_base_ang_vel_w = base_ang_vel_w + mv3(base_rot_mat_w, delta_base_ang_vel)
         next_joint_vel = joint_vel + delta_joint_vel
         if self.structured:
-            base_pos_drift_heading, base_rotation_drift, joint_pos_drift = self._drift(
+            base_pos_drift_heading, base_rot_drift, joint_pos_drift = self._drift(
                 state, next_base_lin_vel_w, next_base_ang_vel_w, next_joint_vel
             )
-            delta_base_pos_heading, delta_base_rotation, delta_joint_pos = (
+            delta_base_pos_heading, delta_base_rot, delta_joint_pos = (
                 delta_base_pos_heading + base_pos_drift_heading,
-                delta_base_rotation + base_rotation_drift,
+                delta_base_rot + base_rot_drift,
                 delta_joint_pos + joint_pos_drift,
             )
         next_base_pos_w = base_pos_w + mv3(base_heading_rot_mat_w, delta_base_pos_heading)
-        next_base_rot_mat_w = mm3(base_rot_mat_w, so3_exp(delta_base_rotation))
+        next_base_rot_mat_w = mm3(base_rot_mat_w, so3_exp(delta_base_rot))
         return (
             next_base_pos_w,
             next_base_rot_mat_w,

@@ -12,7 +12,7 @@ from .rotations import mat_to_6d, mm3, mv3, quat_slerp, quat_to_mat, so3_log, ya
 
 CONTROL_DT = 0.02
 BIN_FRAMES = 50
-GOAL_Q_OFFSET = 15
+REF_JOINT_POS_COMMAND_OFFSET = 15
 
 
 class ReferenceMotion:
@@ -141,7 +141,6 @@ class ReferenceMotion:
         world_to_base = self.base_rot_mat_w.transpose(-1, -2)
         self.base_lin_vel = (world_to_base @ self.base_lin_vel_w.unsqueeze(-1)).squeeze(-1)
         self.base_ang_vel = (world_to_base @ self.base_ang_vel_w.unsqueeze(-1)).squeeze(-1)
-        self.root_gz = self.base_rot_mat_w[:, 2, 2]
         bin_clip, bin_start = ([], [])
         for clip_index in range(len(clip_lengths)):
             num_clip_bins = int(np.ceil(clip_lengths[clip_index] / BIN_FRAMES))
@@ -165,7 +164,7 @@ class ReferenceMotion:
             raise FileNotFoundError(f"No reference motion files found in {path}; run tools/download_data.py.")
         return ReferenceMotion(files, kinematics, device, robot.load_motion)
 
-    def set_ref_contact(
+    def set_ref_foot_contact(
         self, feet: list[int], margin: float = 0.015, vmax: float = 0.5, joint_pos: float = 0.05
     ) -> None:
         """Speed-branch reference foot contact (num_frames, len(feet)): height below the clip's own floor (the
@@ -180,7 +179,7 @@ class ReferenceMotion:
         for clip_index in range(len(self.names)):
             start_frame = self.clip_id == clip_index
             floor[start_frame] = foot_heights[start_frame].quantile(joint_pos, dim=0)
-        self.ref_contact = ((foot_heights < floor + margin) & (foot_horizontal_speed < vmax)).float()
+        self.ref_foot_contact = ((foot_heights < floor + margin) & (foot_horizontal_speed < vmax)).float()
 
     def command_dim(self, K: int) -> int:
         return K * (3 + 6 + 3 + 3 + 2 * self.joint_pos.shape[-1])

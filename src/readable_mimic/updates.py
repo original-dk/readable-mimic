@@ -62,13 +62,17 @@ class Updates:
             action,
             observation_history,
             next_motion_frame_index,
-            self.motion.command(next_motion_frame_index, self.goal_frames),
+            self.motion.command(next_motion_frame_index, self.command_frames),
         )
 
     def reward_and_termination(self, state, motion_frame_index, action, last_action):
         return (
             self.task.reward(
-                state, motion_frame_index, action, last_action, w_contact=self.config.contact_reward
+                state,
+                motion_frame_index,
+                action,
+                last_action,
+                foot_contact_reward_weight=self.config.contact_reward,
             ),
             self.task.soft_termination(state, motion_frame_index),
         )
@@ -127,7 +131,9 @@ class Updates:
         predicted_state = self.world_model_rollout(
             windows["state"], windows["action"], windows["last_action"], windows["simulation_parameters"]
         )
-        loss, e_last = self.world_model_loss(predicted_state, windows["next_state"], windows["mask"])
+        loss, last_step_state_error = self.world_model_loss(
+            predicted_state, windows["next_state"], windows["mask"]
+        )
         self.world_model_optimizer.zero_grad(set_to_none=True)
         loss.backward()
         nn.utils.clip_grad_norm_(self.world_model.parameters(), 1.0)
@@ -135,7 +141,7 @@ class Updates:
         last_step_mask = windows["mask"][:, -1]
         return (
             loss.detach() / self.config.wm_window,
-            (e_last.detach() * last_step_mask).sum() / last_step_mask.sum().clamp(min=1),
+            (last_step_state_error.detach() * last_step_mask).sum() / last_step_mask.sum().clamp(min=1),
         )
 
     def sample_valid_starts(self, batch_size: int):
@@ -187,7 +193,7 @@ class Updates:
         set_requires_grad(self.world_model, False)
         set_requires_grad(self.critic, False)
         batch_size = self.config.pi_batch
-        initial_command = self.motion.command(motion_frame_index, self.goal_frames)
+        initial_command = self.motion.command(motion_frame_index, self.command_frames)
         command = initial_command
         initial_state = state
         rollout_states, rollout_actions, rollout_last_actions, rollout_frames, rollout_commands = (

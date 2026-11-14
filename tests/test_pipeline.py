@@ -292,3 +292,54 @@ def test_observation_fields_and_context_normalization(tiny_trainer):
     normalized = trainer.normalize_parameters(parameters)
     torch.testing.assert_close(normalized[:, 1:3], torch.tensor([[0.4, -0.6]]))
     assert observation.shape == (1, 18)
+
+
+def test_reward_detail_names_and_total(tiny_trainer):
+    from readable_mimic.motion import CONTROL_DT
+
+    trainer = tiny_trainer
+    frames = torch.tensor([12, 13])
+    state = trainer.motion.ref_state(frames)
+    action = torch.tensor([[0.2, -0.1], [0.3, -0.2]])
+    last_action = torch.zeros_like(action)
+    reward, details = trainer.task.reward(state, frames, action, last_action, return_details=True)
+    assert set(details) == {
+        "tracking_reward",
+        "body_pos_error",
+        "body_rot_error",
+        "body_lin_vel_error",
+        "body_ang_vel_error",
+        "base_pos_error",
+        "base_rot_error",
+        "action_rate_penalty",
+        "joint_limit_penalty",
+    }
+    reward_config = trainer.task.config
+    reconstructed_reward = details["tracking_reward"] + CONTROL_DT * (
+        reward_config.action_rate_weight * details["action_rate_penalty"]
+        + reward_config.joint_limit_weight * details["joint_limit_penalty"]
+    )
+    torch.testing.assert_close(reward, reconstructed_reward)
+    torch.testing.assert_close(reward, trainer.task.reward(state, frames, action, last_action))
+
+
+def test_data_names_follow_diagram():
+    import ast
+
+    source_directory = Path(__file__).parents[1] / "src/readable_mimic"
+    forbidden_keys = {"track", "e_body_pos", "e_body_ori", "e_root_pos", "action_rate", "joint_limit"}
+    for source_file in source_directory.rglob("*.py"):
+        for node in ast.walk(ast.parse(source_file.read_text(encoding="utf-8"))):
+            identifier = None
+            if isinstance(node, ast.Name):
+                identifier = node.id
+            elif isinstance(node, ast.arg):
+                identifier = node.arg
+            elif isinstance(node, ast.Attribute):
+                identifier = node.attr
+            if identifier:
+                assert not identifier.startswith(("reference_", "e_", "root_")), (source_file, identifier)
+            if isinstance(node, ast.Dict):
+                for key in node.keys:
+                    if isinstance(key, ast.Constant) and isinstance(key.value, str):
+                        assert key.value not in forbidden_keys, (source_file, key.value)

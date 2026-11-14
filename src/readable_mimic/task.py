@@ -38,16 +38,16 @@ MAX_STEP_REWARD = (4 * 1.0 + 2 * 0.5) * CONTROL_DT
 @dataclass
 class RewardConfig:
     body_pos_std: float = 0.3
-    body_ori_std: float = 0.4
-    body_linvel_std: float = 1.0
-    body_angvel_std: float = 3.14
-    root_pos_std: float = 0.3
-    root_ori_std: float = 0.4
-    w_action_rate: float = -0.1
-    w_joint_limit: float = -2.0
+    body_rot_std: float = 0.4
+    body_lin_vel_std: float = 1.0
+    body_ang_vel_std: float = 3.14
+    base_pos_std: float = 0.3
+    base_rot_std: float = 0.4
+    action_rate_weight: float = -0.1
+    joint_limit_weight: float = -2.0
     soft_limit_factor: float = 0.9
-    term_height: float = 0.25
-    term_tilt: float = 0.8
+    termination_height_threshold: float = 0.25
+    termination_tilt_threshold: float = 0.8
 
 
 def flatten_state(state) -> torch.Tensor:
@@ -130,17 +130,23 @@ class TrackingTask:
             state, last_action, simulation_parameters, motion_frame_index, self.motion, self.default_joint_pos
         )
 
-    def add_noise(self, o: torch.Tensor) -> torch.Tensor:
-        return o + (2 * torch.rand_like(o) - 1) * self.observation_noise_limits
+    def add_noise(self, observation: torch.Tensor) -> torch.Tensor:
+        return observation + (2 * torch.rand_like(observation) - 1) * self.observation_noise_limits
 
     def reward(
-        self, state, motion_frame_index, action, last_action, terms: bool = False, w_contact: float = 0.0
+        self,
+        state,
+        motion_frame_index,
+        action,
+        last_action,
+        return_details: bool = False,
+        foot_contact_reward_weight: float = 0.0,
     ):
-        """Per-step reward (already multiplied by dt) comparing S with reference frame f.
+        """Per-step reward, scaled by CONTROL_DT, compared with the ref motion frame.
 
-        ``w_contact`` > 0 adds the InstantTrack contact term: a smooth foot-contact indicator (ankle-roll
+        ``foot_contact_reward_weight`` > 0 adds the InstantTrack contact term: a smooth foot-contact indicator (ankle-roll
         origin below 4.5 cm) matched to the reference's contact state, plus low horizontal foot speed while
-        the reference foot is down. Evaluation keeps ``w_contact = 0``, i.e. the paper's reward."""
+        the reference foot is down. Evaluation keeps ``foot_contact_reward_weight = 0``, i.e. the paper's reward."""
         reward_config, motion = (self.config, self.motion)
         base_pos_w, base_rot_mat_w, base_lin_vel_w, base_ang_vel_w, joint_pos, joint_vel = state
         body_pos_w, body_rot_mat_w, body_lin_vel_w, body_ang_vel_w = self.kinematics.forward(
@@ -150,17 +156,17 @@ class TrackingTask:
             motion.base_pos_w[motion_frame_index],
             motion.base_rot_mat_w[motion_frame_index],
         )
-        reference_alignment_rotation = yaw_mat(mm3(base_rot_mat_w, ref_base_rot_mat_w.transpose(-1, -2)))
-        reference_anchor_pos_w = torch.cat((base_pos_w[..., :2], ref_base_pos_w[..., 2:3]), -1)
-        aligned_ref_body_pos_w = reference_anchor_pos_w.unsqueeze(-2) + mv3(
-            reference_alignment_rotation.unsqueeze(-3),
+        ref_alignment_rot_mat_w = yaw_mat(mm3(base_rot_mat_w, ref_base_rot_mat_w.transpose(-1, -2)))
+        ref_anchor_pos_w = torch.cat((base_pos_w[..., :2], ref_base_pos_w[..., 2:3]), -1)
+        ref_body_pos_w_aligned = ref_anchor_pos_w.unsqueeze(-2) + mv3(
+            ref_alignment_rot_mat_w.unsqueeze(-3),
             motion.body_pos_w[motion_frame_index] - ref_base_pos_w.unsqueeze(-2),
         )
-        aligned_ref_body_rot_mat_w = mm3(
-            reference_alignment_rotation.unsqueeze(-3), motion.body_rot_mat_w[motion_frame_index]
+        ref_body_rot_mat_w_aligned = mm3(
+            ref_alignment_rot_mat_w.unsqueeze(-3), motion.body_rot_mat_w[motion_frame_index]
         )
-        body_pos_error = ((aligned_ref_body_pos_w - body_pos_w) ** 2).sum(-1).mean(-1)
-        body_rotation_error = rot_angle_sq(aligned_ref_body_rot_mat_w, body_rot_mat_w).mean(-1)
+        body_pos_error = ((ref_body_pos_w_aligned - body_pos_w) ** 2).sum(-1).mean(-1)
+        body_rot_error = rot_angle_sq(ref_body_rot_mat_w_aligned, body_rot_mat_w).mean(-1)
         body_lin_vel_error = (
             ((motion.body_lin_vel_w[motion_frame_index] - body_lin_vel_w) ** 2).sum(-1).mean(-1)
         )
@@ -168,14 +174,14 @@ class TrackingTask:
             ((motion.body_ang_vel_w[motion_frame_index] - body_ang_vel_w) ** 2).sum(-1).mean(-1)
         )
         base_pos_error = ((ref_base_pos_w - base_pos_w) ** 2).sum(-1)
-        base_rotation_error = rot_angle_sq(ref_base_rot_mat_w, base_rot_mat_w)
+        base_rot_error = rot_angle_sq(ref_base_rot_mat_w, base_rot_mat_w)
         tracking_reward = (
             torch.exp(-body_pos_error / reward_config.body_pos_std**2)
-            + torch.exp(-body_rotation_error / reward_config.body_ori_std**2)
-            + torch.exp(-body_lin_vel_error / reward_config.body_linvel_std**2)
-            + torch.exp(-body_ang_vel_error / reward_config.body_angvel_std**2)
-            + 0.5 * torch.exp(-base_pos_error / reward_config.root_pos_std**2)
-            + 0.5 * torch.exp(-base_rotation_error / reward_config.root_ori_std**2)
+            + torch.exp(-body_rot_error / reward_config.body_rot_std**2)
+            + torch.exp(-body_lin_vel_error / reward_config.body_lin_vel_std**2)
+            + torch.exp(-body_ang_vel_error / reward_config.body_ang_vel_std**2)
+            + 0.5 * torch.exp(-base_pos_error / reward_config.base_pos_std**2)
+            + 0.5 * torch.exp(-base_rot_error / reward_config.base_rot_std**2)
         )
         action_rate_penalty = ((action - last_action) ** 2).sum(-1)
         joint_limit_penalty = (
@@ -184,19 +190,19 @@ class TrackingTask:
         ).sum(-1)
         reward = (
             tracking_reward
-            + reward_config.w_action_rate * action_rate_penalty
-            + reward_config.w_joint_limit * joint_limit_penalty
+            + reward_config.action_rate_weight * action_rate_penalty
+            + reward_config.joint_limit_weight * joint_limit_penalty
         ) * CONTROL_DT
-        if w_contact > 0:
+        if foot_contact_reward_weight > 0:
             foot_height, ref_foot_height = (
                 body_pos_w[..., self.feet, 2],
                 motion.body_pos_w[motion_frame_index][..., self.feet, 2],
             )
             foot_contact_probability = torch.sigmoid((CONTACT_Z - foot_height) / 0.005)
-            reference_contact_labels = getattr(motion, "ref_contact", None)
+            ref_foot_contact_labels = getattr(motion, "ref_foot_contact", None)
             ref_foot_contact = (
-                reference_contact_labels[motion_frame_index]
-                if reference_contact_labels is not None
+                ref_foot_contact_labels[motion_frame_index]
+                if ref_foot_contact_labels is not None
                 else (ref_foot_height < CONTACT_Z).float()
             )
             foot_horizontal_speed_squared = (body_lin_vel_w[..., self.feet, :2] ** 2).sum(-1)
@@ -205,17 +211,21 @@ class TrackingTask:
                 - (foot_contact_probability - ref_foot_contact) ** 2
                 + ref_foot_contact * torch.exp(-foot_horizontal_speed_squared / 0.3**2)
             )
-            reward = reward + w_contact * foot_contact_reward.mean(-1) * CONTROL_DT
-        if terms:
+            reward = reward + foot_contact_reward_weight * foot_contact_reward.mean(-1) * CONTROL_DT
+        if return_details:
+            tracking_reward = tracking_reward * CONTROL_DT
             return (
                 reward,
                 {
-                    "track": tracking_reward * CONTROL_DT,
-                    "e_body_pos": body_pos_error,
-                    "e_body_ori": body_rotation_error,
-                    "e_root_pos": base_pos_error,
-                    "action_rate": action_rate_penalty,
-                    "joint_limit": joint_limit_penalty,
+                    "tracking_reward": tracking_reward,
+                    "body_pos_error": body_pos_error,
+                    "body_rot_error": body_rot_error,
+                    "body_lin_vel_error": body_lin_vel_error,
+                    "body_ang_vel_error": body_ang_vel_error,
+                    "base_pos_error": base_pos_error,
+                    "base_rot_error": base_rot_error,
+                    "action_rate_penalty": action_rate_penalty,
+                    "joint_limit_penalty": joint_limit_penalty,
                 },
             )
         return reward
@@ -228,7 +238,9 @@ class TrackingTask:
         )
         base_height_error = (ref_base_pos_w[..., 2] - base_pos_w[..., 2]).abs()
         base_tilt_error = (ref_base_rot_mat_w[..., 2, 2] - base_rot_mat_w[..., 2, 2]).abs()
-        return (base_height_error > self.config.term_height) | (base_tilt_error > self.config.term_tilt)
+        return (base_height_error > self.config.termination_height_threshold) | (
+            base_tilt_error > self.config.termination_tilt_threshold
+        )
 
     def soft_termination(
         self,
@@ -246,8 +258,16 @@ class TrackingTask:
         base_height_error = (ref_base_pos_w[..., 2] - base_pos_w[..., 2]).abs()
         base_tilt_error = (ref_base_rot_mat_w[..., 2, 2] - base_rot_mat_w[..., 2, 2]).abs()
         survival_probability = (
-            1 - torch.sigmoid((base_height_error - self.config.term_height) / height_transition_width)
-        ) * (1 - torch.sigmoid((base_tilt_error - self.config.term_tilt) / tilt_transition_width))
+            1
+            - torch.sigmoid(
+                (base_height_error - self.config.termination_height_threshold) / height_transition_width
+            )
+        ) * (
+            1
+            - torch.sigmoid(
+                (base_tilt_error - self.config.termination_tilt_threshold) / tilt_transition_width
+            )
+        )
         return 1 - survival_probability
 
     def critic_features(self, state, motion_frame_index, simulation_parameters) -> torch.Tensor:
@@ -263,14 +283,14 @@ class TrackingTask:
         body_pos_w = self.kinematics.forward(
             base_pos_w, base_rot_mat_w, base_lin_vel_w, base_ang_vel_w, joint_pos, joint_vel
         )[0]
-        reference_alignment_rotation = yaw_mat(mm3(base_rot_mat_w, ref_base_rot_mat_w.transpose(-1, -2)))
-        reference_anchor_pos_w = torch.cat((base_pos_w[..., :2], ref_base_pos_w[..., 2:3]), -1)
-        aligned_ref_body_pos_w = reference_anchor_pos_w.unsqueeze(-2) + mv3(
-            reference_alignment_rotation.unsqueeze(-3),
+        ref_alignment_rot_mat_w = yaw_mat(mm3(base_rot_mat_w, ref_base_rot_mat_w.transpose(-1, -2)))
+        ref_anchor_pos_w = torch.cat((base_pos_w[..., :2], ref_base_pos_w[..., 2:3]), -1)
+        ref_body_pos_w_aligned = ref_anchor_pos_w.unsqueeze(-2) + mv3(
+            ref_alignment_rot_mat_w.unsqueeze(-3),
             motion.body_pos_w[motion_frame_index] - ref_base_pos_w.unsqueeze(-2),
         )
         body_pos_error_heading = mv3(
-            world_to_heading.unsqueeze(-3), aligned_ref_body_pos_w - body_pos_w
+            world_to_heading.unsqueeze(-3), ref_body_pos_w_aligned - body_pos_w
         ).flatten(-2)
         base_pos_error_heading = mv3(world_to_heading, ref_base_pos_w - base_pos_w)
         ref_base_rot_6d_relative = mat_to_6d(mm3(base_rot_mat_w.transpose(-1, -2), ref_base_rot_mat_w))

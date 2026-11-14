@@ -8,7 +8,7 @@ import torch
 @dataclass(frozen=True)
 class DomainRandomizationConfig:
     friction_range: tuple[float, float] = (0.3, 1.2)
-    joint_offset: dict[str, float] = field(default_factory=lambda: {".*": 0.01})
+    joint_pos_offset: dict[str, float] = field(default_factory=lambda: {".*": 0.01})
     reset_pos: tuple[float, float, float] = (0.05, 0.05, 0.01)
     reset_rot: tuple[float, float, float] = (0.1, 0.1, 0.2)
     reset_lin_vel: tuple[float, float, float] = (0.5, 0.5, 0.2)
@@ -21,7 +21,7 @@ def joint_pos_offset_limits(robot, device):
     limits = []
     for joint_name in robot.joint_names:
         limit = 0.0
-        for pattern, configured_limit in robot.domain_randomization.joint_offset.items():
+        for pattern, configured_limit in robot.domain_randomization.joint_pos_offset.items():
             if re.fullmatch(pattern, joint_name):
                 limit = configured_limit
         limits.append(limit)

@@ -64,12 +64,12 @@ class TrackingEnvironment:
 
     def state(self):
         robot_indices = self.robot.indexing
-        root_joint_pos = self.simulation.data.qpos[:, robot_indices.free_joint_q_adr]
-        root_joint_vel = self.simulation.data.qvel[:, robot_indices.free_joint_v_adr]
-        base_pos_w = root_joint_pos[:, :3] - self.scene.env_origins
-        base_rot_mat_w = quat_to_mat(root_joint_pos[:, 3:7])
-        base_lin_vel_w = root_joint_vel[:, :3].clone()
-        base_ang_vel_w = (base_rot_mat_w @ root_joint_vel[:, 3:6, None]).squeeze(-1)
+        base_free_joint_pos = self.simulation.data.qpos[:, robot_indices.free_joint_q_adr]
+        base_free_joint_vel = self.simulation.data.qvel[:, robot_indices.free_joint_v_adr]
+        base_pos_w = base_free_joint_pos[:, :3] - self.scene.env_origins
+        base_rot_mat_w = quat_to_mat(base_free_joint_pos[:, 3:7])
+        base_lin_vel_w = base_free_joint_vel[:, :3].clone()
+        base_ang_vel_w = (base_rot_mat_w @ base_free_joint_vel[:, 3:6, None]).squeeze(-1)
         joint_pos = self.robot.data.joint_pos.clone()
         joint_vel = self.robot.data.joint_vel.clone()
         return (base_pos_w, base_rot_mat_w, base_lin_vel_w, base_ang_vel_w, joint_pos, joint_vel)
@@ -110,10 +110,10 @@ class TrackingEnvironment:
         )
         self.simulation.reset(environment_indices)
         self.scene.reset(environment_indices)
-        root_pose_w = torch.cat(
+        base_pose_w = torch.cat(
             (base_pos_w + self.scene.env_origins[environment_indices], mat_to_quat(base_rot_mat_w)), -1
         )
-        self.robot.write_root_link_pose_to_sim(root_pose_w, env_ids=environment_indices)
+        self.robot.write_root_link_pose_to_sim(base_pose_w, env_ids=environment_indices)
         self.robot.write_root_link_velocity_to_sim(
             torch.cat((base_lin_vel_w, base_ang_vel_w), -1), env_ids=environment_indices
         )

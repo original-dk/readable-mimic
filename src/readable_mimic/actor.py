@@ -5,11 +5,7 @@ from .common import mlp, RunningNorm
 
 
 class Actor(nn.Module):
-    """a = dec(enc(g), o_{t-9:t}); deterministic, latent z in R^32 bounded by tanh.
-
-    ``ref_skip`` = (offset, q0, alpha) (--pi_ref_skip): reference-action skip connection,
-    a = (q_ref(f+1) - q0) / alpha + dec(...), with q_ref(f+1) read from the raw (unnormalized) goal vector at
-    ``offset``; the network only learns the correction to tracking the reference with the PD controller."""
+    """Encode command and decode observation_history into action with an optional ref pose skip."""
 
     def __init__(
         self,
@@ -20,17 +16,15 @@ class Actor(nn.Module):
         motion_latent_dim: int = 32,
         encoder_hidden_dims=(2048, 1024, 512, 256),
         decoder_hidden_dims=(2048, 1024, 512, 256),
-        reference_action_skip=None,
+        ref_action_skip=None,
     ):
         super().__init__()
         self.history_length = history_length
         self.ref_joint_pos_offset = None
-        if reference_action_skip is not None:
-            self.ref_joint_pos_offset = reference_action_skip[0]
-            self.register_buffer(
-                "default_joint_pos", torch.tensor(reference_action_skip[1], dtype=torch.float32)
-            )
-            self.register_buffer("action_scale", torch.tensor(reference_action_skip[2], dtype=torch.float32))
+        if ref_action_skip is not None:
+            self.ref_joint_pos_offset = ref_action_skip[0]
+            self.register_buffer("default_joint_pos", torch.tensor(ref_action_skip[1], dtype=torch.float32))
+            self.register_buffer("action_scale", torch.tensor(ref_action_skip[2], dtype=torch.float32))
         self.command_encoder = mlp(command_dim, list(encoder_hidden_dims), motion_latent_dim)
         self.action_decoder = mlp(
             motion_latent_dim + observation_dim * history_length, list(decoder_hidden_dims), num_actions
@@ -48,7 +42,7 @@ class Actor(nn.Module):
         motion_latent: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """obs_hist: (B, history_length, obs_dim) noisy observations, newest last. ``z`` (optional) is
-        ``encode(goal)`` computed beforehand."""
+        ``encode(command)`` computed beforehand."""
         normalized_observation_history = self.observation_normalizer(observation_history).flatten(-2)
         if motion_latent is None:
             motion_latent = self.encode(command)
@@ -61,19 +55,19 @@ class Actor(nn.Module):
         return action
 
     def encode(self, command: torch.Tensor) -> torch.Tensor:
-        """Motion latent z from the goal features (reference only, independent of the robot state)."""
+        """Motion latent z from the command features (reference only, independent of the robot state)."""
         return torch.tanh(self.command_encoder(self.command_normalizer(command)))
 
 
 def actor_kwargs(config: dict, robot) -> dict:
     """Policy keyword arguments of a run with the training arguments ``config``."""
-    return {"reference_action_skip": reference_action_skip(config, robot)}
+    return {"ref_action_skip": ref_action_skip(config, robot)}
 
 
-def reference_action_skip(config: dict, robot):
+def ref_action_skip(config: dict, robot):
     """Policy(ref_skip=...) argument of a run with the training arguments ``config`` (None without --pi_ref_skip)."""
     if not config.get("pi_ref_skip", False):
         return None
-    from .motion import GOAL_Q_OFFSET
+    from .motion import REF_JOINT_POS_COMMAND_OFFSET
 
-    return (GOAL_Q_OFFSET, robot.default_joint_pos_list(), robot.action_scale_list())
+    return (REF_JOINT_POS_COMMAND_OFFSET, robot.default_joint_pos_list(), robot.action_scale_list())

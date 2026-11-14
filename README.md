@@ -81,3 +81,11 @@ checkpoint 恢复网络、标准化统计、优化器、迭代和学习率控制
 
 本次修改了网络参数名称和 observation_noise 配置结构。旧版代码由 Git 历史保留，
 旧版 checkpoint 不直接加载到新命名版本；需要续跑旧模型时先切回对应提交。
+
+## 数据字段约定
+
+参考数据统一 `ref_`，根身体统一 `base_`；姿态字段用 `rot`，速度用 `lin_vel` / `ang_vel`。
+误差用 `_error`，奖励用 `_reward`，惩罚用 `_penalty`。
+奖励详情字典的键与变量名称一致，不保留 `track`、`e_*` 等旧键。
+训练超参数仍采用上游的配置键；奖励与观测数据相关配置使用本项目名称，数值不变。
+外部 mjlab API（如 write_root_link_pose_to_sim）保持依赖库规定的名称。

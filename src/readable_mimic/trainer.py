@@ -33,7 +33,7 @@ class Trainer(Updates):
         torch.manual_seed(config.seed)
         self.horizon = config.horizon
         self.history_length = config.hist
-        self.goal_frames = config.goal_frames
+        self.command_frames = config.goal_frames
         self.robot = get_robot(config.robot)
         self.robot = replace(
             self.robot,
@@ -56,7 +56,7 @@ class Trainer(Updates):
             for name in ("left_ankle_roll_link", "right_ankle_roll_link")
         ]
         if config.ref_contact_fix:
-            self.motion.set_ref_contact(self.task.feet)
+            self.motion.set_ref_foot_contact(self.task.feet)
         joint_count = self.robot.num_joints
         command_dim = self.motion.command_dim(config.goal_frames)
         self.world_model = WorldModel(
@@ -150,7 +150,7 @@ class Trainer(Updates):
             self.observation_history = torch.where(
                 fresh[:, None, None], observation[:, None].expand_as(history), history
             )
-            command = self.motion.command(self.environment.motion_frame_index, self.goal_frames)
+            command = self.motion.command(self.environment.motion_frame_index, self.command_frames)
             self.actor.observation_normalizer.update(observation)
             self.actor.command_normalizer.update(command)
             action = self.actor(self.observation_history, command)

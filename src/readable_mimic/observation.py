@@ -7,21 +7,21 @@ from .rotations import mat_to_6d
 
 @dataclass(frozen=True)
 class ObservationNoiseConfig:
-    noise_joint_pos: float = 0.01
-    noise_joint_vel: float = 0.5
-    noise_ang_vel: float = 0.2
-    noise_gravity: float = 0.05
-    noise_ref_ori: float = 0.05
+    joint_pos_noise: float = 0.01
+    joint_vel_noise: float = 0.5
+    base_ang_vel_noise: float = 0.2
+    projected_gravity_noise: float = 0.05
+    ref_base_rot_noise: float = 0.05
 
 
 def observation_noise_limits(config, num_joints):
     return torch.tensor(
-        [config.noise_joint_pos] * num_joints
-        + [config.noise_joint_vel] * num_joints
-        + [config.noise_ang_vel] * 3
-        + [config.noise_gravity] * 3
+        [config.joint_pos_noise] * num_joints
+        + [config.joint_vel_noise] * num_joints
+        + [config.base_ang_vel_noise] * 3
+        + [config.projected_gravity_noise] * 3
         + [0.0] * num_joints
-        + [config.noise_ref_ori] * 6
+        + [config.ref_base_rot_noise] * 6
     )
 
 
