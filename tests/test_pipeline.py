@@ -266,6 +266,10 @@ def test_collect_and_training_loop(tiny_trainer, tmp_path, monkeypatch):
     assert trainer.iteration == 2
     assert (tmp_path / "run/last.pt").is_file()
     assert len((tmp_path / "run/metrics.jsonl").read_text().splitlines()) == 2
+    import json
+
+    rows = [json.loads(line) for line in (tmp_path / "run/metrics.jsonl").read_text().splitlines()]
+    assert all("sim_r" in row and np.isfinite(row["sim_r"]) for row in rows)
     assert not (tmp_path / "run/checkpoints/iteration_000001.pt").exists()
     assert (tmp_path / "run/checkpoints/iteration_000002.pt").is_file()
     from copy import deepcopy
@@ -513,3 +517,20 @@ def test_resume_restores_saved_config_and_random_states(tiny_trainer, tmp_path):
     resumed.config.iterations = 7
     with pytest.raises(ValueError, match="larger total target"):
         resumed.load(config.resume)
+
+
+def test_sim_r_uses_all_real_transitions(tiny_trainer):
+    from readable_mimic.task import MAX_STEP_REWARD
+
+    trainer = tiny_trainer
+    transition = {name: values[0].clone() for name, values in trainer.buffer.data.items()}
+    transition["reward"].fill_(0.05)
+    trainer.environment = SimpleNamespace(
+        observe=lambda: torch.zeros(4, trainer.observation_dim),
+        episode_step=torch.zeros(4, dtype=torch.long),
+        motion_frame_index=transition["motion_frame_index"],
+        step=lambda action: transition,
+    )
+    assert trainer.collect(3) == []
+    assert trainer.sim_reward_count == 12
+    assert float(trainer.sim_reward_sum) / trainer.sim_reward_count / MAX_STEP_REWARD == pytest.approx(0.5)

@@ -12,7 +12,7 @@ import time
 from pathlib import Path
 import torch
 from .buffer import ReplayBuffer
-from .task import TrackingTask, RewardConfig
+from .task import TrackingTask, RewardConfig, MAX_STEP_REWARD
 from .motion import CONTROL_DT, ReferenceMotion
 from .kinematics import Kinematics
 from .simulation_parameters import DomainRandomizationConfig, simulation_parameter_count
@@ -131,6 +131,8 @@ class Trainer:
             state_error_floor=self.state_error_floor,
         )
         self.pending_random_states = None
+        self.sim_reward_sum = torch.zeros((), device=self.device)
+        self.sim_reward_count = 0
 
     @staticmethod
     def widths(text):
@@ -169,6 +171,8 @@ class Trainer:
             action = self.actor(self.observation_history, command)
             action = (action + self.config.action_noise * torch.randn_like(action)).clamp(-20, 20)
             transition = self.environment.step(action)
+            self.sim_reward_sum.add_(transition["reward"].sum())
+            self.sim_reward_count += transition["reward"].numel()
             self.buffer.add(transition)
             inputs, targets, increments = transforms.compute_world_model_training_data(
                 self.world_model,
@@ -209,6 +213,8 @@ class Trainer:
         (output / "config.json").write_text(json.dumps(vars(config), indent=2), encoding="utf-8")
         self.create_environment()
         return_window = self.collect(config.warmup_steps)
+        self.sim_reward_sum.zero_()
+        self.sim_reward_count = 0
         if self.pending_random_states is not None:
             self.restore_random_states()
         last_saved_iteration = None
@@ -246,6 +252,11 @@ class Trainer:
                 ):
                     self.decay_start = self.iteration
                 metrics["episode_return"] = average_return
+                metrics["sim_r"] = (
+                    float(self.sim_reward_sum) / max(self.sim_reward_count, 1) / MAX_STEP_REWARD
+                )
+                self.sim_reward_sum.zero_()
+                self.sim_reward_count = 0
                 return_window.clear()
                 print(json.dumps(metrics), flush=True)
                 with (output / "metrics.jsonl").open("a", encoding="utf-8") as stream:
