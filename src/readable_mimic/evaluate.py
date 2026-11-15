@@ -172,7 +172,7 @@ def play_motion(
         time.sleep(max(0.0, CONTROL_DT - (time.monotonic() - step_started)))
         if (step_index + 1) % 250 == 0 or step_index + 1 == steps:
             simulated_seconds = (step_index + 1) * CONTROL_DT
-            wall_seconds = max(time.monotonic() - playback_started, 1e-9)
+            wall_seconds = time.monotonic() - playback_started
             print(
                 f"Playback: {simulated_seconds:.1f}s simulated / {wall_seconds:.1f}s wall | RTF={simulated_seconds / wall_seconds:.2f}",
                 flush=True,
