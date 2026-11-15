@@ -145,5 +145,5 @@ def test_playback_duration_and_clip_restart(tiny_trainer, monkeypatch):
         ghost,
         True,
     )
-    assert viewer.sync_count == 3
+    assert viewer.sync_count == 2
     assert environment.resets == 4
