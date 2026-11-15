@@ -224,6 +224,8 @@ def main(argv=None):
         evaluation=True,
     )
     model = environment.simulation.mj_model
+    model.vis.global_.offwidth = max(model.vis.global_.offwidth, 960)
+    model.vis.global_.offheight = max(model.vis.global_.offheight, 720)
     render_data = mujoco.MjData(model)
     indices = environment.robot.indexing
     ghost = GhostOverlay(
