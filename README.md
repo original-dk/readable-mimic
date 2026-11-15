@@ -173,3 +173,5 @@ Buffer 默认不保存。默认 4096 环境 × 1000 步的原始 Buffer 约 3.6 
 而它可以通过重新采样恢复；继续训练会创建新环境并执行 warmup_steps，再恢复随机数状态进入更新。
 因此这是恢复模型/优化器后的 warm restart，不保证与不间断运行逐步完全一致。
 现有同版本字段命名的旧 last.pt 仍可加载；不兼容历史字段重命名之前的权重。
+
+也可不修改配置，直接使用命令行：uv run --no-sync python -m readable_mimic.train --config config.json --resume runs/main/last.pt。--resume 优先于配置中的 resume，路径相对于当前工作目录；配置文件可以省略 resume 字段。总训练目标仍由 iterations 指定。

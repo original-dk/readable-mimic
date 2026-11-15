@@ -15,9 +15,12 @@ class ObservationNoiseConfig:
     ref_base_rot_noise: float = 0.05
 
 
-def load_config(path="config.json"):
+def load_config(path="config.json", resume=None):
     path = Path(path).resolve()
     values = json.loads(path.read_text(encoding="utf-8"))
+    values.setdefault("resume", None)
+    if resume is not None:
+        values["resume"] = str(Path(resume).resolve())
     for key in ("motion_dir", "log_dir", "resume"):
         if values[key] is not None:
             values[key] = str((path.parent / values[key]).resolve())

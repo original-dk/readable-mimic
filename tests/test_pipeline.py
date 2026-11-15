@@ -534,3 +534,40 @@ def test_sim_r_uses_all_real_transitions(tiny_trainer):
     assert trainer.collect(3) == []
     assert trainer.sim_reward_count == 12
     assert float(trainer.sim_reward_sum) / trainer.sim_reward_count / MAX_STEP_REWARD == pytest.approx(0.5)
+
+
+def test_resume_cli_overrides_config_without_modifying_file(tiny_trainer, tmp_path, monkeypatch):
+    import json
+    from readable_mimic.train import main
+
+    trainer = tiny_trainer
+    trainer.config.warmup_steps = 4
+    checkpoint_path = tmp_path / "saved.pt"
+    trainer.save(checkpoint_path)
+    current = dict(vars(trainer.config))
+    current.update(resume="nonexistent.pt", lr=0.123)
+    config_path = tmp_path / "config.json"
+    original_text = json.dumps(current)
+    config_path.write_text(original_text, encoding="utf-8")
+    calls = {}
+
+    class TrainingRun:
+        def __init__(self, config):
+            calls["config"] = config
+
+        def load(self, path):
+            calls["resume"] = path
+
+        def run(self):
+            calls["ran"] = True
+
+    monkeypatch.setattr("readable_mimic.train.Trainer", TrainingRun)
+    main(["--config", str(config_path), "--resume", str(checkpoint_path)])
+    assert calls["resume"] == str(checkpoint_path)
+    assert calls["config"].lr == trainer.config.lr
+    assert calls["ran"]
+    assert config_path.read_text(encoding="utf-8") == original_text
+    current.pop("resume")
+    config_path.write_text(json.dumps(current), encoding="utf-8")
+    main(["--config", str(config_path), "--resume", str(checkpoint_path)])
+    assert calls["resume"] == str(checkpoint_path)
