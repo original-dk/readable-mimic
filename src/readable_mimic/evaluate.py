@@ -5,9 +5,11 @@ from dataclasses import replace
 import math
 from pathlib import Path
 import time
+
 import mujoco
 import numpy as np
 import torch
+
 from . import data_transforms as transforms
 from .actor import Actor, actor_kwargs
 from .config import load_config
@@ -23,13 +25,6 @@ from .rotations import mat_to_quat
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--checkpoint", "--ckpt", required=True)
-    parser.add_argument(
-        "--render-fps",
-        type=int,
-        choices=(10, 25, 50),
-        default=25,
-        help="Viewer refresh rate; control stays at 50 Hz.",
-    )
     parser.add_argument("--config", default="config.json")
     parser.add_argument("--motions", default="all", help="Exact clip names separated by | (quote the list).")
     parser.add_argument("--duration", type=float, default=30.0, help="Playback seconds per selected clip.")
@@ -146,17 +141,12 @@ def play_motion(
     viewer_data,
     ghost,
     follow_base,
-    render_fps=25,
 ):
     environment_indices = torch.tensor([0], device=environment.device)
     environment.reset(environment_indices, sample_start_frame(motion, clip_index))
     history = transforms.compute_observation_history(environment.observe(), history_length)
     steps = math.ceil(duration / CONTROL_DT)
     playback_started = time.monotonic()
-    render_interval = max(1, round(1 / (CONTROL_DT * render_fps)))
-    control_seconds = 0.0
-    render_seconds = 0.0
-    render_count = 0
     for step_index in range(steps):
         if not viewer.is_running():
             return False
@@ -164,33 +154,27 @@ def play_motion(
         command = transforms.compute_command(environment.motion_frame_index, command_frames, motion)
         action = actor(history, command)
         transition = environment.step(action)
-        done = bool(transition["done"][0])
-        control_seconds += time.monotonic() - step_started
-        if step_index % render_interval == 0 or step_index + 1 == steps:
-            render_started = time.monotonic()
-            ref_state = motion.ref_state(environment.motion_frame_index)
-            robot_state = environment.state()
-            ghost_pose = transforms.compute_ghost_pose(ref_state, robot_state, follow_base)
-            with viewer.lock():
-                viewer_data.qpos[:] = environment.simulation.data.qpos[0].cpu().numpy()
-                viewer_data.qvel[:] = environment.simulation.data.qvel[0].cpu().numpy()
-                mujoco.mj_forward(environment.simulation.mj_model, viewer_data)
-                ghost.update(viewer.user_scn, viewer_data.qpos, ghost_pose)
-                viewer.cam.lookat[:] = robot_state[0][0].cpu().numpy()
-            viewer.sync()
-            render_seconds += time.monotonic() - render_started
-            render_count += 1
-        if done:
+        ref_state = motion.ref_state(environment.motion_frame_index)
+        robot_state = environment.state()
+        ghost_pose = transforms.compute_ghost_pose(ref_state, robot_state, follow_base)
+        with viewer.lock():
+            viewer_data.qpos[:] = environment.simulation.data.qpos[0].cpu().numpy()
+            viewer_data.qvel[:] = environment.simulation.data.qvel[0].cpu().numpy()
+            mujoco.mj_forward(environment.simulation.mj_model, viewer_data)
+            ghost.update(viewer.user_scn, viewer_data.qpos, ghost_pose)
+            viewer.cam.lookat[:] = robot_state[0][0].cpu().numpy()
+        viewer.sync()
+        if bool(transition["done"][0]):
             environment.reset(environment_indices, sample_start_frame(motion, clip_index))
             history = transforms.compute_observation_history(environment.observe(), history_length)
         else:
             history = transforms.update_observation_history(history, environment.observe())
-        time.sleep(max(0.0, playback_started + (step_index + 1) * CONTROL_DT - time.monotonic()))
+        time.sleep(max(0.0, CONTROL_DT - (time.monotonic() - step_started)))
         if (step_index + 1) % 250 == 0 or step_index + 1 == steps:
             simulated_seconds = (step_index + 1) * CONTROL_DT
-            wall_seconds = max(time.monotonic() - playback_started, 1e-09)
+            wall_seconds = max(time.monotonic() - playback_started, 1e-9)
             print(
-                f"Playback: {simulated_seconds:.1f}s simulated / {wall_seconds:.1f}s wall | RTF={simulated_seconds / wall_seconds:.2f} | control_ms={1000 * control_seconds / (step_index + 1):.1f} render_ms={1000 * render_seconds / max(render_count, 1):.1f}",
+                f"Playback: {simulated_seconds:.1f}s simulated / {wall_seconds:.1f}s wall | RTF={simulated_seconds / wall_seconds:.2f}",
                 flush=True,
             )
     return True
@@ -211,7 +195,7 @@ def main(argv=None):
     kinematics = Kinematics(robot, config.device)
     motion = ReferenceMotion.from_dir(config.motion_dir, robot, kinematics, config.device)
     selected_indices = select_motion_indices(motion.names, arguments.motions)
-    history_length, command_frames = (actor_config["hist"], actor_config["goal_frames"])
+    history_length, command_frames = actor_config["hist"], actor_config["goal_frames"]
     actor = Actor(
         transforms.compute_observation_dim(robot.num_joints),
         transforms.compute_command_dim(robot.num_joints, command_frames),
@@ -263,7 +247,6 @@ def main(argv=None):
                 viewer_data,
                 ghost,
                 arguments.ghost_base == "follow",
-                render_fps=arguments.render_fps,
             ):
                 break
 
