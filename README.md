@@ -102,3 +102,30 @@ checkpoint 恢复网络、标准化统计、优化器、迭代和学习率控制
 后者在自身构造函数中定义所有模型、优化器、Buffer 和配置依赖。
 训练调用为 `self.updates.update_world_model()` 和 `self.updates.update_actor()`。
 删除仅承载一个函数的 objective.py，以及转换逻辑分散的 observation.py。
+
+## 随机起点可视化回放
+
+```bash
+uv run --no-sync python -m readable_mimic.evaluate \
+  --config config.json \
+  --checkpoint runs/main/last.pt \
+  --motions "walk1_subject1|dance1_subject1" \
+  --duration 30 \
+  --ghost-base follow
+```
+
+轨迹名对应 motion_dir 中的 CSV 文件名，可省略 .csv；列表必须加引号。
+`--duration` 是每条轨迹的模拟播放秒数；播放到末尾或触发 termination 后，
+在同一条轨迹内重新随机起步。列表按给定顺序播放一次，结束后关闭窗口。
+`--motions all` 播放全部轨迹。`--seed` 控制随机起点，默认 0。
+
+`--ghost-base follow`：ghost 的 xy 和 yaw 对齐当前机器人，保留参考高度和倾斜。
+`--ghost-base reference`：ghost 保留参考动作原本的世界轨迹。
+Ghost 是透明蓝色的 viewer 几何体，不加入物理模型、不参与碰撞。
+
+回放优先读取 checkpoint 中的 EMA Actor，关闭动作/观测/reset 噪声和域随机化，
+摩擦设为 1、关节与质心偏移为 0。模型结构使用 checkpoint 保存的配置，
+本机资产路径和设备使用 --config 指定的配置。旧 checkpoint 的权重键名必须与当前 Actor 一致。
+窗口通过 MuJoCo viewer 打开，需要在有图形界面的会话运行。
+
+这是随机起点的可视化检查，不输出整段动作的标准评测分数。

@@ -287,6 +287,11 @@ def test_simulation_parameters_match_applied_physics(tiny_trainer):
     torch.testing.assert_close(parameters[:, 0], before[:, 0])
     torch.testing.assert_close(parameters[:, 3:], before[:, 3:])
     assert parameters[:, 1:3].abs().le(0.01).all()
+    evaluation_parameters = initialize_simulation_parameters(environment, randomize=False)
+    torch.testing.assert_close(evaluation_parameters[:, 0], torch.ones(4))
+    torch.testing.assert_close(evaluation_parameters[:, 1:], torch.zeros(4, 5))
+    torch.testing.assert_close(simulation.model.geom_friction[:, :, 0], torch.ones(4, 3))
+    torch.testing.assert_close(simulation.model.body_ipos[:, 1], torch.zeros(4, 3))
 
 
 def test_observation_fields_and_context_normalization(tiny_trainer):

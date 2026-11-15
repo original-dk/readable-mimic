@@ -31,7 +31,18 @@ def make_sim(robot, settings):
 
 
 class TrackingEnvironment:
-    def __init__(self, simulation_config, num_envs, robot, motion, task, device, max_episode_steps=500):
+    def __init__(
+        self,
+        simulation_config,
+        num_envs,
+        robot,
+        motion,
+        task,
+        device,
+        max_episode_steps=500,
+        evaluation=False,
+    ):
+        self.evaluation = evaluation
         self.num_envs = num_envs
         self.num_joints = robot.num_joints
         self.device = device
@@ -56,7 +67,7 @@ class TrackingEnvironment:
         assert list(self.robot.joint_names) == list(robot.joint_names)
         self.default_joint_pos = self.robot.data.default_joint_pos[0].clone()
         self.action_scale = torch.tensor(robot.action_scale_list(), device=device)
-        self.simulation_parameters = initialize_simulation_parameters(self)
+        self.simulation_parameters = initialize_simulation_parameters(self, randomize=not evaluation)
         self.motion_frame_index = torch.zeros(num_envs, dtype=torch.long, device=device)
         self.episode_step = torch.zeros(num_envs, dtype=torch.long, device=device)
         self.last_action = torch.zeros(num_envs, self.num_joints, device=device)
@@ -86,10 +97,11 @@ class TrackingEnvironment:
             start_frames + (torch.rand(num_samples, device=self.device) * (end_frames - start_frames)).long()
         )
 
-    def reset(self, environment_indices):
+    def reset(self, environment_indices, motion_frames=None):
         num_resets = len(environment_indices)
         reset_config = self.robot_description.domain_randomization
-        motion_frames = self.sample_motion_frames(num_resets)
+        if motion_frames is None:
+            motion_frames = self.sample_motion_frames(num_resets)
         base_pos_w, base_rot_mat_w, base_lin_vel_w, base_ang_vel_w, joint_pos, joint_vel = (
             values.clone() for values in self.motion.ref_state(motion_frames)
         )
@@ -99,16 +111,17 @@ class TrackingEnvironment:
                 [torch.empty(num_resets, device=self.device).uniform_(-limit, limit) for limit in limits], -1
             )
 
-        base_pos_w += uniform_noise(reset_config.reset_pos)
-        base_rot_mat_w = so3_exp(uniform_noise(reset_config.reset_rot)) @ base_rot_mat_w
-        base_lin_vel_w += uniform_noise(reset_config.reset_lin_vel)
-        base_ang_vel_w += uniform_noise(reset_config.reset_ang_vel)
-        joint_pos += torch.empty_like(joint_pos).uniform_(
-            -reset_config.reset_joint_pos, reset_config.reset_joint_pos
-        )
-        joint_vel += torch.empty_like(joint_vel).uniform_(
-            -reset_config.reset_joint_vel, reset_config.reset_joint_vel
-        )
+        if not self.evaluation:
+            base_pos_w += uniform_noise(reset_config.reset_pos)
+            base_rot_mat_w = so3_exp(uniform_noise(reset_config.reset_rot)) @ base_rot_mat_w
+            base_lin_vel_w += uniform_noise(reset_config.reset_lin_vel)
+            base_ang_vel_w += uniform_noise(reset_config.reset_ang_vel)
+            joint_pos += torch.empty_like(joint_pos).uniform_(
+                -reset_config.reset_joint_pos, reset_config.reset_joint_pos
+            )
+            joint_vel += torch.empty_like(joint_vel).uniform_(
+                -reset_config.reset_joint_vel, reset_config.reset_joint_vel
+            )
         joint_pos = joint_pos.clamp(
             self.task.kinematics.joint_pos_lower_limit, self.task.kinematics.joint_pos_upper_limit
         )
@@ -128,7 +141,11 @@ class TrackingEnvironment:
         self.episode_step[environment_indices] = 0
         self.last_action[environment_indices] = 0
         self.episode_return[environment_indices] = 0
-        randomize_joint_pos_offsets(self.simulation_parameters, environment_indices, self.robot_description)
+        if not self.evaluation:
+            randomize_joint_pos_offsets(
+                self.simulation_parameters, environment_indices, self.robot_description
+            )
+        self.simulation.forward()
 
     def observe(self):
         observation = transforms.compute_observation(
@@ -139,7 +156,11 @@ class TrackingEnvironment:
             self.motion,
             self.default_joint_pos,
         )
-        return transforms.apply_observation_noise(observation, self.observation_noise_limits)
+        return (
+            observation
+            if self.evaluation
+            else transforms.apply_observation_noise(observation, self.observation_noise_limits)
+        )
 
     def step(self, action):
         state = self.state()
@@ -184,5 +205,6 @@ class TrackingEnvironment:
             transition["normalized_episode_return"] = self.episode_return[completed_environment_indices] / (
                 episode_length * MAX_STEP_REWARD
             )
-            self.reset(completed_environment_indices)
+            if not self.evaluation:
+                self.reset(completed_environment_indices)
         return transition

@@ -269,3 +269,14 @@ def compute_normalized_simulation_parameters(parameters, robot):
         )
     )
     return (parameters - center) / scales
+
+
+def compute_ghost_pose(ref_state, robot_state, follow_base):
+    ref_base_pos_w, ref_base_rot_mat_w, _, _, ref_joint_pos, _ = ref_state
+    if not follow_base:
+        return ref_base_pos_w, ref_base_rot_mat_w, ref_joint_pos
+    base_pos_w, base_rot_mat_w = robot_state[:2]
+    ghost_base_pos_w = torch.cat((base_pos_w[..., :2], ref_base_pos_w[..., 2:3]), -1)
+    ref_alignment_rot_mat_w = yaw_mat(base_rot_mat_w @ ref_base_rot_mat_w.transpose(-1, -2))
+    ghost_base_rot_mat_w = ref_alignment_rot_mat_w @ ref_base_rot_mat_w
+    return ghost_base_pos_w, ghost_base_rot_mat_w, ref_joint_pos

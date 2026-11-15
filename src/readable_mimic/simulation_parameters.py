@@ -39,7 +39,7 @@ def default_simulation_parameters(robot, device):
     )
 
 
-def initialize_simulation_parameters(environment):
+def initialize_simulation_parameters(environment, randomize=True):
     """Sample friction / COM once and apply the same values to MuJoCo and replay context."""
     robot = environment.robot_description
     simulation = environment.simulation
@@ -47,12 +47,17 @@ def initialize_simulation_parameters(environment):
     parameters = default_simulation_parameters(robot, device).repeat(environment.num_envs, 1)
     simulation.expand_model_fields(("body_ipos", "geom_friction"))
     friction = parameters[:, :1]
-    friction.uniform_(*robot.domain_randomization.friction_range)
+    if randomize:
+        friction.uniform_(*robot.domain_randomization.friction_range)
+    else:
+        friction.fill_(1.0)
     ground_geom_indices = (
         torch.as_tensor(simulation.mj_model.geom_bodyid == 0, device=device).nonzero().flatten()
     )
     robot_geom_indices = environment.robot.indexing.geom_ids
-    simulation.model.geom_friction[:, ground_geom_indices, 0] = robot.domain_randomization.friction_range[0]
+    simulation.model.geom_friction[:, ground_geom_indices, 0] = (
+        robot.domain_randomization.friction_range[0] if randomize else 1.0
+    )
     simulation.model.geom_friction[:, robot_geom_indices, 0] = friction
     center_of_mass_offset = torch.stack(
         [
@@ -61,6 +66,8 @@ def initialize_simulation_parameters(environment):
         ],
         -1,
     )
+    if not randomize:
+        center_of_mass_offset.zero_()
     parameters[:, 1 + robot.num_joints :] = center_of_mass_offset
     body_index = environment.robot.indexing.body_ids[
         environment.robot.find_bodies(robot.center_of_mass_body)[0][0]
