@@ -767,6 +767,12 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/7d/8a/3b7f62b9df56460959f1b9bef094248d2a4d7f393c5b0d2da8efcdf0e40e/imageio-2.38.1-py3-none-any.whl", hash = "sha256:36d23eb7423d2fb63f637098758edb3d2df3687f7125e0a5ce8596572022dcf9", size = 328389, upload-time = "2026-10-08T14:35:31.075Z" },
 ]
 
+[package.optional-dependencies]
+ffmpeg = [
+    { name = "imageio-ffmpeg" },
+    { name = "psutil" },
+]
+
 [[package]]
 name = "imageio-ffmpeg"
 version = "0.8.1"
@@ -2206,6 +2212,7 @@ name = "readable-mimic"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "imageio", extra = ["ffmpeg"] },
     { name = "mjlab" },
     { name = "mujoco" },
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
@@ -2223,6 +2230,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "imageio", extras = ["ffmpeg"], specifier = ">=2.37" },
     { name = "mjlab", specifier = ">=1.6.0" },
     { name = "mujoco" },
     { name = "numpy" },

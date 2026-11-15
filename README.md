@@ -103,29 +103,27 @@ checkpoint 恢复网络、标准化统计、优化器、迭代和学习率控制
 训练调用为 `self.updates.update_world_model()` 和 `self.updates.update_actor()`。
 删除仅承载一个函数的 objective.py，以及转换逻辑分散的 observation.py。
 
-## 随机起点可视化回放
+## 随机起点视频导出
 
 ```bash
 uv run --no-sync python -m readable_mimic.evaluate \
-  --config config.json \
   --checkpoint runs/main/last.pt \
   --motions "walk1_subject1|dance1_subject1" \
   --duration 30 \
-  --ghost-base follow
+  --ghost-base follow \
+  --output-dir videos
 ```
 
-轨迹名对应 motion_dir 中的 CSV 文件名，可省略 .csv；列表必须加引号。
-`--duration` 是每条轨迹的模拟播放秒数；播放到末尾或触发 termination 后，
-在同一条轨迹内重新随机起步。列表按给定顺序播放一次，结束后关闭窗口。
-`--motions all` 播放全部轨迹。`--seed` 控制随机起点，默认 0。
+每条轨迹输出一个 MP4，文件名为轨迹名称。列表必须加引号，轨迹名可省略 .csv；
+--motions all 导出全部轨迹。--duration 是每条视频的模拟时长（秒），输出固定为 50 FPS、960×720。
+仿真不等待墙钟时间，生成过程可能慢于实时，但视频播放速度由编码帧率确定。
 
-`--ghost-base follow`：ghost 的 xy 和 yaw 对齐当前机器人，保留参考高度和倾斜。
-`--ghost-base reference`：ghost 保留参考动作原本的世界轨迹。
-Ghost 是透明蓝色的 viewer 几何体，不加入物理模型、不参与碰撞。
+每条轨迹随机起步；片段结束或摔倒后，在同一条轨迹重新随机起步。
+--ghost-base follow 对齐机器人 xy/yaw，reference 保留参考世界轨迹。
+Ghost 仅为透明渲染几何体，不参与物理计算。默认读取 EMA Actor，关闭训练噪声和域随机化。
 
-回放优先读取 checkpoint 中的 EMA Actor，关闭动作/观测/reset 噪声和域随机化，
-摩擦设为 1、关节与质心偏移为 0。模型结构使用 checkpoint 保存的配置，
-本机资产路径和设备使用 --config 指定的配置。旧 checkpoint 的权重键名必须与当前 Actor 一致。
-窗口通过 MuJoCo viewer 打开，需要在有图形界面的会话运行。
+不启动 MuJoCo viewer，也不弹出预览窗口。Linux 无 DISPLAY 时自动选择 EGL；
+如需手动指定，可在命令前加 MUJOCO_GL=egl。编码依赖 imageio[ffmpeg]，更新项目后先执行 uv sync。
+若之前为解决 MuJoCo 混装手工修复过环境，应保留该处理，再使用 --no-sync 运行导出命令。
 
-这是随机起点的可视化检查，不输出整段动作的标准评测分数。
+这是可视化视频导出，不是完整动作的标准评测分数。

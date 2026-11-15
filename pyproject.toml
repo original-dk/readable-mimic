@@ -7,7 +7,7 @@ name = "readable-mimic"
 version = "0.1.0"
 description = "Modular FP32 actor-critic world-model motion tracking"
 requires-python = ">=3.11,<3.14"
-dependencies = ["torch==2.9.0", "warp-lang==1.16.0", "mjlab>=1.6.0", "numpy", "mujoco"]
+dependencies = ["torch==2.9.0", "warp-lang==1.16.0", "mjlab>=1.6.0", "numpy", "mujoco", "imageio[ffmpeg]>=2.37"]
 
 [[tool.uv.index]]
 name = "pytorch-cu128"

@@ -64,7 +64,7 @@ def test_ghost_pose_and_scene_without_physics_changes(tiny_trainer):
     original_qpos = robot_qpos.copy()
     overlay.update(scene, robot_qpos, follow_pose)
     assert scene.ngeom == model.ngeom
-    assert all(scene.geoms[index].rgba[3] < 1 for index in range(scene.ngeom))
+    assert all((scene.geoms[index].rgba[3] < 1 for index in range(scene.ngeom)))
     assert model_dimensions == (model.nbody, model.ngeom, model.nq, model.nv)
     np.testing.assert_array_equal(robot_qpos, original_qpos)
     for _ in range(20):
@@ -72,10 +72,9 @@ def test_ghost_pose_and_scene_without_physics_changes(tiny_trainer):
         assert int(trainer.motion.clip_start[0]) <= int(frame) < int(trainer.motion.clip_end[0])
 
 
-def test_playback_duration_and_clip_restart(tiny_trainer, monkeypatch):
-    from contextlib import nullcontext
+def test_video_frame_count_and_clip_restart(tiny_trainer, monkeypatch, tmp_path):
     from types import SimpleNamespace
-    from readable_mimic.evaluate import play_motion
+    from readable_mimic.evaluate import render_motion
 
     trainer = tiny_trainer
     model = mujoco.MjModel.from_xml_path(trainer.robot.mjcf_path)
@@ -83,7 +82,6 @@ def test_playback_duration_and_clip_restart(tiny_trainer, monkeypatch):
     monkeypatch.setattr(
         "readable_mimic.evaluate.sample_start_frame", lambda motion, index: torch.tensor([clip_end - 1])
     )
-    monkeypatch.setattr("readable_mimic.evaluate.time.sleep", lambda seconds: None)
 
     class PlaybackEnvironment:
         device = "cpu"
@@ -108,31 +106,38 @@ def test_playback_duration_and_clip_restart(tiny_trainer, monkeypatch):
 
         def step(self, action):
             self.motion_frame_index += 1
-            # Native MuJoCo qpos is position / quaternion / joints, without velocities.
             state = self.state()
             from readable_mimic.rotations import mat_to_quat
 
             self.simulation.data.qpos[0] = torch.cat((state[0], mat_to_quat(state[1]), state[4]), -1)[0]
             return {"done": torch.tensor([True])}
 
-    class Viewer:
-        sync_count = 0
-        user_scn = mujoco.MjvScene(model, maxgeom=32)
-        cam = SimpleNamespace(lookat=np.zeros(3))
+    class Renderer:
+        scene = mujoco.MjvScene(model, maxgeom=32)
 
-        def is_running(self):
-            return True
+        def update_scene(self, data, camera):
+            self.scene.ngeom = 0
 
-        def lock(self):
-            return nullcontext()
+        def render(self):
+            return np.zeros((32, 32, 3), dtype=np.uint8)
 
-        def sync(self):
-            self.sync_count += 1
+    class Writer:
+        frame_count = 0
 
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def append_data(self, frame):
+            self.frame_count += 1
+
+    writer = Writer()
+    monkeypatch.setattr("readable_mimic.evaluate.imageio.get_writer", lambda *args, **kwargs: writer)
     environment = PlaybackEnvironment()
-    viewer = Viewer()
     ghost = GhostOverlay(model, np.arange(7), np.arange(7, 9))
-    assert play_motion(
+    render_motion(
         environment,
         trainer.actor,
         trainer.motion,
@@ -140,10 +145,11 @@ def test_playback_duration_and_clip_restart(tiny_trainer, monkeypatch):
         trainer.config.hist,
         trainer.config.goal_frames,
         0.06,
-        viewer,
+        Renderer(),
         mujoco.MjData(model),
         ghost,
         True,
+        tmp_path / "test.mp4",
     )
-    assert viewer.sync_count == 3
+    assert writer.frame_count == 3
     assert environment.resets == 4

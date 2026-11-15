@@ -1,15 +1,18 @@
-"""Random-start Actor playback with a reference ghost in the MuJoCo viewer."""
+"""Render random-start Actor rollouts to MP4, with an optional base-following ref ghost."""
 
+import os
+import sys
+
+if sys.platform.startswith("linux") and (not os.environ.get("DISPLAY")):
+    os.environ.setdefault("MUJOCO_GL", "egl")
+import imageio.v2 as imageio
 import argparse
 from dataclasses import replace
 import math
 from pathlib import Path
-import time
-
 import mujoco
 import numpy as np
 import torch
-
 from . import data_transforms as transforms
 from .actor import Actor, actor_kwargs
 from .config import load_config
@@ -25,6 +28,7 @@ from .rotations import mat_to_quat
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--checkpoint", "--ckpt", required=True)
+    parser.add_argument("--output-dir", default="videos", help="One MP4 per selected trajectory.")
     parser.add_argument("--config", default="config.json")
     parser.add_argument("--motions", default="all", help="Exact clip names separated by | (quote the list).")
     parser.add_argument("--duration", type=float, default=30.0, help="Playback seconds per selected clip.")
@@ -86,7 +90,7 @@ class GhostOverlay:
         self.camera = mujoco.MjvCamera()
         self.perturbation = mujoco.MjvPerturb()
 
-    def update(self, user_scene, robot_qpos, ghost_pose):
+    def update(self, user_scene, robot_qpos, ghost_pose, append=False):
         base_pos_w, base_rot_mat_w, joint_pos = ghost_pose
         base_quat_w = mat_to_quat(base_rot_mat_w)
         self.data.qpos[:] = robot_qpos
@@ -104,7 +108,8 @@ class GhostOverlay:
             mujoco.mjtCatBit.mjCAT_ALL,
             self.scene,
         )
-        user_scene.ngeom = 0
+        if not append:
+            user_scene.ngeom = 0
         for geom_index in range(self.scene.ngeom):
             source = self.scene.geoms[geom_index]
             if source.objtype != mujoco.mjtObj.mjOBJ_GEOM or self.model.geom_bodyid[source.objid] == 0:
@@ -129,7 +134,7 @@ class GhostOverlay:
 
 
 @torch.no_grad()
-def play_motion(
+def render_motion(
     environment,
     actor,
     motion,
@@ -137,38 +142,47 @@ def play_motion(
     history_length,
     command_frames,
     duration,
-    viewer,
-    viewer_data,
+    renderer,
+    render_data,
     ghost,
     follow_base,
+    output_path,
 ):
     environment_indices = torch.tensor([0], device=environment.device)
     environment.reset(environment_indices, sample_start_frame(motion, clip_index))
     history = transforms.compute_observation_history(environment.observe(), history_length)
+    camera = mujoco.MjvCamera()
+    camera.distance = 3.0
+    camera.azimuth = 135.0
+    camera.elevation = -15.0
     steps = math.ceil(duration / CONTROL_DT)
-    for _ in range(steps):
-        if not viewer.is_running():
-            return False
-        step_started = time.monotonic()
-        command = transforms.compute_command(environment.motion_frame_index, command_frames, motion)
-        action = actor(history, command)
-        transition = environment.step(action)
-        ref_state = motion.ref_state(environment.motion_frame_index)
-        ghost_pose = transforms.compute_ghost_pose(ref_state, environment.state(), follow_base)
-        with viewer.lock():
-            viewer_data.qpos[:] = environment.simulation.data.qpos[0].cpu().numpy()
-            viewer_data.qvel[:] = environment.simulation.data.qvel[0].cpu().numpy()
-            mujoco.mj_forward(environment.simulation.mj_model, viewer_data)
-            ghost.update(viewer.user_scn, viewer_data.qpos, ghost_pose)
-            viewer.cam.lookat[:] = environment.state()[0][0].cpu().numpy()
-        viewer.sync()
-        if bool(transition["done"][0]):
-            environment.reset(environment_indices, sample_start_frame(motion, clip_index))
-            history = transforms.compute_observation_history(environment.observe(), history_length)
-        else:
-            history = transforms.update_observation_history(history, environment.observe())
-        time.sleep(max(0.0, CONTROL_DT - (time.monotonic() - step_started)))
-    return True
+    with imageio.get_writer(
+        str(output_path),
+        fps=round(1 / CONTROL_DT),
+        codec="libx264",
+        macro_block_size=1,
+        pixelformat="yuv420p",
+    ) as writer:
+        for step_index in range(steps):
+            command = transforms.compute_command(environment.motion_frame_index, command_frames, motion)
+            transition = environment.step(actor(history, command))
+            robot_state = environment.state()
+            ref_state = motion.ref_state(environment.motion_frame_index)
+            ghost_pose = transforms.compute_ghost_pose(ref_state, robot_state, follow_base)
+            render_data.qpos[:] = environment.simulation.data.qpos[0].cpu().numpy()
+            render_data.qvel[:] = environment.simulation.data.qvel[0].cpu().numpy()
+            mujoco.mj_forward(environment.simulation.mj_model, render_data)
+            camera.lookat[:] = robot_state[0][0].cpu().numpy()
+            renderer.update_scene(render_data, camera=camera)
+            ghost.update(renderer.scene, render_data.qpos, ghost_pose, append=True)
+            writer.append_data(renderer.render())
+            if bool(transition["done"][0]):
+                environment.reset(environment_indices, sample_start_frame(motion, clip_index))
+                history = transforms.compute_observation_history(environment.observe(), history_length)
+            else:
+                history = transforms.update_observation_history(history, environment.observe())
+            if (step_index + 1) % 250 == 0 or step_index + 1 == steps:
+                print(f"{motion.names[clip_index]}: {step_index + 1}/{steps} video frames", flush=True)
 
 
 def main(argv=None):
@@ -186,7 +200,7 @@ def main(argv=None):
     kinematics = Kinematics(robot, config.device)
     motion = ReferenceMotion.from_dir(config.motion_dir, robot, kinematics, config.device)
     selected_indices = select_motion_indices(motion.names, arguments.motions)
-    history_length, command_frames = actor_config["hist"], actor_config["goal_frames"]
+    history_length, command_frames = (actor_config["hist"], actor_config["goal_frames"])
     actor = Actor(
         transforms.compute_observation_dim(robot.num_joints),
         transforms.compute_command_dim(robot.num_joints, command_frames),
@@ -210,23 +224,19 @@ def main(argv=None):
         evaluation=True,
     )
     model = environment.simulation.mj_model
-    viewer_data = mujoco.MjData(model)
+    render_data = mujoco.MjData(model)
     indices = environment.robot.indexing
     ghost = GhostOverlay(
         model,
         torch.as_tensor(indices.free_joint_q_adr).cpu().numpy(),
         torch.as_tensor(indices.joint_q_adr).cpu().numpy(),
     )
-    from mujoco import viewer as mujoco_viewer
-
-    with mujoco_viewer.launch_passive(model, viewer_data) as viewer:
-        viewer.cam.distance = 3.0
+    output_directory = Path(arguments.output_dir)
+    output_directory.mkdir(parents=True, exist_ok=True)
+    with mujoco.Renderer(model, height=720, width=960) as renderer:
         for clip_index in selected_indices:
-            print(
-                f"Playing {motion.names[clip_index]} | {arguments.duration:g}s | ghost={arguments.ghost_base}",
-                flush=True,
-            )
-            if not play_motion(
+            output_path = output_directory / (motion.names[clip_index] + ".mp4")
+            render_motion(
                 environment,
                 actor,
                 motion,
@@ -234,12 +244,13 @@ def main(argv=None):
                 history_length,
                 command_frames,
                 arguments.duration,
-                viewer,
-                viewer_data,
+                renderer,
+                render_data,
                 ghost,
                 arguments.ghost_base == "follow",
-            ):
-                break
+                output_path,
+            )
+            print(f"Saved {output_path.resolve()}", flush=True)
 
 
 if __name__ == "__main__":
