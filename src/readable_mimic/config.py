@@ -21,6 +21,25 @@ def load_config(path="config.json"):
     for key in ("motion_dir", "log_dir", "resume"):
         if values[key] is not None:
             values[key] = str((path.parent / values[key]).resolve())
+    if values["resume"] is not None:
+        import torch
+
+        checkpoint = torch.load(values["resume"], map_location="cpu", weights_only=False)
+        saved_config = checkpoint["config"]
+        runtime_fields = (
+            "device",
+            "num_threads",
+            "motion_dir",
+            "log_dir",
+            "resume",
+            "iterations",
+            "ckpt_every",
+            "ckpt_minutes",
+            "max_hours",
+            "log_every",
+        )
+        runtime_config = {name: values[name] for name in runtime_fields}
+        values = {**values, **saved_config, **runtime_config}
     config = SimpleNamespace(**values)
     assert config.amp == "none", "Only FP32 is supported."
     assert config.fail_reset == 0, "Only uniform reset sampling is supported."

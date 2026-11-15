@@ -127,3 +127,49 @@ Ghost 仅为透明渲染几何体，不参与物理计算。默认读取 EMA Act
 若之前为解决 MuJoCo 混装手工修复过环境，应保留该处理，再使用 --no-sync 运行导出命令。
 
 这是可视化视频导出，不是完整动作的标准评测分数。
+
+## Checkpoint 与继续训练
+
+所有设置仍放在 config.json：
+
+```json
+{
+  "ckpt_every": 100,
+  "resume": null,
+  "iterations": 3500
+}
+```
+
+每 100 个训练迭代保存 log_dir/checkpoints/iteration_000100.pt 等独立文件，
+并更新 log_dir/last.pt。训练正常结束时也保存，即使最后一次迭代不是保存间隔的倍数。
+文件先写临时文件再替换，避免半写入的 checkpoint 覆盖有效文件。
+
+每个文件包含 Actor、EMA Actor、Critic、WM、各自标准化统计、三个优化器
+（包含 Muon 与 Adam 子状态）、完整配置、已完成迭代数、采样余数、学习率触发状态，
+以及 Python、NumPy、PyTorch CPU 和 CUDA 随机状态。不保存 Replay Buffer 和仿真环境。
+
+继续训练时修改 config.json：
+
+```json
+{
+  "resume": "runs/main/checkpoints/iteration_001500.pt",
+  "iterations": 5000,
+  "ckpt_every": 100
+}
+```
+
+然后执行原训练命令：
+
+```bash
+uv run --no-sync python -m readable_mimic.train --config config.json
+```
+
+iterations 是总目标，不是追加轮数：上例从完成的第 1500 次迭代继续，训练到第 5000 次。
+模型结构与算法配置从 checkpoint 自动恢复；当前配置中的 device、num_threads、
+motion_dir、log_dir、resume、iterations、保存/日志间隔和本次时长限制仍然有效。
+如果回退到较早的 checkpoint，建议修改 log_dir，避免与已有日志混在一起。
+
+Buffer 默认不保存。默认 4096 环境 × 1000 步的原始 Buffer 约 3.6 GiB，
+而它可以通过重新采样恢复；继续训练会创建新环境并执行 warmup_steps，再恢复随机数状态进入更新。
+因此这是恢复模型/优化器后的 warm restart，不保证与不间断运行逐步完全一致。
+现有同版本字段命名的旧 last.pt 仍可加载；不兼容历史字段重命名之前的权重。

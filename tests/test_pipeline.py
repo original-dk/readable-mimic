@@ -13,6 +13,21 @@ from readable_mimic.robot import RobotSpec
 from readable_mimic.trainer import Trainer
 
 
+def assert_checkpoint_values_equal(actual, expected):
+    if isinstance(actual, torch.Tensor):
+        torch.testing.assert_close(actual, expected)
+    elif isinstance(actual, dict):
+        assert actual.keys() == expected.keys()
+        for key in actual:
+            assert_checkpoint_values_equal(actual[key], expected[key])
+    elif isinstance(actual, (list, tuple)):
+        assert len(actual) == len(expected)
+        for actual_value, expected_value in zip(actual, expected):
+            assert_checkpoint_values_equal(actual_value, expected_value)
+    else:
+        assert actual == expected
+
+
 @pytest.fixture
 def tiny_trainer(tmp_path, monkeypatch):
     xml = '<mujoco><worldbody><body name="pelvis"><freejoint/>\n    <geom type="sphere" size="0.05" mass="1"/>\n    <body name="left_ankle_roll_link" pos="0 .1 -.2"><joint name="left_pitch_joint" axis="0 1 0" range="-2 2"/>\n    <geom type="sphere" size=".04" mass=".2"/></body>\n    <body name="right_ankle_roll_link" pos="0 -.1 -.2"><joint name="right_pitch_joint" axis="0 1 0" range="-2 2"/>\n    <geom type="sphere" size=".04" mass=".2"/></body></body></worldbody></mujoco>'
@@ -245,12 +260,37 @@ def test_collect_and_training_loop(tiny_trainer, tmp_path, monkeypatch):
     trainer.config.wm_batches = 1
     trainer.config.iterations = 2
     trainer.config.log_every = 1
-    trainer.config.ckpt_every = 1
+    trainer.config.ckpt_every = 2
     trainer.config.log_dir = str(tmp_path / "run")
     trainer.run()
     assert trainer.iteration == 2
     assert (tmp_path / "run/last.pt").is_file()
     assert len((tmp_path / "run/metrics.jsonl").read_text().splitlines()) == 2
+    assert not (tmp_path / "run/checkpoints/iteration_000001.pt").exists()
+    assert (tmp_path / "run/checkpoints/iteration_000002.pt").is_file()
+    from copy import deepcopy
+
+    resumed_config = deepcopy(trainer.config)
+    resumed_config.iterations = 3
+    resumed = Trainer(resumed_config)
+    resumed.load(tmp_path / "run/last.pt")
+    assert resumed.iteration == 2
+    assert resumed.buffer.size == 0
+    torch.testing.assert_close(resumed.actor.state_dict(), trainer.actor.state_dict())
+    assert_checkpoint_values_equal(resumed.actor_optimizer.state_dict(), trainer.actor_optimizer.state_dict())
+    assert_checkpoint_values_equal(
+        resumed.critic_optimizer.state_dict(), trainer.critic_optimizer.state_dict()
+    )
+    assert_checkpoint_values_equal(
+        resumed.world_model_optimizer.state_dict(), trainer.world_model_optimizer.state_dict()
+    )
+    monkeypatch.setattr(
+        resumed, "create_environment", lambda: setattr(resumed, "environment", NativeEnvironment())
+    )
+    resumed.run()
+    assert resumed.iteration == 3
+    assert (tmp_path / "run/checkpoints/iteration_000003.pt").is_file()
+    assert len((tmp_path / "run/metrics.jsonl").read_text().splitlines()) == 3
 
 
 def test_simulation_parameters_match_applied_physics(tiny_trainer):
@@ -427,3 +467,49 @@ def test_updater_dependencies_are_explicit_and_transforms_are_centralized():
     assert not any(isinstance(node, ast.Name) and node.id == "self" for node in ast.walk(transform_tree))
     assert not (source_directory / "objective.py").exists()
     assert not (source_directory / "observation.py").exists()
+
+
+def test_resume_restores_saved_config_and_random_states(tiny_trainer, tmp_path):
+    import json
+    import random
+    from readable_mimic.config import load_config
+
+    trainer = tiny_trainer
+    trainer.config.warmup_steps = 4
+    trainer.iteration = 7
+    trainer.decay_start = 5
+    trainer.collection_remainder = 0.5
+    trainer.save(tmp_path / "saved.pt")
+    expected_torch = torch.rand(3)
+    expected_numpy = np.random.rand(3)
+    expected_python = random.random()
+    current = dict(vars(trainer.config))
+    current.update(
+        resume="saved.pt",
+        lr=0.123,
+        wm_hidden="9,9",
+        iterations=20,
+        ckpt_every=5,
+        log_dir="new_run",
+        motion_dir=trainer.config.motion_dir,
+    )
+    (tmp_path / "config.json").write_text(json.dumps(current), encoding="utf-8")
+    config = load_config(tmp_path / "config.json")
+    assert config.lr == trainer.config.lr
+    assert config.wm_hidden == trainer.config.wm_hidden
+    assert config.iterations == 20 and config.ckpt_every == 5
+    assert config.log_dir == str(tmp_path / "new_run")
+    resumed = Trainer(config)
+    resumed.load(config.resume)
+    assert resumed.decay_start == 5 and resumed.collection_remainder == 0.5
+    resumed.restore_random_states()
+    torch.testing.assert_close(torch.rand(3), expected_torch)
+    np.testing.assert_array_equal(np.random.rand(3), expected_numpy)
+    assert random.random() == expected_python
+    checkpoint = torch.load(tmp_path / "saved.pt", map_location="cpu", weights_only=False)
+    assert "buffer" not in checkpoint
+    assert checkpoint["config"]["wm_hidden"] == trainer.config.wm_hidden
+    assert checkpoint["format_version"] == 2
+    resumed.config.iterations = 7
+    with pytest.raises(ValueError, match="larger total target"):
+        resumed.load(config.resume)

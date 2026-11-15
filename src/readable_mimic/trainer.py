@@ -1,7 +1,10 @@
 """Collect -> world model -> imagined actor -> critic; no compilation or CUDA graphs."""
 
+import random, shutil
+import numpy as np
 from . import data_transforms as transforms
 from .updates import TrainingUpdates
+from .config import ObservationNoiseConfig
 from dataclasses import replace
 import json
 import math
@@ -127,6 +130,7 @@ class Trainer:
             mirror=self.mirror,
             state_error_floor=self.state_error_floor,
         )
+        self.pending_random_states = None
 
     @staticmethod
     def widths(text):
@@ -205,6 +209,9 @@ class Trainer:
         (output / "config.json").write_text(json.dumps(vars(config), indent=2), encoding="utf-8")
         self.create_environment()
         return_window = self.collect(config.warmup_steps)
+        if self.pending_random_states is not None:
+            self.restore_random_states()
+        last_saved_iteration = None
         start_time = time.monotonic()
         next_checkpoint_time = start_time + config.ckpt_minutes * 60
         for iteration in range(self.iteration, config.iterations):
@@ -245,13 +252,17 @@ class Trainer:
                     stream.write(json.dumps(metrics) + "\n")
             timed_checkpoint = config.ckpt_minutes > 0 and time.monotonic() >= next_checkpoint_time
             if self.iteration % config.ckpt_every == 0 or timed_checkpoint:
-                self.save(output / "last.pt")
+                self.save_training_checkpoint(output)
                 next_checkpoint_time = time.monotonic() + config.ckpt_minutes * 60
+                last_saved_iteration = self.iteration
             if config.max_hours is not None and time.monotonic() - start_time >= config.max_hours * 3600:
                 break
-        self.save(output / "last.pt")
+        if self.iteration != last_saved_iteration:
+            self.save_training_checkpoint(output)
 
     def save(self, path):
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
         state = {
             name: getattr(self, name).state_dict()
             for name in (
@@ -270,13 +281,23 @@ class Trainer:
             collection_remainder=self.collection_remainder,
             decay_start=self.decay_start,
             torch_rng_state=torch.get_rng_state(),
+            format_version=2,
+            python_random_state=random.getstate(),
+            numpy_random_state=np.random.get_state(),
+            cuda_random_states=torch.cuda.get_rng_state_all() if torch.cuda.is_available() else [],
         )
         temporary = Path(str(path) + ".tmp")
         torch.save(state, temporary)
         temporary.replace(path)
 
     def load(self, path):
-        state = torch.load(path, map_location=self.device, weights_only=False)
+        state = torch.load(path, map_location="cpu", weights_only=False)
+        if state.get("format_version", 1) not in (1, 2):
+            raise ValueError("Unsupported checkpoint format.")
+        if state["iteration"] >= self.config.iterations:
+            raise ValueError(
+                f"Checkpoint is at iteration {state['iteration']}; set config.iterations to a larger total target."
+            )
         for name in (
             "actor",
             "actor_average",
@@ -290,7 +311,29 @@ class Trainer:
         self.iteration = state["iteration"]
         self.collection_remainder = state["collection_remainder"]
         self.decay_start = state["decay_start"]
-        torch.set_rng_state(state["torch_rng_state"].cpu())
+        self.pending_random_states = {
+            name: state[name]
+            for name in ("torch_rng_state", "python_random_state", "numpy_random_state", "cuda_random_states")
+            if name in state
+        }
+        print(f"Resuming iteration {self.iteration}; replay buffer will be refilled.", flush=True)
 
+    def save_training_checkpoint(self, output_directory):
+        checkpoint_path = Path(output_directory) / "checkpoints" / f"iteration_{self.iteration:06d}.pt"
+        self.save(checkpoint_path)
+        temporary_last = Path(output_directory) / "last.pt.tmp"
+        shutil.copyfile(checkpoint_path, temporary_last)
+        temporary_last.replace(Path(output_directory) / "last.pt")
+        print(f"Saved checkpoint: {checkpoint_path}", flush=True)
 
-from .config import ObservationNoiseConfig
+    def restore_random_states(self):
+        states = self.pending_random_states
+        torch.set_rng_state(states["torch_rng_state"].cpu())
+        if "python_random_state" in states:
+            random.setstate(states["python_random_state"])
+        if "numpy_random_state" in states:
+            np.random.set_state(states["numpy_random_state"])
+        if states.get("cuda_random_states") and torch.cuda.is_available():
+            if len(states["cuda_random_states"]) == torch.cuda.device_count():
+                torch.cuda.set_rng_state_all(states["cuda_random_states"])
+        self.pending_random_states = None
