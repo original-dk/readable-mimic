@@ -80,11 +80,12 @@ def sample_start_frame(motion, clip_index):
 class GhostOverlay:
     """Visual geoms only: the ghost never enters the physics model."""
 
-    def __init__(self, model, base_qpos_indices, joint_qpos_indices):
+    def __init__(self, model, base_qpos_indices, joint_qpos_indices, robot_geom_indices):
         self.model = model
         self.data = mujoco.MjData(model)
         self.base_qpos_indices = np.asarray(base_qpos_indices, dtype=int)
         self.joint_qpos_indices = np.asarray(joint_qpos_indices, dtype=int)
+        self.robot_geom_indices = set(np.asarray(robot_geom_indices, dtype=int).reshape(-1).tolist())
         self.scene = mujoco.MjvScene(model, maxgeom=model.ngeom + 32)
         self.options = mujoco.MjvOption()
         self.camera = mujoco.MjvCamera()
@@ -112,7 +113,7 @@ class GhostOverlay:
             user_scene.ngeom = 0
         for geom_index in range(self.scene.ngeom):
             source = self.scene.geoms[geom_index]
-            if source.objtype != mujoco.mjtObj.mjOBJ_GEOM or self.model.geom_bodyid[source.objid] == 0:
+            if source.objtype != mujoco.mjtObj.mjOBJ_GEOM or source.objid not in self.robot_geom_indices:
                 continue
             if user_scene.ngeom >= user_scene.maxgeom:
                 raise RuntimeError("Viewer ghost geometry capacity exceeded.")
@@ -232,6 +233,7 @@ def main(argv=None):
         model,
         torch.as_tensor(indices.free_joint_q_adr).cpu().numpy(),
         torch.as_tensor(indices.joint_q_adr).cpu().numpy(),
+        torch.as_tensor(indices.geom_ids).cpu().numpy(),
     )
     output_directory = Path(arguments.output_dir)
     output_directory.mkdir(parents=True, exist_ok=True)
