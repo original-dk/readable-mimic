@@ -176,16 +176,6 @@ class TrackingEnvironment:
             self.scene.update(PHYSICS_DT)
         next_state = self.state()
         next_motion_frame_index = motion_frame_index + 1
-        if self.evaluation:
-            termination = self.task.termination(next_state, next_motion_frame_index)
-            clip_end_frame = self.motion.clip_end[self.motion.clip_id[motion_frame_index]]
-            timeout = (next_motion_frame_index >= clip_end_frame) | (
-                episode_step + 1 >= self.max_episode_steps
-            )
-            self.motion_frame_index = next_motion_frame_index
-            self.episode_step += 1
-            self.last_action = action.clone()
-            return {"done": termination | timeout, "termination": termination}
         reward = self.task.reward(next_state, next_motion_frame_index, action, last_action)
         termination = self.task.termination(next_state, next_motion_frame_index)
         clip_end_frame = self.motion.clip_end[self.motion.clip_id[motion_frame_index]]

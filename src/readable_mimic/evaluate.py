@@ -146,8 +146,7 @@ def play_motion(
     environment.reset(environment_indices, sample_start_frame(motion, clip_index))
     history = transforms.compute_observation_history(environment.observe(), history_length)
     steps = math.ceil(duration / CONTROL_DT)
-    playback_started = time.monotonic()
-    for step_index in range(steps):
+    for _ in range(steps):
         if not viewer.is_running():
             return False
         step_started = time.monotonic()
@@ -155,14 +154,13 @@ def play_motion(
         action = actor(history, command)
         transition = environment.step(action)
         ref_state = motion.ref_state(environment.motion_frame_index)
-        robot_state = environment.state()
-        ghost_pose = transforms.compute_ghost_pose(ref_state, robot_state, follow_base)
+        ghost_pose = transforms.compute_ghost_pose(ref_state, environment.state(), follow_base)
         with viewer.lock():
             viewer_data.qpos[:] = environment.simulation.data.qpos[0].cpu().numpy()
             viewer_data.qvel[:] = environment.simulation.data.qvel[0].cpu().numpy()
             mujoco.mj_forward(environment.simulation.mj_model, viewer_data)
             ghost.update(viewer.user_scn, viewer_data.qpos, ghost_pose)
-            viewer.cam.lookat[:] = robot_state[0][0].cpu().numpy()
+            viewer.cam.lookat[:] = environment.state()[0][0].cpu().numpy()
         viewer.sync()
         if bool(transition["done"][0]):
             environment.reset(environment_indices, sample_start_frame(motion, clip_index))
@@ -170,13 +168,6 @@ def play_motion(
         else:
             history = transforms.update_observation_history(history, environment.observe())
         time.sleep(max(0.0, CONTROL_DT - (time.monotonic() - step_started)))
-        if (step_index + 1) % 250 == 0 or step_index + 1 == steps:
-            simulated_seconds = (step_index + 1) * CONTROL_DT
-            wall_seconds = time.monotonic() - playback_started
-            print(
-                f"Playback: {simulated_seconds:.1f}s simulated / {wall_seconds:.1f}s wall | RTF={simulated_seconds / wall_seconds:.2f}",
-                flush=True,
-            )
     return True
 
 
