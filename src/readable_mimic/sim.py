@@ -1,8 +1,31 @@
-"""The WM context is [friction, joint_pos_offset, center_of_mass_offset]."""
+"""Simulation creation, timing, configuration and physical parameter randomization."""
 
+from mjlab.scene import Scene, SceneCfg
+from mjlab.sim import MujocoCfg, Simulation, SimulationCfg
+from mjlab.terrains import TerrainEntityCfg
 from dataclasses import dataclass, field
 import re
 import torch
+
+CONTROL_DT = 0.02
+DECIMATION = 4
+PHYSICS_DT = CONTROL_DT / DECIMATION
+
+
+class EagerSimulation(Simulation):
+    def _should_use_cuda_graph(self):
+        return False
+
+
+def make_sim(robot, settings):
+    settings = dict(settings)
+    settings.pop("control_dt")
+    settings.pop("decimation")
+    joint_capacity = settings.pop("njmax")
+    contact_capacity = settings.pop("nconmax")
+    return SimulationCfg(
+        njmax=joint_capacity, nconmax=contact_capacity, mujoco=MujocoCfg(timestep=PHYSICS_DT, **settings)
+    )
 
 
 @dataclass(frozen=True)
@@ -80,3 +103,18 @@ def randomize_joint_pos_offsets(parameters, env_indices, offset_limits):
     num_joints = offset_limits.numel()
     offsets = 2 * torch.rand(len(env_indices), num_joints, device=parameters.device) - 1
     parameters[env_indices, 1 : 1 + num_joints] = offsets * offset_limits
+
+
+def create_simulation(robot, num_envs, device, simulation_config):
+    scene_config = SceneCfg(
+        num_envs=num_envs,
+        env_spacing=0.0,
+        terrain=TerrainEntityCfg(terrain_type="plane"),
+        entities={"robot": robot.robot_cfg()},
+    )
+    scene = Scene(scene_config, device=device)
+    simulation = EagerSimulation(
+        num_envs=num_envs, cfg=simulation_config, model=scene.compile(), device=device
+    )
+    scene.initialize(mj_model=simulation.mj_model, model=simulation.model, data=simulation.data)
+    return (scene, simulation)

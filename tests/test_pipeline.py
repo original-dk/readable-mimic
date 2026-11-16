@@ -1,4 +1,4 @@
-from readable_mimic.simulation_parameters import default_simulation_parameters
+from readable_mimic.sim import default_simulation_parameters
 from readable_mimic import data_transforms as transforms
 
 "CPU integration of the actual FK, motion, replay and gradient updates (no fake WM)."
@@ -301,10 +301,7 @@ def test_collect_and_training_loop(tiny_trainer, tmp_path, monkeypatch):
 
 
 def test_simulation_parameters_match_applied_physics(tiny_trainer):
-    from readable_mimic.simulation_parameters import (
-        initialize_simulation_parameters,
-        randomize_joint_pos_offsets,
-    )
+    from readable_mimic.sim import initialize_simulation_parameters, randomize_joint_pos_offsets
 
     trainer = tiny_trainer
     default_body_positions = torch.zeros(3, 3)
@@ -360,7 +357,7 @@ def test_observation_fields_and_context_normalization(tiny_trainer):
 
 
 def test_reward_detail_names_and_total(tiny_trainer):
-    from readable_mimic.motion import CONTROL_DT
+    from readable_mimic.sim import CONTROL_DT
 
     trainer = tiny_trainer
     frames = torch.tensor([12, 13])
@@ -581,7 +578,7 @@ def test_resume_cli_overrides_config_without_modifying_file(tiny_trainer, tmp_pa
 
 
 def test_fixed_training_constants_are_not_rebuilt(tiny_trainer, monkeypatch):
-    import readable_mimic.simulation_parameters as parameters_module
+    import readable_mimic.sim as parameters_module
     import readable_mimic.buffer as buffer_module
 
     trainer = tiny_trainer

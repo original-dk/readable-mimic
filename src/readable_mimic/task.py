@@ -3,7 +3,7 @@
 from __future__ import annotations
 from dataclasses import dataclass
 import torch
-from .motion import CONTROL_DT
+from .sim import CONTROL_DT
 from .rotations import mm3, mv3, rot_angle_sq, yaw_mat
 
 CONTACT_Z = 0.045

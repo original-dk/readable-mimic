@@ -35,7 +35,7 @@ uv run pytest -q
 | motion.py | 参考动作重采样及 command |
 | data_transforms.py | obs、command、history、Critic 输入、Actor 回报、价值目标和状态转换 |
 | task.py | 跟踪奖励和终止条件 |
-| simulation_parameters.py | 摩擦、关节偏移、质心偏移的采样、应用和归一化 |
+| sim.py | 仿真配置、scene/仿真器创建、时间常量及物理参数随机化 |
 | kinematics.py | 上游 FK 算法，重命名状态参数 |
 | rotations.py | 四元数、旋转矩阵、SO(3) 运算 |
 | mirror.py | 左右镜像增强 |
@@ -189,3 +189,9 @@ WM rollout 的整批仿真参数在进入逐步预测前归一化一次。
 
 配置改变后重新构建 Trainer / Env；不使用全局缓存，不缓存随机采样结果、当前状态特征或正在更新的标准化统计。
 缓存由配置推导，不额外写入 checkpoint，不改变权重和优化器的存储格式。
+
+
+仿真相关代码统一位于 sim.py：make_sim、create_simulation、EagerSimulation、
+CONTROL_DT / DECIMATION / PHYSICS_DT、DomainRandomizationConfig 和参数采样函数。
+env.py 通过 create_simulation 创建 scene/仿真器，只负责环境状态、reset、observe、step。
+参数归一化等纯数据转换仍位于 data_transforms.py，保留已有模块职责。

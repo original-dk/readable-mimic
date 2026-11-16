@@ -1,6 +1,7 @@
 """Reference motion library: retargeted clips resampled to 50 Hz, with FK of tracked bodies."""
 
 from __future__ import annotations
+from .sim import CONTROL_DT
 import glob
 import os
 from typing import Callable
@@ -10,7 +11,6 @@ from .kinematics import Kinematics
 from .robot import MotionArrays, RobotSpec
 from .rotations import quat_slerp, quat_to_mat, so3_log
 
-CONTROL_DT = 0.02
 BIN_FRAMES = 50
 REF_JOINT_POS_COMMAND_OFFSET = 15
 

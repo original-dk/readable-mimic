@@ -1,34 +1,17 @@
 """Actor action -> MuJoCo step -> state / reward / replay transition."""
 
-from .simulation_parameters import joint_pos_offset_limits
+from .sim import (
+    DECIMATION,
+    PHYSICS_DT,
+    create_simulation,
+    joint_pos_offset_limits,
+    initialize_simulation_parameters,
+    randomize_joint_pos_offsets,
+)
 from . import data_transforms as transforms
 import torch
-from mjlab.scene import Scene, SceneCfg
-from mjlab.sim import MujocoCfg, Simulation, SimulationCfg
-from mjlab.terrains import TerrainEntityCfg
-from .motion import CONTROL_DT
 from .task import MAX_STEP_REWARD
 from .rotations import mat_to_quat, quat_to_mat, so3_exp
-from .simulation_parameters import initialize_simulation_parameters, randomize_joint_pos_offsets
-
-DECIMATION = 4
-PHYSICS_DT = CONTROL_DT / DECIMATION
-
-
-class EagerSimulation(Simulation):
-    def _should_use_cuda_graph(self):
-        return False
-
-
-def make_sim(robot, settings):
-    settings = dict(settings)
-    settings.pop("control_dt")
-    settings.pop("decimation")
-    joint_capacity = settings.pop("njmax")
-    contact_capacity = settings.pop("nconmax")
-    return SimulationCfg(
-        njmax=joint_capacity, nconmax=contact_capacity, mujoco=MujocoCfg(timestep=PHYSICS_DT, **settings)
-    )
 
 
 class TrackingEnv:
@@ -51,19 +34,7 @@ class TrackingEnv:
         self.motion = motion
         self.task = task
         self.max_episode_steps = max_episode_steps
-        scene_config = SceneCfg(
-            num_envs=num_envs,
-            env_spacing=0.0,
-            terrain=TerrainEntityCfg(terrain_type="plane"),
-            entities={"robot": robot.robot_cfg()},
-        )
-        self.scene = Scene(scene_config, device=device)
-        self.simulation = EagerSimulation(
-            num_envs=num_envs, cfg=simulation_config, model=self.scene.compile(), device=device
-        )
-        self.scene.initialize(
-            mj_model=self.simulation.mj_model, model=self.simulation.model, data=self.simulation.data
-        )
+        self.scene, self.simulation = create_simulation(robot, num_envs, device, simulation_config)
         self.robot = self.scene["robot"]
         assert list(self.robot.joint_names) == list(robot.joint_names)
         self.default_joint_pos = self.robot.data.default_joint_pos[0].clone()

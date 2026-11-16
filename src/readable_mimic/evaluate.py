@@ -2,9 +2,6 @@
 
 import os
 import sys
-
-if sys.platform.startswith("linux") and (not os.environ.get("DISPLAY")):
-    os.environ.setdefault("MUJOCO_GL", "egl")
 import imageio.v2 as imageio
 import argparse
 from dataclasses import replace
@@ -16,13 +13,16 @@ import torch
 from . import data_transforms as transforms
 from .actor import Actor, actor_kwargs
 from .config import load_config
-from .env import TrackingEnv, make_sim
+from .sim import make_sim, CONTROL_DT, DomainRandomizationConfig
+from .env import TrackingEnv
 from .kinematics import Kinematics
-from .motion import CONTROL_DT, ReferenceMotion
+from .motion import ReferenceMotion
 from .robot import get_robot
-from .simulation_parameters import DomainRandomizationConfig
 from .task import RewardConfig, TrackingTask
 from .rotations import mat_to_quat
+
+if sys.platform.startswith("linux") and (not os.environ.get("DISPLAY")):
+    os.environ.setdefault("MUJOCO_GL", "egl")
 
 
 def parse_args(argv=None):

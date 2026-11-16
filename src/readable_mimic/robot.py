@@ -8,12 +8,11 @@ from __future__ import annotations
 from .config import ObservationNoiseConfig
 import importlib
 import re
-from dataclasses import dataclass
-from dataclasses import field
+from dataclasses import dataclass, field
 from typing import Callable
 import numpy as np
 from mjlab.entity import EntityCfg
-from .simulation_parameters import DomainRandomizationConfig
+from .sim import DomainRandomizationConfig
 
 MotionArrays = tuple[np.ndarray, np.ndarray, np.ndarray, float]
 

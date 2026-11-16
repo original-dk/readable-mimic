@@ -1,6 +1,6 @@
 """Collect -> world model -> imagined actor -> critic; no compilation or CUDA graphs."""
 
-from .simulation_parameters import joint_pos_offset_limits
+from .sim import joint_pos_offset_limits, CONTROL_DT, DomainRandomizationConfig, simulation_parameter_count
 import random, shutil
 import numpy as np
 from . import data_transforms as transforms
@@ -14,9 +14,8 @@ from pathlib import Path
 import torch
 from .buffer import ReplayBuffer
 from .task import TrackingTask, RewardConfig, MAX_STEP_REWARD
-from .motion import CONTROL_DT, ReferenceMotion
+from .motion import ReferenceMotion
 from .kinematics import Kinematics
-from .simulation_parameters import DomainRandomizationConfig, simulation_parameter_count
 from .mirror import Mirror
 from .actor import Actor, actor_kwargs
 from .critic import Critic
@@ -154,7 +153,8 @@ class Trainer:
         return tuple((int(value) for value in text.split(",")))
 
     def create_env(self):
-        from .env import TrackingEnv, make_sim
+        from .sim import make_sim
+        from .env import TrackingEnv
 
         if self.device.startswith("cuda") and (not torch.cuda.is_available()):
             raise RuntimeError(

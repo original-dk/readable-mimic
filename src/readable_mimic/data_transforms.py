@@ -6,7 +6,7 @@ Functions receive their data explicitly; they never read Trainer or TrainingUpda
 from __future__ import annotations
 import torch
 from .rotations import mat_to_6d, mm3, mv3, quat_to_mat, mat_to_quat, yaw_mat
-from .simulation_parameters import default_simulation_parameters
+from .sim import default_simulation_parameters
 
 
 def compute_state_dim(num_joints: int) -> int:
