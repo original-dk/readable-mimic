@@ -30,7 +30,7 @@ def make_sim(robot, settings):
     )
 
 
-class TrackingEnvironment:
+class TrackingEnv:
     def __init__(
         self,
         simulation_config,
@@ -97,8 +97,8 @@ class TrackingEnvironment:
             start_frames + (torch.rand(num_samples, device=self.device) * (end_frames - start_frames)).long()
         )
 
-    def reset(self, environment_indices, motion_frames=None):
-        num_resets = len(environment_indices)
+    def reset(self, env_indices, motion_frames=None):
+        num_resets = len(env_indices)
         reset_config = self.robot_description.domain_randomization
         if motion_frames is None:
             motion_frames = self.sample_motion_frames(num_resets)
@@ -125,26 +125,24 @@ class TrackingEnvironment:
         joint_pos = joint_pos.clamp(
             self.task.kinematics.joint_pos_lower_limit, self.task.kinematics.joint_pos_upper_limit
         )
-        self.simulation.reset(environment_indices)
-        self.scene.reset(environment_indices)
+        self.simulation.reset(env_indices)
+        self.scene.reset(env_indices)
         base_pose_w = torch.cat(
-            (base_pos_w + self.scene.env_origins[environment_indices], mat_to_quat(base_rot_mat_w)), -1
+            (base_pos_w + self.scene.env_origins[env_indices], mat_to_quat(base_rot_mat_w)), -1
         )
-        self.robot.write_root_link_pose_to_sim(base_pose_w, env_ids=environment_indices)
+        self.robot.write_root_link_pose_to_sim(base_pose_w, env_ids=env_indices)
         self.robot.write_root_link_velocity_to_sim(
-            torch.cat((base_lin_vel_w, base_ang_vel_w), -1), env_ids=environment_indices
+            torch.cat((base_lin_vel_w, base_ang_vel_w), -1), env_ids=env_indices
         )
-        self.robot.write_joint_position_to_sim(joint_pos, env_ids=environment_indices)
-        self.robot.write_joint_velocity_to_sim(joint_vel, env_ids=environment_indices)
-        self.robot.set_joint_position_target(joint_pos, env_ids=environment_indices)
-        self.motion_frame_index[environment_indices] = motion_frames
-        self.episode_step[environment_indices] = 0
-        self.last_action[environment_indices] = 0
-        self.episode_return[environment_indices] = 0
+        self.robot.write_joint_position_to_sim(joint_pos, env_ids=env_indices)
+        self.robot.write_joint_velocity_to_sim(joint_vel, env_ids=env_indices)
+        self.robot.set_joint_position_target(joint_pos, env_ids=env_indices)
+        self.motion_frame_index[env_indices] = motion_frames
+        self.episode_step[env_indices] = 0
+        self.last_action[env_indices] = 0
+        self.episode_return[env_indices] = 0
         if not self.evaluation:
-            randomize_joint_pos_offsets(
-                self.simulation_parameters, environment_indices, self.robot_description
-            )
+            randomize_joint_pos_offsets(self.simulation_parameters, env_indices, self.robot_description)
         self.simulation.forward()
 
     def observe(self):
@@ -198,13 +196,13 @@ class TrackingEnvironment:
         self.episode_step += 1
         self.last_action = action.clone()
         self.episode_return += reward
-        completed_environment_indices = done.nonzero().flatten()
-        if len(completed_environment_indices) > 0:
-            episode_length = self.episode_step[completed_environment_indices].float()
+        completed_env_indices = done.nonzero().flatten()
+        if len(completed_env_indices) > 0:
+            episode_length = self.episode_step[completed_env_indices].float()
             transition["episode_length"] = episode_length
-            transition["normalized_episode_return"] = self.episode_return[completed_environment_indices] / (
+            transition["normalized_episode_return"] = self.episode_return[completed_env_indices] / (
                 episode_length * MAX_STEP_REWARD
             )
             if not self.evaluation:
-                self.reset(completed_environment_indices)
+                self.reset(completed_env_indices)
         return transition

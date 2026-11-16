@@ -113,7 +113,7 @@ class Trainer:
         self.iteration = 0
         self.collection_remainder = 0.0
         self.decay_start = None
-        self.environment = None
+        self.env = None
         self.updates = TrainingUpdates(
             config=config,
             actor=self.actor,
@@ -138,14 +138,14 @@ class Trainer:
     def widths(text):
         return tuple((int(value) for value in text.split(",")))
 
-    def create_environment(self):
-        from .environment import TrackingEnvironment, make_sim
+    def create_env(self):
+        from .env import TrackingEnv, make_sim
 
         if self.device.startswith("cuda") and (not torch.cuda.is_available()):
             raise RuntimeError(
                 "G1 training requires a CUDA-enabled PyTorch and an NVIDIA GPU. CPU tests: uv run pytest -q"
             )
-        self.environment = TrackingEnvironment(
+        self.env = TrackingEnv(
             make_sim(self.robot, self.config.simulation),
             self.config.num_envs,
             self.robot,
@@ -159,18 +159,18 @@ class Trainer:
     def collect(self, steps):
         episode_returns = []
         for _ in range(steps):
-            observation = self.environment.observe()
+            observation = self.env.observe()
             self.observation_history = transforms.update_observation_history(
-                self.observation_history, observation, self.environment.episode_step == 0
+                self.observation_history, observation, self.env.episode_step == 0
             )
             command = transforms.compute_command(
-                self.environment.motion_frame_index, self.command_frames, self.motion
+                self.env.motion_frame_index, self.command_frames, self.motion
             )
             self.actor.observation_normalizer.update(observation)
             self.actor.command_normalizer.update(command)
             action = self.actor(self.observation_history, command)
             action = (action + self.config.action_noise * torch.randn_like(action)).clamp(-20, 20)
-            transition = self.environment.step(action)
+            transition = self.env.step(action)
             self.sim_reward_sum.add_(transition["reward"].sum())
             self.sim_reward_count += transition["reward"].numel()
             self.buffer.add(transition)
@@ -211,7 +211,7 @@ class Trainer:
         output = Path(config.log_dir)
         output.mkdir(parents=True, exist_ok=True)
         (output / "config.json").write_text(json.dumps(vars(config), indent=2), encoding="utf-8")
-        self.create_environment()
+        self.create_env()
         return_window = self.collect(config.warmup_steps)
         self.sim_reward_sum.zero_()
         self.sim_reward_count = 0

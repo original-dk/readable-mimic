@@ -48,12 +48,12 @@ class ReplayBuffer:
     def sample_windows(self, batch_size: int, window_length: int):
         """k-step windows; returns dict of (B, k, ...) tensors and a validity mask (B, k)."""
         start_ages = self._randint(self.size - window_length + 1, batch_size)
-        environment_indices = torch.randint(0, self.num_envs, (batch_size,), device=self.device)
+        env_indices = torch.randint(0, self.num_envs, (batch_size,), device=self.device)
         ages = start_ages.unsqueeze(-1) + torch.arange(window_length, device=self.device)
         rows = self._row(ages)
-        window_environment_indices = environment_indices.unsqueeze(-1).expand_as(rows)
+        window_env_indices = env_indices.unsqueeze(-1).expand_as(rows)
         windows = {
-            key: self.data[key][rows, window_environment_indices]
+            key: self.data[key][rows, window_env_indices]
             for key in (
                 "state",
                 "next_state",
@@ -72,14 +72,14 @@ class ReplayBuffer:
 
     def sample_starts(self, batch_size: int, history_length: int):
         ages = self._randint(self.size, batch_size)
-        environment_indices = torch.randint(0, self.num_envs, (batch_size,), device=self.device)
-        return self.starts_at(ages, environment_indices, history_length)
+        env_indices = torch.randint(0, self.num_envs, (batch_size,), device=self.device)
+        return self.starts_at(ages, env_indices, history_length)
 
-    def starts_at(self, ages: torch.Tensor, environment_indices: torch.Tensor, history_length: int):
+    def starts_at(self, ages: torch.Tensor, env_indices: torch.Tensor, history_length: int):
         row_indices = self._row(ages)
-        episode_step = self.data["episode_step"][row_indices, environment_indices].long()
+        episode_step = self.data["episode_step"][row_indices, env_indices].long()
         history_rows = self._row(transforms.compute_history_ages(ages, episode_step, history_length))
         fields = ("state", "last_action", "simulation_parameters", "motion_frame_index")
-        start = {field: self.data[field][row_indices, environment_indices] for field in fields}
-        history = {field: self.data[field][history_rows, environment_indices[:, None]] for field in fields}
+        start = {field: self.data[field][row_indices, env_indices] for field in fields}
+        history = {field: self.data[field][history_rows, env_indices[:, None]] for field in fields}
         return (start, history)

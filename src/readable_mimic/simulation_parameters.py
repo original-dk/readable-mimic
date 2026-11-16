@@ -39,12 +39,12 @@ def default_simulation_parameters(robot, device):
     )
 
 
-def initialize_simulation_parameters(environment, randomize=True):
+def initialize_simulation_parameters(env, randomize=True):
     """Sample friction / COM once and apply the same values to MuJoCo and replay context."""
-    robot = environment.robot_description
-    simulation = environment.simulation
-    device = environment.device
-    parameters = default_simulation_parameters(robot, device).repeat(environment.num_envs, 1)
+    robot = env.robot_description
+    simulation = env.simulation
+    device = env.device
+    parameters = default_simulation_parameters(robot, device).repeat(env.num_envs, 1)
     simulation.expand_model_fields(("body_ipos", "geom_friction"))
     friction = parameters[:, :1]
     if randomize:
@@ -54,14 +54,14 @@ def initialize_simulation_parameters(environment, randomize=True):
     ground_geom_indices = (
         torch.as_tensor(simulation.mj_model.geom_bodyid == 0, device=device).nonzero().flatten()
     )
-    robot_geom_indices = environment.robot.indexing.geom_ids
+    robot_geom_indices = env.robot.indexing.geom_ids
     simulation.model.geom_friction[:, ground_geom_indices, 0] = (
         robot.domain_randomization.friction_range[0] if randomize else 1.0
     )
     simulation.model.geom_friction[:, robot_geom_indices, 0] = friction
     center_of_mass_offset = torch.stack(
         [
-            torch.empty(environment.num_envs, device=device).uniform_(lower, upper)
+            torch.empty(env.num_envs, device=device).uniform_(lower, upper)
             for lower, upper in robot.center_of_mass_offset_range
         ],
         -1,
@@ -69,18 +69,14 @@ def initialize_simulation_parameters(environment, randomize=True):
     if not randomize:
         center_of_mass_offset.zero_()
     parameters[:, 1 + robot.num_joints :] = center_of_mass_offset
-    body_index = environment.robot.indexing.body_ids[
-        environment.robot.find_bodies(robot.center_of_mass_body)[0][0]
-    ]
+    body_index = env.robot.indexing.body_ids[env.robot.find_bodies(robot.center_of_mass_body)[0][0]]
     simulation.model.body_ipos[:, body_index] = (
         simulation.get_default_field("body_ipos")[body_index] + center_of_mass_offset
     )
     return parameters
 
 
-def randomize_joint_pos_offsets(parameters, environment_indices, robot):
+def randomize_joint_pos_offsets(parameters, env_indices, robot):
     num_joints = robot.num_joints
-    offsets = 2 * torch.rand(len(environment_indices), num_joints, device=parameters.device) - 1
-    parameters[environment_indices, 1 : 1 + num_joints] = offsets * joint_pos_offset_limits(
-        robot, parameters.device
-    )
+    offsets = 2 * torch.rand(len(env_indices), num_joints, device=parameters.device) - 1
+    parameters[env_indices, 1 : 1 + num_joints] = offsets * joint_pos_offset_limits(robot, parameters.device)

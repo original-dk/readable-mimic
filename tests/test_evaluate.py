@@ -83,7 +83,7 @@ def test_video_frame_count_and_clip_restart(tiny_trainer, monkeypatch, tmp_path)
         "readable_mimic.evaluate.sample_start_frame", lambda motion, index: torch.tensor([clip_end - 1])
     )
 
-    class PlaybackEnvironment:
+    class PlaybackEnv:
         device = "cpu"
         resets = 0
 
@@ -135,10 +135,10 @@ def test_video_frame_count_and_clip_restart(tiny_trainer, monkeypatch, tmp_path)
 
     writer = Writer()
     monkeypatch.setattr("readable_mimic.evaluate.imageio.get_writer", lambda *args, **kwargs: writer)
-    environment = PlaybackEnvironment()
+    env = PlaybackEnv()
     ghost = GhostOverlay(model, np.arange(7), np.arange(7, 9), np.arange(model.ngeom))
     render_motion(
-        environment,
+        env,
         trainer.actor,
         trainer.motion,
         0,
@@ -152,7 +152,7 @@ def test_video_frame_count_and_clip_restart(tiny_trainer, monkeypatch, tmp_path)
         tmp_path / "test.mp4",
     )
     assert writer.frame_count == 3
-    assert environment.resets == 4
+    assert env.resets == 4
 
 
 def test_ghost_excludes_ground_on_separate_body():

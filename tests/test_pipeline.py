@@ -184,7 +184,7 @@ def test_collect_and_training_loop(tiny_trainer, tmp_path, monkeypatch):
     """Real native MuJoCo CPU collection through the same Trainer orchestration."""
     trainer = tiny_trainer
 
-    class NativeEnvironment:
+    class NativeEnv:
         def __init__(self):
             self.model = mujoco.MjModel.from_xml_path(trainer.robot.mjcf_path)
             self.model.opt.timestep = 0.005
@@ -253,9 +253,7 @@ def test_collect_and_training_loop(tiny_trainer, tmp_path, monkeypatch):
                 reward=trainer.task.reward(next_state, frames + 1, action, last_action),
             )
 
-    monkeypatch.setattr(
-        trainer, "create_environment", lambda: setattr(trainer, "environment", NativeEnvironment())
-    )
+    monkeypatch.setattr(trainer, "create_env", lambda: setattr(trainer, "env", NativeEnv()))
     trainer.config.warmup_steps = 4
     trainer.config.wm_batches = 1
     trainer.config.iterations = 2
@@ -288,9 +286,7 @@ def test_collect_and_training_loop(tiny_trainer, tmp_path, monkeypatch):
     assert_checkpoint_values_equal(
         resumed.world_model_optimizer.state_dict(), trainer.world_model_optimizer.state_dict()
     )
-    monkeypatch.setattr(
-        resumed, "create_environment", lambda: setattr(resumed, "environment", NativeEnvironment())
-    )
+    monkeypatch.setattr(resumed, "create_env", lambda: setattr(resumed, "env", NativeEnv()))
     resumed.run()
     assert resumed.iteration == 3
     assert (tmp_path / "run/checkpoints/iteration_000003.pt").is_file()
@@ -311,7 +307,7 @@ def test_simulation_parameters_match_applied_physics(tiny_trainer):
         expand_model_fields=lambda names: None,
         get_default_field=lambda name: default_body_positions,
     )
-    environment = SimpleNamespace(
+    env = SimpleNamespace(
         robot_description=trainer.robot,
         simulation=simulation,
         num_envs=4,
@@ -321,7 +317,7 @@ def test_simulation_parameters_match_applied_physics(tiny_trainer):
             find_bodies=lambda name: ([0], [name]),
         ),
     )
-    parameters = initialize_simulation_parameters(environment)
+    parameters = initialize_simulation_parameters(env)
     torch.testing.assert_close(simulation.model.geom_friction[:, 1, 0], parameters[:, 0])
     torch.testing.assert_close(simulation.model.geom_friction[:, 2, 0], parameters[:, 0])
     torch.testing.assert_close(simulation.model.body_ipos[:, 1], parameters[:, 3:6])
@@ -331,7 +327,7 @@ def test_simulation_parameters_match_applied_physics(tiny_trainer):
     torch.testing.assert_close(parameters[:, 0], before[:, 0])
     torch.testing.assert_close(parameters[:, 3:], before[:, 3:])
     assert parameters[:, 1:3].abs().le(0.01).all()
-    evaluation_parameters = initialize_simulation_parameters(environment, randomize=False)
+    evaluation_parameters = initialize_simulation_parameters(env, randomize=False)
     torch.testing.assert_close(evaluation_parameters[:, 0], torch.ones(4))
     torch.testing.assert_close(evaluation_parameters[:, 1:], torch.zeros(4, 5))
     torch.testing.assert_close(simulation.model.geom_friction[:, :, 0], torch.ones(4, 3))
@@ -525,7 +521,7 @@ def test_sim_r_uses_all_real_transitions(tiny_trainer):
     trainer = tiny_trainer
     transition = {name: values[0].clone() for name, values in trainer.buffer.data.items()}
     transition["reward"].fill_(0.05)
-    trainer.environment = SimpleNamespace(
+    trainer.env = SimpleNamespace(
         observe=lambda: torch.zeros(4, trainer.observation_dim),
         episode_step=torch.zeros(4, dtype=torch.long),
         motion_frame_index=transition["motion_frame_index"],

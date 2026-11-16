@@ -16,7 +16,7 @@ import torch
 from . import data_transforms as transforms
 from .actor import Actor, actor_kwargs
 from .config import load_config
-from .environment import TrackingEnvironment, make_sim
+from .env import TrackingEnv, make_sim
 from .kinematics import Kinematics
 from .motion import CONTROL_DT, ReferenceMotion
 from .robot import get_robot
@@ -136,7 +136,7 @@ class GhostOverlay:
 
 @torch.no_grad()
 def render_motion(
-    environment,
+    env,
     actor,
     motion,
     clip_index,
@@ -149,9 +149,9 @@ def render_motion(
     follow_base,
     output_path,
 ):
-    environment_indices = torch.tensor([0], device=environment.device)
-    environment.reset(environment_indices, sample_start_frame(motion, clip_index))
-    history = transforms.compute_observation_history(environment.observe(), history_length)
+    env_indices = torch.tensor([0], device=env.device)
+    env.reset(env_indices, sample_start_frame(motion, clip_index))
+    history = transforms.compute_observation_history(env.observe(), history_length)
     camera = mujoco.MjvCamera()
     camera.distance = 3.0
     camera.azimuth = 135.0
@@ -165,23 +165,23 @@ def render_motion(
         pixelformat="yuv420p",
     ) as writer:
         for step_index in range(steps):
-            command = transforms.compute_command(environment.motion_frame_index, command_frames, motion)
-            transition = environment.step(actor(history, command))
-            robot_state = environment.state()
-            ref_state = motion.ref_state(environment.motion_frame_index)
+            command = transforms.compute_command(env.motion_frame_index, command_frames, motion)
+            transition = env.step(actor(history, command))
+            robot_state = env.state()
+            ref_state = motion.ref_state(env.motion_frame_index)
             ghost_pose = transforms.compute_ghost_pose(ref_state, robot_state, follow_base)
-            render_data.qpos[:] = environment.simulation.data.qpos[0].cpu().numpy()
-            render_data.qvel[:] = environment.simulation.data.qvel[0].cpu().numpy()
-            mujoco.mj_forward(environment.simulation.mj_model, render_data)
+            render_data.qpos[:] = env.simulation.data.qpos[0].cpu().numpy()
+            render_data.qvel[:] = env.simulation.data.qvel[0].cpu().numpy()
+            mujoco.mj_forward(env.simulation.mj_model, render_data)
             camera.lookat[:] = robot_state[0][0].cpu().numpy()
             renderer.update_scene(render_data, camera=camera)
             ghost.update(renderer.scene, render_data.qpos, ghost_pose, append=True)
             writer.append_data(renderer.render())
             if bool(transition["done"][0]):
-                environment.reset(environment_indices, sample_start_frame(motion, clip_index))
-                history = transforms.compute_observation_history(environment.observe(), history_length)
+                env.reset(env_indices, sample_start_frame(motion, clip_index))
+                history = transforms.compute_observation_history(env.observe(), history_length)
             else:
-                history = transforms.update_observation_history(history, environment.observe())
+                history = transforms.update_observation_history(history, env.observe())
             if (step_index + 1) % 250 == 0 or step_index + 1 == steps:
                 print(f"{motion.names[clip_index]}: {step_index + 1}/{steps} video frames", flush=True)
 
@@ -214,7 +214,7 @@ def main(argv=None):
     actor.load_state_dict(select_actor_weights(checkpoint))
     actor.eval()
     task = TrackingTask(kinematics, motion, RewardConfig(**config.reward))
-    environment = TrackingEnvironment(
+    env = TrackingEnv(
         make_sim(robot, config.simulation),
         1,
         robot,
@@ -224,11 +224,11 @@ def main(argv=None):
         max_episode_steps=math.ceil(arguments.duration / CONTROL_DT) + 1,
         evaluation=True,
     )
-    model = environment.simulation.mj_model
+    model = env.simulation.mj_model
     model.vis.global_.offwidth = max(model.vis.global_.offwidth, 960)
     model.vis.global_.offheight = max(model.vis.global_.offheight, 720)
     render_data = mujoco.MjData(model)
-    indices = environment.robot.indexing
+    indices = env.robot.indexing
     ghost = GhostOverlay(
         model,
         torch.as_tensor(indices.free_joint_q_adr).cpu().numpy(),
@@ -241,7 +241,7 @@ def main(argv=None):
         for clip_index in selected_indices:
             output_path = output_directory / (motion.names[clip_index] + ".mp4")
             render_motion(
-                environment,
+                env,
                 actor,
                 motion,
                 clip_index,

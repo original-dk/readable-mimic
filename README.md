@@ -31,7 +31,7 @@ uv run pytest -q
 | world_model.py | 局部增量预测、结构化状态积分 |
 | updates.py | WM 回归、imagined Actor 更新、独立 Critic 回归 |
 | buffer.py | 时间×环境的循环 Buffer 和历史恢复 |
-| environment.py | MuJoCo-Warp 采样，均匀 bin reset |
+| env.py | MuJoCo-Warp 采样，均匀 bin reset |
 | motion.py | 参考动作重采样及 command |
 | data_transforms.py | obs、command、history、Critic 输入、Actor 回报、价值目标和状态转换 |
 | task.py | 跟踪奖励和终止条件 |
