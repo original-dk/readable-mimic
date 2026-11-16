@@ -16,7 +16,7 @@ class WorldModel(nn.Module):
     def __init__(
         self,
         num_joints: int,
-        num_simulation_parameters: int,
+        xi_dim: int,
         use_last_action: bool = False,
         hidden_dims=(2048, 2048, 2048),
         structured: bool = False,
@@ -29,7 +29,7 @@ class WorldModel(nn.Module):
         self.input_dim = (
             transforms.compute_invariant_feature_dim(num_joints)
             + num_joints * (2 if use_last_action else 1)
-            + num_simulation_parameters
+            + xi_dim
         )
         self.output_dim = 3 + 3 + 3 + 3 + num_joints + num_joints
         self.network = mlp(
@@ -41,20 +41,18 @@ class WorldModel(nn.Module):
         self.output_normalizer = RunningNorm(self.output_dim, epsilon=0.0001)
         self.increment_normalizer = RunningNorm(self.output_dim, epsilon=0.0001)
 
-    def inputs(self, state, action, last_action, normalized_simulation_parameters):
+    def inputs(self, state, action, last_action, normalized_xi):
         if self.use_last_action:
             return torch.cat(
                 (
                     transforms.compute_invariant_features(state),
                     action,
                     last_action,
-                    normalized_simulation_parameters,
+                    normalized_xi,
                 ),
                 -1,
             )
-        return torch.cat(
-            (transforms.compute_invariant_features(state), action, normalized_simulation_parameters), -1
-        )
+        return torch.cat((transforms.compute_invariant_features(state), action, normalized_xi), -1)
 
     NEW_VELOCITY_WEIGHT = 0.625
 
@@ -137,8 +135,8 @@ class WorldModel(nn.Module):
             -1,
         )
 
-    def step(self, state, action, last_action, normalized_simulation_parameters):
-        model_input = self.inputs(state, action, last_action, normalized_simulation_parameters)
+    def step(self, state, action, last_action, normalized_xi):
+        model_input = self.inputs(state, action, last_action, normalized_xi)
         normalized_output = self.network(self.input_normalizer(model_input))
         state_increments = normalized_output * self.output_normalizer.std() + self.output_normalizer.mean
         return self.integrate(state, state_increments)

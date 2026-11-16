@@ -44,10 +44,10 @@ class Mirror:
             self.joints(joint_vel),
         )
 
-    def simulation_parameters(self, simulation_parameters: torch.Tensor) -> torch.Tensor:
-        mirrored_parameters = simulation_parameters.clone()
-        joint_pos_offset = simulation_parameters[..., 1 : 1 + self.num_joints]
-        mirrored_parameters[..., 1 : 1 + self.num_joints] = self.joints(joint_pos_offset)
+    def xi(self, xi: torch.Tensor) -> torch.Tensor:
+        mirrored_xi = xi.clone()
+        joint_pos_offset = xi[..., 1 : 1 + self.num_joints]
+        mirrored_xi[..., 1 : 1 + self.num_joints] = self.joints(joint_pos_offset)
         center_of_mass_y_index = 1 + self.num_joints + 1
-        mirrored_parameters[..., center_of_mass_y_index] *= -1
-        return mirrored_parameters
+        mirrored_xi[..., center_of_mass_y_index] *= -1
+        return mirrored_xi

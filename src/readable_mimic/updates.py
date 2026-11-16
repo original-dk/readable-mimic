@@ -28,8 +28,8 @@ class TrainingUpdates:
         actor_average,
         mirror,
         state_error_floor,
-        simulation_parameter_center,
-        simulation_parameter_scale,
+        xi_center,
+        xi_scale,
         command_frame_offsets,
     ):
         self.config = config
@@ -54,26 +54,24 @@ class TrainingUpdates:
         self.observation_noise_limits = transforms.compute_observation_noise_limits(
             robot.observation_noise, robot.num_joints
         ).to(self.device)
-        self.simulation_parameter_center = simulation_parameter_center
-        self.simulation_parameter_scale = simulation_parameter_scale
+        self.xi_center = xi_center
+        self.xi_scale = xi_scale
         self.command_frame_offsets = command_frame_offsets
         self.discount_factors = (
             config.gamma ** torch.arange(config.horizon, device=self.device, dtype=torch.float32)[:, None]
         )
         self.bootstrap_discount = config.gamma**config.horizon
 
-    def world_model_rollout(self, start, action, last_action, simulation_parameters):
+    def world_model_rollout(self, start, action, last_action, xi):
         state = transforms.unflatten_state(start[:, 0])
-        normalized_simulation_parameters = transforms.compute_normalized_simulation_parameters(
-            simulation_parameters, self.simulation_parameter_center, self.simulation_parameter_scale
-        )
+        normalized_xi = transforms.compute_normalized_xi(xi, self.xi_center, self.xi_scale)
         predicted_states = []
         for step_index in range(self.config.wm_window):
             state = self.world_model.step(
                 state,
                 action[:, step_index],
                 last_action[:, step_index],
-                normalized_simulation_parameters[:, step_index],
+                normalized_xi[:, step_index],
             )
             predicted_states.append(state)
         return tuple(
@@ -98,18 +96,18 @@ class TrainingUpdates:
         observation_history,
         last_action,
         motion_frame_index,
-        simulation_parameters,
-        normalized_simulation_parameters,
+        xi,
+        normalized_xi,
         command,
     ):
         action = self.actor(observation_history, command)
-        next_state = self.world_model.step(state, action, last_action, normalized_simulation_parameters)
+        next_state = self.world_model.step(state, action, last_action, normalized_xi)
         next_motion_frame_index = motion_frame_index + 1
         next_observation = transforms.apply_observation_noise(
             transforms.compute_observation(
                 next_state,
                 action,
-                simulation_parameters,
+                xi,
                 next_motion_frame_index,
                 self.motion,
                 self.default_joint_pos,
@@ -151,7 +149,7 @@ class TrainingUpdates:
             ("next_state", mirror_flat_state),
             ("action", self.mirror.joints),
             ("last_action", self.mirror.joints),
-            ("simulation_parameters", self.mirror.simulation_parameters),
+            ("xi", self.mirror.xi),
         ):
             out[field_name] = torch.cat(
                 (mirror_function(windows[field_name][:num_samples]), windows[field_name][num_samples:])
@@ -163,7 +161,7 @@ class TrainingUpdates:
         if self.mirror is not None:
             windows = self.mirror_windows(windows, int(self.config.wm_batch * self.config.wm_mirror))
         predicted_state = self.world_model_rollout(
-            windows["state"], windows["action"], windows["last_action"], windows["simulation_parameters"]
+            windows["state"], windows["action"], windows["last_action"], windows["xi"]
         )
         loss, last_step_state_error = self.world_model_loss(
             predicted_state, windows["next_state"], windows["mask"]
@@ -210,14 +208,12 @@ class TrainingUpdates:
     def update_actor(self):
         start, history = self.sample_valid_starts(self.config.pi_batch)
         state = transforms.unflatten_state(start["state"])
-        simulation_parameters, motion_frame_index, last_action = (
-            start["simulation_parameters"],
+        xi, motion_frame_index, last_action = (
+            start["xi"],
             start["motion_frame_index"],
             start["last_action"],
         )
-        normalized_simulation_parameters = transforms.compute_normalized_simulation_parameters(
-            simulation_parameters, self.simulation_parameter_center, self.simulation_parameter_scale
-        )
+        normalized_xi = transforms.compute_normalized_xi(xi, self.xi_center, self.xi_scale)
         with torch.no_grad():
             observation_history = transforms.compute_replay_observation_history(
                 history, self.motion, self.default_joint_pos, self.observation_noise_limits
@@ -244,8 +240,8 @@ class TrainingUpdates:
                 observation_history,
                 last_action,
                 motion_frame_index,
-                simulation_parameters,
-                normalized_simulation_parameters,
+                xi,
+                normalized_xi,
                 command,
             )
             (
@@ -273,7 +269,7 @@ class TrainingUpdates:
             transforms.compute_critic_input(
                 state,
                 motion_frame_index,
-                normalized_simulation_parameters,
+                normalized_xi,
                 command,
                 self.motion,
                 self.task.kinematics,
@@ -307,7 +303,7 @@ class TrainingUpdates:
             rollout_frames,
             initial_command,
             rollout_commands,
-            normalized_simulation_parameters,
+            normalized_xi,
             detached_rewards,
             detached_terminations,
             batch_size,
@@ -328,7 +324,7 @@ class TrainingUpdates:
         rollout_frames,
         initial_command,
         rollout_commands,
-        normalized_simulation_parameters,
+        normalized_xi,
         detached_rewards,
         detached_terminations,
         batch_size,
@@ -355,13 +351,11 @@ class TrainingUpdates:
             critic_commands = torch.cat(
                 (initial_command.unsqueeze(0), torch.stack(rollout_commands)), 0
             ).flatten(0, 1)
-            critic_parameters = (
-                normalized_simulation_parameters.unsqueeze(0).expand(self.horizon + 1, -1, -1).flatten(0, 1)
-            )
+            critic_xi = normalized_xi.unsqueeze(0).expand(self.horizon + 1, -1, -1).flatten(0, 1)
             critic_features = transforms.compute_critic_input(
                 critic_states,
                 critic_frames,
-                critic_parameters,
+                critic_xi,
                 critic_commands,
                 self.motion,
                 self.task.kinematics,

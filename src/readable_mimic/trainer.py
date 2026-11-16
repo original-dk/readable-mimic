@@ -1,6 +1,6 @@
 """Collect -> world model -> imagined actor -> critic; no compilation or CUDA graphs."""
 
-from .sim import joint_pos_offset_limits, CONTROL_DT, DomainRandomizationConfig, simulation_parameter_count
+from .sim import joint_pos_offset_limits, CONTROL_DT, DomainRandomizationConfig, compute_xi_dim
 import random, shutil
 import numpy as np
 from . import data_transforms as transforms
@@ -41,10 +41,10 @@ class Trainer:
         )
         self.kinematics = Kinematics(self.robot, self.device)
         self.motion = ReferenceMotion.from_dir(config.motion_dir, self.robot, self.kinematics, self.device)
-        self.num_simulation_parameters = simulation_parameter_count(self.robot)
+        self.xi_dim = compute_xi_dim(self.robot)
         self.joint_pos_offset_limits = joint_pos_offset_limits(self.robot, self.device)
-        self.simulation_parameter_center, self.simulation_parameter_scale = (
-            transforms.compute_simulation_parameter_normalization(self.robot, self.joint_pos_offset_limits)
+        self.xi_center, self.xi_scale = transforms.compute_xi_normalization(
+            self.robot, self.joint_pos_offset_limits
         )
         self.command_frame_offsets = torch.arange(1, config.goal_frames + 1, device=self.device)
         self.default_joint_pos = torch.tensor(self.robot.default_joint_pos_list(), device=self.device)
@@ -63,7 +63,7 @@ class Trainer:
         command_dim = transforms.compute_command_dim(self.robot.num_joints, config.goal_frames)
         self.world_model = WorldModel(
             joint_count,
-            self.num_simulation_parameters,
+            self.xi_dim,
             use_last_action=self.robot.has_action_delay,
             hidden_dims=self.widths(config.wm_hidden),
             structured=config.wm_structured,
@@ -80,7 +80,7 @@ class Trainer:
         ).to(self.device)
         self.critic = Critic(
             transforms.compute_critic_input_dim(
-                joint_count, len(self.robot.tracked_bodies), self.num_simulation_parameters, command_dim
+                joint_count, len(self.robot.tracked_bodies), self.xi_dim, command_dim
             )
         ).to(self.device)
         self.world_model_optimizer = make_optimizer(
@@ -114,7 +114,7 @@ class Trainer:
             config.num_envs,
             self.device,
             joint_count,
-            self.num_simulation_parameters,
+            self.xi_dim,
             window_length=config.wm_window,
             history_length=config.hist,
         )
@@ -140,8 +140,8 @@ class Trainer:
             actor_average=self.actor_average,
             mirror=self.mirror,
             state_error_floor=self.state_error_floor,
-            simulation_parameter_center=self.simulation_parameter_center,
-            simulation_parameter_scale=self.simulation_parameter_scale,
+            xi_center=self.xi_center,
+            xi_scale=self.xi_scale,
             command_frame_offsets=self.command_frame_offsets,
         )
         self.pending_random_states = None
@@ -195,9 +195,9 @@ class Trainer:
                 transforms.unflatten_state(transition["next_state"]),
                 transition["action"],
                 transition["last_action"],
-                transition["simulation_parameters"],
-                self.simulation_parameter_center,
-                self.simulation_parameter_scale,
+                transition["xi"],
+                self.xi_center,
+                self.xi_scale,
             )
             self.world_model.input_normalizer.update(inputs)
             self.world_model.output_normalizer.update(targets)

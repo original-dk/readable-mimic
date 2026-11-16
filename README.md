@@ -43,7 +43,7 @@ uv run pytest -q
 | g1/g1_constants.py | G1 固定模型描述、关节顺序、驱动器定义 |
 
 Critic 输入由 invariant state、参考关节差、身体/根位置误差、相对姿态、
-normalized simulation_parameters **和 command** 拼接。Actor 输入只有 history 和 command。
+normalized_xi **和 command** 拼接。Actor 输入只有 history 和 command。
 Actor 更新期间冻结 WM / Critic 参数，但保留对状态和动作的梯度。
 
 ## 命名
@@ -70,11 +70,11 @@ checkpoint 恢复网络、标准化统计、优化器、迭代和学习率控制
 
 ## 当前数据流中的对象
 
-环境直接保存 `num_envs`、`num_joints`、`last_action`、`episode_step` 和 `simulation_parameters`。
+环境直接保存 `num_envs`、`num_joints`、`last_action`、`episode_step` 和 `xi`。
 `data_transforms.py` 统一转换数据；Trainer 保存 history。
 不再包含 ObsPipeline、XiLayout、传感滤波/延迟状态或动态参数注册。
 
-`simulation_parameters` 是网络和 Buffer 使用的数值向量，顺序固定为：
+`xi` 是网络和 Buffer 使用的数值向量，顺序固定为：
 `[friction (1), joint_pos_offset (num_joints), center_of_mass_offset (3)]`。
 只有到 WM / Critic 的输入处才归一化，物理仿真和 Buffer 保存原始值。
 向量切片仅用于这三个明确字段，不再维护额外的 layout 对象。
@@ -179,8 +179,8 @@ Buffer 默认不保存。默认 4096 环境 × 1000 步的原始 Buffer 约 3.6 
 ## 固定数据的初始化
 
 关节偏移范围在 Trainer 和 TrackingEnv 各自构造时计算，不在 update 或 reset 时重新匹配关节正则。
-Trainer 初始化 simulation_parameter_center / simulation_parameter_scale，并显式传给更新器。
-数据转换仍位于 data_transforms.py，归一化只做 (parameters-center)/scale。
+Trainer 初始化 xi_center / xi_scale，并显式传给更新器。
+数据转换仍位于 data_transforms.py，归一化只做 (xi-xi_center)/xi_scale。
 
 以下小张量同样只创建一次：command 的未来帧偏移、Actor 目标的折扣序列、
 Buffer 的 WM 窗口偏移和 history 回看偏移。视频导出时 command 偏移每条视频创建一次。
@@ -195,3 +195,10 @@ WM rollout 的整批仿真参数在进入逐步预测前归一化一次。
 CONTROL_DT / DECIMATION / PHYSICS_DT、DomainRandomizationConfig 和参数采样函数。
 env.py 通过 create_simulation 创建 scene/仿真器，只负责环境状态、reset、observe、step。
 参数归一化等纯数据转换仍位于 data_transforms.py，保留已有模块职责。
+
+
+物理上下文统一命名为 xi：xi_dim 为维度，normalized_xi 为归一化结果，
+xi_center / xi_scale 为初始化生成的归一化常量。
+xi 固定顺序为 [friction, joint_pos_offset, center_of_mass_offset]。
+模型 parameters() 指 PyTorch 权重参数，与 xi 无关；权重和 checkpoint 格式保持不变。
+

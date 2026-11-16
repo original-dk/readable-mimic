@@ -1,4 +1,4 @@
-from readable_mimic.sim import default_simulation_parameters
+from readable_mimic.sim import default_xi
 from readable_mimic import data_transforms as transforms
 
 "CPU integration of the actual FK, motion, replay and gradient updates (no fake WM)."
@@ -80,14 +80,14 @@ def tiny_trainer(tmp_path, monkeypatch):
         frames = torch.arange(4) + step + 10
         state = trainer.motion.ref_state(frames)
         next_state = trainer.motion.ref_state(frames + 1)
-        parameters = default_simulation_parameters(trainer.robot, trainer.device).expand(4, -1).clone()
+        xi = default_xi(trainer.robot, trainer.device).expand(4, -1).clone()
         action = torch.zeros(4, 2)
         transition = dict(
             state=transforms.flatten_state(state),
             next_state=transforms.flatten_state(next_state),
             action=action,
             last_action=action,
-            simulation_parameters=parameters,
+            xi=xi,
             reward=trainer.task.reward(next_state, frames + 1, action, action),
             motion_frame_index=frames,
             episode_step=torch.full((4,), step),
@@ -96,7 +96,7 @@ def tiny_trainer(tmp_path, monkeypatch):
         )
         trainer.buffer.add(transition)
         observation = transforms.compute_observation(
-            state, action, parameters, frames, trainer.motion, trainer.default_joint_pos
+            state, action, xi, frames, trainer.motion, trainer.default_joint_pos
         )
         trainer.actor.observation_normalizer.update(observation)
         trainer.actor.command_normalizer.update(
@@ -108,9 +108,9 @@ def tiny_trainer(tmp_path, monkeypatch):
             next_state,
             action,
             action,
-            parameters,
-            trainer.simulation_parameter_center,
-            trainer.simulation_parameter_scale,
+            xi,
+            trainer.xi_center,
+            trainer.xi_scale,
         )
         trainer.world_model.input_normalizer.update(inputs)
         trainer.world_model.output_normalizer.update(targets)
@@ -201,9 +201,7 @@ def test_collect_and_training_loop(tiny_trainer, tmp_path, monkeypatch):
             self.episode_step = torch.zeros(4, dtype=torch.long)
             self.motion_frame_index = torch.full((4,), 10, dtype=torch.long)
             self.last_action = torch.zeros(4, 2)
-            self.parameters = (
-                default_simulation_parameters(trainer.robot, trainer.device).expand(4, -1).clone()
-            )
+            self.xi = default_xi(trainer.robot, trainer.device).expand(4, -1).clone()
             for data in self.data:
                 data.qpos[:3] = [0, 0, 0.7]
                 data.qpos[3:7] = [1, 0, 0, 0]
@@ -228,7 +226,7 @@ def test_collect_and_training_loop(tiny_trainer, tmp_path, monkeypatch):
             return transforms.compute_observation(
                 self.state(),
                 self.last_action,
-                self.parameters,
+                self.xi,
                 self.motion_frame_index,
                 trainer.motion,
                 trainer.default_joint_pos,
@@ -252,7 +250,7 @@ def test_collect_and_training_loop(tiny_trainer, tmp_path, monkeypatch):
                 next_state=transforms.flatten_state(next_state),
                 action=action,
                 last_action=last_action,
-                simulation_parameters=self.parameters,
+                xi=self.xi,
                 motion_frame_index=frames,
                 episode_step=steps,
                 done=torch.zeros(4, dtype=torch.bool),
@@ -300,8 +298,8 @@ def test_collect_and_training_loop(tiny_trainer, tmp_path, monkeypatch):
     assert len((tmp_path / "run/metrics.jsonl").read_text().splitlines()) == 3
 
 
-def test_simulation_parameters_match_applied_physics(tiny_trainer):
-    from readable_mimic.sim import initialize_simulation_parameters, randomize_joint_pos_offsets
+def test_xi_matches_applied_physics(tiny_trainer):
+    from readable_mimic.sim import initialize_xi, randomize_joint_pos_offsets
 
     trainer = tiny_trainer
     default_body_positions = torch.zeros(3, 3)
@@ -321,19 +319,19 @@ def test_simulation_parameters_match_applied_physics(tiny_trainer):
             find_bodies=lambda name: ([0], [name]),
         ),
     )
-    parameters = initialize_simulation_parameters(env)
-    torch.testing.assert_close(simulation.model.geom_friction[:, 1, 0], parameters[:, 0])
-    torch.testing.assert_close(simulation.model.geom_friction[:, 2, 0], parameters[:, 0])
-    torch.testing.assert_close(simulation.model.body_ipos[:, 1], parameters[:, 3:6])
-    before = parameters.clone()
-    randomize_joint_pos_offsets(parameters, torch.tensor([1, 3]), trainer.joint_pos_offset_limits)
-    torch.testing.assert_close(parameters[[0, 2]], before[[0, 2]])
-    torch.testing.assert_close(parameters[:, 0], before[:, 0])
-    torch.testing.assert_close(parameters[:, 3:], before[:, 3:])
-    assert parameters[:, 1:3].abs().le(0.01).all()
-    evaluation_parameters = initialize_simulation_parameters(env, randomize=False)
-    torch.testing.assert_close(evaluation_parameters[:, 0], torch.ones(4))
-    torch.testing.assert_close(evaluation_parameters[:, 1:], torch.zeros(4, 5))
+    xi = initialize_xi(env)
+    torch.testing.assert_close(simulation.model.geom_friction[:, 1, 0], xi[:, 0])
+    torch.testing.assert_close(simulation.model.geom_friction[:, 2, 0], xi[:, 0])
+    torch.testing.assert_close(simulation.model.body_ipos[:, 1], xi[:, 3:6])
+    before = xi.clone()
+    randomize_joint_pos_offsets(xi, torch.tensor([1, 3]), trainer.joint_pos_offset_limits)
+    torch.testing.assert_close(xi[[0, 2]], before[[0, 2]])
+    torch.testing.assert_close(xi[:, 0], before[:, 0])
+    torch.testing.assert_close(xi[:, 3:], before[:, 3:])
+    assert xi[:, 1:3].abs().le(0.01).all()
+    evaluation_xi = initialize_xi(env, randomize=False)
+    torch.testing.assert_close(evaluation_xi[:, 0], torch.ones(4))
+    torch.testing.assert_close(evaluation_xi[:, 1:], torch.zeros(4, 5))
     torch.testing.assert_close(simulation.model.geom_friction[:, :, 0], torch.ones(4, 3))
     torch.testing.assert_close(simulation.model.body_ipos[:, 1], torch.zeros(4, 3))
 
@@ -341,17 +339,15 @@ def test_simulation_parameters_match_applied_physics(tiny_trainer):
 def test_observation_fields_and_context_normalization(tiny_trainer):
     trainer = tiny_trainer
     state = trainer.motion.ref_state(torch.tensor([12]))
-    parameters = default_simulation_parameters(trainer.robot, "cpu")[None].clone()
-    parameters[:, 1:3] = torch.tensor([[0.004, -0.006]])
+    xi = default_xi(trainer.robot, "cpu")[None].clone()
+    xi[:, 1:3] = torch.tensor([[0.004, -0.006]])
     last_action = torch.tensor([[0.2, -0.3]])
     observation = transforms.compute_observation(
-        state, last_action, parameters, torch.tensor([12]), trainer.motion, trainer.default_joint_pos
+        state, last_action, xi, torch.tensor([12]), trainer.motion, trainer.default_joint_pos
     )
-    torch.testing.assert_close(observation[:, :2], state[4] - parameters[:, 1:3])
+    torch.testing.assert_close(observation[:, :2], state[4] - xi[:, 1:3])
     torch.testing.assert_close(observation[:, 10:12], last_action)
-    normalized = transforms.compute_normalized_simulation_parameters(
-        parameters, trainer.simulation_parameter_center, trainer.simulation_parameter_scale
-    )
+    normalized = transforms.compute_normalized_xi(xi, trainer.xi_center, trainer.xi_scale)
     torch.testing.assert_close(normalized[:, 1:3], torch.tensor([[0.4, -0.6]]))
     assert observation.shape == (1, 18)
 
@@ -400,6 +396,7 @@ def test_data_names_follow_diagram():
             elif isinstance(node, ast.Attribute):
                 identifier = node.attr
             if identifier:
+                assert "simulation_parameter" not in identifier, (source_file, identifier)
                 assert not identifier.startswith(("reference_", "e_", "root_")), (source_file, identifier)
             if isinstance(node, ast.Dict):
                 for key in node.keys:
@@ -578,14 +575,14 @@ def test_resume_cli_overrides_config_without_modifying_file(tiny_trainer, tmp_pa
 
 
 def test_fixed_training_constants_are_not_rebuilt(tiny_trainer, monkeypatch):
-    import readable_mimic.sim as parameters_module
+    import readable_mimic.sim as sim_module
     import readable_mimic.buffer as buffer_module
 
     trainer = tiny_trainer
     constants = (
         trainer.joint_pos_offset_limits,
-        trainer.simulation_parameter_center,
-        trainer.simulation_parameter_scale,
+        trainer.xi_center,
+        trainer.xi_scale,
         trainer.command_frame_offsets,
         trainer.updates.discount_factors,
         trainer.buffer.window_offsets,
@@ -602,8 +599,8 @@ def test_fixed_training_constants_are_not_rebuilt(tiny_trainer, monkeypatch):
                 return unexpected_initialization
             return getattr(torch, name)
 
-    monkeypatch.setattr(parameters_module, "joint_pos_offset_limits", unexpected_initialization)
-    monkeypatch.setattr(transforms, "compute_simulation_parameter_normalization", unexpected_initialization)
+    monkeypatch.setattr(sim_module, "joint_pos_offset_limits", unexpected_initialization)
+    monkeypatch.setattr(transforms, "compute_xi_normalization", unexpected_initialization)
     monkeypatch.setattr(transforms, "torch", NoArangeTorch())
     monkeypatch.setattr(buffer_module, "torch", NoArangeTorch())
     for _ in range(2):
@@ -612,12 +609,10 @@ def test_fixed_training_constants_are_not_rebuilt(tiny_trainer, monkeypatch):
         assert all((torch.isfinite(value).all() for value in metrics))
     for original, current in zip(before, constants):
         torch.testing.assert_close(original, current, rtol=0, atol=0)
-    parameters = torch.randn(2, 6, requires_grad=True)
-    normalized = transforms.compute_normalized_simulation_parameters(
-        parameters, trainer.simulation_parameter_center, trainer.simulation_parameter_scale
-    )
+    xi = torch.randn(2, 6, requires_grad=True)
+    normalized = transforms.compute_normalized_xi(xi, trainer.xi_center, trainer.xi_scale)
     expected_center = torch.tensor([0.75, 0.0, 0.0, 0.0, 0.0, 0.0])
     expected_scale = torch.tensor([0.45, 0.01, 0.01, 0.05, 0.05, 0.05])
-    torch.testing.assert_close(normalized, (parameters - expected_center) / expected_scale)
+    torch.testing.assert_close(normalized, (xi - expected_center) / expected_scale)
     normalized.sum().backward()
-    torch.testing.assert_close(parameters.grad, expected_scale.reciprocal().expand_as(parameters))
+    torch.testing.assert_close(xi.grad, expected_scale.reciprocal().expand_as(xi))

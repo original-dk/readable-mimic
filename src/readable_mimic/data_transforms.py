@@ -6,7 +6,7 @@ Functions receive their data explicitly; they never read Trainer or TrainingUpda
 from __future__ import annotations
 import torch
 from .rotations import mat_to_6d, mm3, mv3, quat_to_mat, mat_to_quat, yaw_mat
-from .sim import default_simulation_parameters
+from .sim import default_xi
 
 
 def compute_state_dim(num_joints: int) -> int:
@@ -69,12 +69,10 @@ def compute_observation_noise_limits(config, num_joints):
     )
 
 
-def compute_observation(
-    state, last_action, simulation_parameters, motion_frame_index, motion, default_joint_pos
-):
+def compute_observation(state, last_action, xi, motion_frame_index, motion, default_joint_pos):
     _, base_rot_mat_w, _, base_ang_vel_w, joint_pos, joint_vel = state
     world_to_base = base_rot_mat_w.transpose(-1, -2)
-    joint_pos_offset = simulation_parameters[..., 1 : 1 + joint_pos.shape[-1]]
+    joint_pos_offset = xi[..., 1 : 1 + joint_pos.shape[-1]]
     joint_pos_relative = joint_pos - default_joint_pos - joint_pos_offset
     base_ang_vel = (world_to_base @ base_ang_vel_w.unsqueeze(-1)).squeeze(-1)
     projected_gravity = -base_rot_mat_w[..., 2, :]
@@ -131,7 +129,7 @@ def compute_command(motion_frame_index: torch.Tensor, command_frame_offsets, mot
 
 
 def compute_critic_state_features(
-    state, motion_frame_index, normalized_simulation_parameters, motion, kinematics
+    state, motion_frame_index, normalized_xi, motion, kinematics
 ) -> torch.Tensor:
     base_pos_w, base_rot_mat_w, base_lin_vel_w, base_ang_vel_w, joint_pos, joint_vel = state
     base_heading_rot_mat_w = yaw_mat(base_rot_mat_w)
@@ -161,7 +159,7 @@ def compute_critic_state_features(
             body_pos_error_heading,
             base_pos_error_heading,
             ref_base_rot_6d_relative,
-            normalized_simulation_parameters,
+            normalized_xi,
         ),
         -1,
     )
@@ -190,23 +188,21 @@ def compute_value_targets(state_values, detached_rewards, detached_terminations,
     return torch.stack(targets[::-1])
 
 
-def compute_critic_input(
-    state, motion_frame_index, normalized_simulation_parameters, command, motion, kinematics
-):
+def compute_critic_input(state, motion_frame_index, normalized_xi, command, motion, kinematics):
     state_features = compute_critic_state_features(
-        state, motion_frame_index, normalized_simulation_parameters, motion, kinematics
+        state, motion_frame_index, normalized_xi, motion, kinematics
     )
     return torch.cat((state_features, command), -1)
 
 
-def compute_critic_input_dim(num_joints, num_tracked_bodies, num_simulation_parameters, command_dim):
+def compute_critic_input_dim(num_joints, num_tracked_bodies, xi_dim, command_dim):
     return (
         compute_invariant_feature_dim(num_joints)
         + num_joints
         + 3 * num_tracked_bodies
         + 3
         + 6
-        + num_simulation_parameters
+        + xi_dim
         + command_dim
     )
 
@@ -236,7 +232,7 @@ def compute_replay_observation_history(history, motion, default_joint_pos, noise
     observation_history = compute_observation(
         unflatten_state(history["state"]),
         history["last_action"],
-        history["simulation_parameters"],
+        history["xi"],
         history["motion_frame_index"],
         motion,
         default_joint_pos,
@@ -250,22 +246,20 @@ def compute_world_model_training_data(
     next_state,
     action,
     last_action,
-    parameters,
-    simulation_parameter_center,
-    simulation_parameter_scale,
+    xi,
+    xi_center,
+    xi_scale,
 ):
-    normalized_parameters = compute_normalized_simulation_parameters(
-        parameters, simulation_parameter_center, simulation_parameter_scale
-    )
+    normalized_xi = compute_normalized_xi(xi, xi_center, xi_scale)
     return (
-        world_model.inputs(initial_state, action, last_action, normalized_parameters),
+        world_model.inputs(initial_state, action, last_action, normalized_xi),
         world_model.targets(initial_state, next_state),
         world_model.increments(initial_state, next_state),
     )
 
 
-def compute_normalized_simulation_parameters(parameters, center, scale):
-    return (parameters - center) / scale
+def compute_normalized_xi(xi, center, scale):
+    return (xi - center) / scale
 
 
 def compute_ghost_pose(ref_state, robot_state, follow_base):
@@ -279,9 +273,9 @@ def compute_ghost_pose(ref_state, robot_state, follow_base):
     return (ghost_base_pos_w, ghost_base_rot_mat_w, ref_joint_pos)
 
 
-def compute_simulation_parameter_normalization(robot, offset_limits):
+def compute_xi_normalization(robot, offset_limits):
     friction_lower, friction_upper = robot.domain_randomization.friction_range
-    center = default_simulation_parameters(robot, offset_limits.device)
+    center = default_xi(robot, offset_limits.device)
     scale = torch.cat(
         (
             offset_limits.new_tensor([(friction_upper - friction_lower) / 2]),

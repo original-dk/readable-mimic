@@ -51,25 +51,25 @@ def joint_pos_offset_limits(robot, device):
     return torch.tensor(limits, device=device)
 
 
-def simulation_parameter_count(robot):
+def compute_xi_dim(robot):
     return 1 + robot.num_joints + 3
 
 
-def default_simulation_parameters(robot, device):
+def default_xi(robot, device):
     friction_lower, friction_upper = robot.domain_randomization.friction_range
     return torch.tensor(
         [(friction_lower + friction_upper) / 2] + [0.0] * (robot.num_joints + 3), device=device
     )
 
 
-def initialize_simulation_parameters(env, randomize=True):
+def initialize_xi(env, randomize=True):
     """Sample friction / COM once and apply the same values to MuJoCo and replay context."""
     robot = env.robot_description
     simulation = env.simulation
     device = env.device
-    parameters = default_simulation_parameters(robot, device).repeat(env.num_envs, 1)
+    xi = default_xi(robot, device).repeat(env.num_envs, 1)
     simulation.expand_model_fields(("body_ipos", "geom_friction"))
-    friction = parameters[:, :1]
+    friction = xi[:, :1]
     if randomize:
         friction.uniform_(*robot.domain_randomization.friction_range)
     else:
@@ -91,18 +91,18 @@ def initialize_simulation_parameters(env, randomize=True):
     )
     if not randomize:
         center_of_mass_offset.zero_()
-    parameters[:, 1 + robot.num_joints :] = center_of_mass_offset
+    xi[:, 1 + robot.num_joints :] = center_of_mass_offset
     body_index = env.robot.indexing.body_ids[env.robot.find_bodies(robot.center_of_mass_body)[0][0]]
     simulation.model.body_ipos[:, body_index] = (
         simulation.get_default_field("body_ipos")[body_index] + center_of_mass_offset
     )
-    return parameters
+    return xi
 
 
-def randomize_joint_pos_offsets(parameters, env_indices, offset_limits):
+def randomize_joint_pos_offsets(xi, env_indices, offset_limits):
     num_joints = offset_limits.numel()
-    offsets = 2 * torch.rand(len(env_indices), num_joints, device=parameters.device) - 1
-    parameters[env_indices, 1 : 1 + num_joints] = offsets * offset_limits
+    offsets = 2 * torch.rand(len(env_indices), num_joints, device=xi.device) - 1
+    xi[env_indices, 1 : 1 + num_joints] = offsets * offset_limits
 
 
 def create_simulation(robot, num_envs, device, simulation_config):

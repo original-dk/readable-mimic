@@ -5,7 +5,7 @@ from .sim import (
     PHYSICS_DT,
     create_simulation,
     joint_pos_offset_limits,
-    initialize_simulation_parameters,
+    initialize_xi,
     randomize_joint_pos_offsets,
 )
 from . import data_transforms as transforms
@@ -40,7 +40,7 @@ class TrackingEnv:
         self.default_joint_pos = self.robot.data.default_joint_pos[0].clone()
         self.action_scale = torch.tensor(robot.action_scale_list(), device=device)
         self.joint_pos_offset_limits = joint_pos_offset_limits(robot, device)
-        self.simulation_parameters = initialize_simulation_parameters(self, randomize=not evaluation)
+        self.xi = initialize_xi(self, randomize=not evaluation)
         self.motion_frame_index = torch.zeros(num_envs, dtype=torch.long, device=device)
         self.episode_step = torch.zeros(num_envs, dtype=torch.long, device=device)
         self.last_action = torch.zeros(num_envs, self.num_joints, device=device)
@@ -115,14 +115,14 @@ class TrackingEnv:
         self.last_action[env_indices] = 0
         self.episode_return[env_indices] = 0
         if not self.evaluation:
-            randomize_joint_pos_offsets(self.simulation_parameters, env_indices, self.joint_pos_offset_limits)
+            randomize_joint_pos_offsets(self.xi, env_indices, self.joint_pos_offset_limits)
         self.simulation.forward()
 
     def observe(self):
         observation = transforms.compute_observation(
             self.state(),
             self.last_action,
-            self.simulation_parameters,
+            self.xi,
             self.motion_frame_index,
             self.motion,
             self.default_joint_pos,
@@ -138,7 +138,7 @@ class TrackingEnv:
         last_action = self.last_action.clone()
         motion_frame_index = self.motion_frame_index.clone()
         episode_step = self.episode_step.clone()
-        joint_pos_offset = self.simulation_parameters[:, 1 : 1 + self.num_joints]
+        joint_pos_offset = self.xi[:, 1 : 1 + self.num_joints]
         target_joint_pos = self.default_joint_pos + joint_pos_offset + self.action_scale * action
         self.robot.set_joint_position_target(target_joint_pos)
         for _ in range(DECIMATION):
@@ -159,7 +159,7 @@ class TrackingEnv:
             last_action=last_action,
             motion_frame_index=motion_frame_index,
             episode_step=episode_step,
-            simulation_parameters=self.simulation_parameters.clone(),
+            xi=self.xi.clone(),
             reward=reward,
             termination=termination,
             done=done,

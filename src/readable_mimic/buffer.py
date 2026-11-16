@@ -5,13 +5,13 @@ from . import data_transforms as transforms
 import torch
 
 
-def fields(num_joints: int, num_simulation_parameters: int) -> dict:
+def fields(num_joints: int, xi_dim: int) -> dict:
     out = {
         "state": (transforms.compute_state_dim(num_joints), torch.float32),
         "next_state": (transforms.compute_state_dim(num_joints), torch.float32),
         "action": (num_joints, torch.float32),
         "last_action": (num_joints, torch.float32),
-        "simulation_parameters": (num_simulation_parameters, torch.float32),
+        "xi": (xi_dim, torch.float32),
         "reward": ((), torch.float32),
         "motion_frame_index": ((), torch.long),
         "episode_step": ((), torch.int32),
@@ -28,12 +28,12 @@ class ReplayBuffer:
         num_envs: int,
         device: str,
         num_joints: int,
-        num_simulation_parameters: int,
+        xi_dim: int,
         window_length,
         history_length,
     ):
         self.capacity, self.num_envs, self.device = (capacity, num_envs, device)
-        self.fields = fields(num_joints, num_simulation_parameters)
+        self.fields = fields(num_joints, xi_dim)
         self.data = {}
         for field_name, (shape, dtype) in self.fields.items():
             storage_shape = (capacity, num_envs) + ((shape,) if isinstance(shape, int) else shape)
@@ -70,7 +70,7 @@ class ReplayBuffer:
                 "next_state",
                 "action",
                 "last_action",
-                "simulation_parameters",
+                "xi",
                 "transition_cut",
             )
         }
@@ -90,7 +90,7 @@ class ReplayBuffer:
         row_indices = self._row(ages)
         episode_step = self.data["episode_step"][row_indices, env_indices].long()
         history_rows = self._row(transforms.compute_history_ages(ages, episode_step, self.history_lookback))
-        fields = ("state", "last_action", "simulation_parameters", "motion_frame_index")
+        fields = ("state", "last_action", "xi", "motion_frame_index")
         start = {field: self.data[field][row_indices, env_indices] for field in fields}
         history = {field: self.data[field][history_rows, env_indices[:, None]] for field in fields}
         return (start, history)
