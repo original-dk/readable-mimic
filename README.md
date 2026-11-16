@@ -191,7 +191,7 @@ WM rollout 的整批仿真参数在进入逐步预测前归一化一次。
 缓存由配置推导，不额外写入 checkpoint，不改变权重和优化器的存储格式。
 
 
-仿真相关代码统一位于 sim.py：make_sim、create_simulation、EagerSimulation、
+仿真相关代码统一位于 sim.py：create_simulation、EagerSimulation、
 CONTROL_DT / DECIMATION / PHYSICS_DT、DomainRandomizationConfig 和参数采样函数。
 env.py 通过 create_simulation 创建 scene/仿真器，只负责环境状态、reset、observe、step。
 参数归一化等纯数据转换仍位于 data_transforms.py，保留已有模块职责。
@@ -202,3 +202,5 @@ xi_center / xi_scale 为初始化生成的归一化常量。
 xi 固定顺序为 [friction, joint_pos_offset, center_of_mass_offset]。
 模型 parameters() 指 PyTorch 权重参数，与 xi 无关；权重和 checkpoint 格式保持不变。
 
+
+create_simulation 直接接收 config.simulation 字典，内部完成配置转换、scene 创建和仿真器初始化；不再提供 make_sim 中间接口。

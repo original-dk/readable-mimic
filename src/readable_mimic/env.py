@@ -17,7 +17,7 @@ from .rotations import mat_to_quat, quat_to_mat, so3_exp
 class TrackingEnv:
     def __init__(
         self,
-        simulation_config,
+        simulation_settings,
         num_envs,
         robot,
         motion,
@@ -34,7 +34,7 @@ class TrackingEnv:
         self.motion = motion
         self.task = task
         self.max_episode_steps = max_episode_steps
-        self.scene, self.simulation = create_simulation(robot, num_envs, device, simulation_config)
+        self.scene, self.simulation = create_simulation(robot, num_envs, device, simulation_settings)
         self.robot = self.scene["robot"]
         assert list(self.robot.joint_names) == list(robot.joint_names)
         self.default_joint_pos = self.robot.data.default_joint_pos[0].clone()

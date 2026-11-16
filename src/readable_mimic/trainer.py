@@ -153,7 +153,6 @@ class Trainer:
         return tuple((int(value) for value in text.split(",")))
 
     def create_env(self):
-        from .sim import make_sim
         from .env import TrackingEnv
 
         if self.device.startswith("cuda") and (not torch.cuda.is_available()):
@@ -161,7 +160,7 @@ class Trainer:
                 "G1 training requires a CUDA-enabled PyTorch and an NVIDIA GPU. CPU tests: uv run pytest -q"
             )
         self.env = TrackingEnv(
-            make_sim(self.robot, self.config.simulation),
+            self.config.simulation,
             self.config.num_envs,
             self.robot,
             self.motion,

@@ -17,17 +17,6 @@ class EagerSimulation(Simulation):
         return False
 
 
-def make_sim(robot, settings):
-    settings = dict(settings)
-    settings.pop("control_dt")
-    settings.pop("decimation")
-    joint_capacity = settings.pop("njmax")
-    contact_capacity = settings.pop("nconmax")
-    return SimulationCfg(
-        njmax=joint_capacity, nconmax=contact_capacity, mujoco=MujocoCfg(timestep=PHYSICS_DT, **settings)
-    )
-
-
 @dataclass(frozen=True)
 class DomainRandomizationConfig:
     friction_range: tuple[float, float] = (0.3, 1.2)
@@ -105,7 +94,15 @@ def randomize_joint_pos_offsets(xi, env_indices, offset_limits):
     xi[env_indices, 1 : 1 + num_joints] = offsets * offset_limits
 
 
-def create_simulation(robot, num_envs, device, simulation_config):
+def create_simulation(robot, num_envs, device, settings):
+    settings = dict(settings)
+    settings.pop("control_dt")
+    settings.pop("decimation")
+    joint_capacity = settings.pop("njmax")
+    contact_capacity = settings.pop("nconmax")
+    simulation_config = SimulationCfg(
+        njmax=joint_capacity, nconmax=contact_capacity, mujoco=MujocoCfg(timestep=PHYSICS_DT, **settings)
+    )
     scene_config = SceneCfg(
         num_envs=num_envs,
         env_spacing=0.0,

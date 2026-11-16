@@ -13,7 +13,7 @@ import torch
 from . import data_transforms as transforms
 from .actor import Actor, actor_kwargs
 from .config import load_config
-from .sim import make_sim, CONTROL_DT, DomainRandomizationConfig
+from .sim import CONTROL_DT, DomainRandomizationConfig
 from .env import TrackingEnv
 from .kinematics import Kinematics
 from .motion import ReferenceMotion
@@ -216,7 +216,7 @@ def main(argv=None):
     actor.eval()
     task = TrackingTask(kinematics, motion, RewardConfig(**config.reward))
     env = TrackingEnv(
-        make_sim(robot, config.simulation),
+        config.simulation,
         1,
         robot,
         motion,
