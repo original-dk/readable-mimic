@@ -6,7 +6,7 @@ Functions receive their data explicitly; they never read Trainer or TrainingUpda
 from __future__ import annotations
 import torch
 from .rotations import mat_to_6d, mm3, mv3, quat_to_mat, mat_to_quat, yaw_mat
-from .simulation_parameters import default_simulation_parameters, joint_pos_offset_limits
+from .simulation_parameters import default_simulation_parameters
 
 
 def compute_state_dim(num_joints: int) -> int:
@@ -100,17 +100,15 @@ def compute_command_dim(num_joints, command_frames) -> int:
     return command_frames * (15 + 2 * num_joints)
 
 
-def compute_future_motion_frames(motion_frame_index, command_frames, motion) -> torch.Tensor:
+def compute_future_motion_frames(motion_frame_index, command_frame_offsets, motion) -> torch.Tensor:
     clip_end_frames = motion.clip_end[motion.clip_id[motion_frame_index]]
-    future_frames = motion_frame_index[..., None] + torch.arange(
-        1, command_frames + 1, device=motion_frame_index.device
-    )
+    future_frames = motion_frame_index[..., None] + command_frame_offsets
     return torch.minimum(future_frames, clip_end_frames[..., None])
 
 
-def compute_command(motion_frame_index: torch.Tensor, command_frames: int, motion) -> torch.Tensor:
+def compute_command(motion_frame_index: torch.Tensor, command_frame_offsets, motion) -> torch.Tensor:
     """Future ref motion frames expressed relative to the current ref heading."""
-    future_frames = compute_future_motion_frames(motion_frame_index, command_frames, motion)
+    future_frames = compute_future_motion_frames(motion_frame_index, command_frame_offsets, motion)
     base_heading_rot_mat_w = yaw_mat(motion.base_rot_mat_w[motion_frame_index])
     world_to_heading = base_heading_rot_mat_w.transpose(-1, -2).unsqueeze(1)
     ref_base_pos_offset_heading = mv3(
@@ -169,14 +167,14 @@ def compute_critic_state_features(
     )
 
 
-def compute_actor_return(rewards, termination_probabilities, bootstrap_value, gamma):
-    horizon = rewards.shape[0]
+def compute_actor_return(
+    rewards, termination_probabilities, bootstrap_value, discount_factors, bootstrap_discount
+):
     survival_after_step = torch.cumprod(1 - termination_probabilities, 0)
     survival_weights = torch.cat((torch.ones_like(rewards[:1]), survival_after_step[:-1]), 0)
-    discounts = gamma ** torch.arange(horizon, device=rewards.device, dtype=torch.float32)[:, None]
-    actor_return = (discounts * survival_weights * rewards).sum(0)
+    actor_return = (discount_factors * survival_weights * rewards).sum(0)
     final_survival = survival_after_step[-1]
-    actor_return += gamma**horizon * final_survival * bootstrap_value
+    actor_return += bootstrap_discount * final_survival * bootstrap_value
     return (actor_return, survival_weights, final_survival)
 
 
@@ -229,9 +227,8 @@ def update_observation_history(history, observation, reset_mask=None):
     return torch.where(reset_mask[..., None, None], initial_history, next_history)
 
 
-def compute_history_ages(ages, episode_steps, history_length):
-    lookback = torch.arange(history_length - 1, -1, -1, device=ages.device)[None]
-    lookback = torch.minimum(torch.minimum(lookback, episode_steps[:, None]), ages[:, None])
+def compute_history_ages(ages, episode_steps, history_lookback):
+    lookback = torch.minimum(torch.minimum(history_lookback, episode_steps[:, None]), ages[:, None])
     return ages[:, None] - lookback
 
 
@@ -248,9 +245,18 @@ def compute_replay_observation_history(history, motion, default_joint_pos, noise
 
 
 def compute_world_model_training_data(
-    world_model, initial_state, next_state, action, last_action, parameters, robot
+    world_model,
+    initial_state,
+    next_state,
+    action,
+    last_action,
+    parameters,
+    simulation_parameter_center,
+    simulation_parameter_scale,
 ):
-    normalized_parameters = compute_normalized_simulation_parameters(parameters, robot)
+    normalized_parameters = compute_normalized_simulation_parameters(
+        parameters, simulation_parameter_center, simulation_parameter_scale
+    )
     return (
         world_model.inputs(initial_state, action, last_action, normalized_parameters),
         world_model.targets(initial_state, next_state),
@@ -258,25 +264,29 @@ def compute_world_model_training_data(
     )
 
 
-def compute_normalized_simulation_parameters(parameters, robot):
-    friction_lower, friction_upper = robot.domain_randomization.friction_range
-    center = default_simulation_parameters(robot, parameters.device)
-    scales = torch.cat(
-        (
-            parameters.new_tensor([(friction_upper - friction_lower) / 2]),
-            joint_pos_offset_limits(robot, parameters.device).clamp_min(1e-06),
-            parameters.new_full((3,), 0.05),
-        )
-    )
-    return (parameters - center) / scales
+def compute_normalized_simulation_parameters(parameters, center, scale):
+    return (parameters - center) / scale
 
 
 def compute_ghost_pose(ref_state, robot_state, follow_base):
     ref_base_pos_w, ref_base_rot_mat_w, _, _, ref_joint_pos, _ = ref_state
     if not follow_base:
-        return ref_base_pos_w, ref_base_rot_mat_w, ref_joint_pos
+        return (ref_base_pos_w, ref_base_rot_mat_w, ref_joint_pos)
     base_pos_w, base_rot_mat_w = robot_state[:2]
     ghost_base_pos_w = torch.cat((base_pos_w[..., :2], ref_base_pos_w[..., 2:3]), -1)
     ref_alignment_rot_mat_w = yaw_mat(base_rot_mat_w @ ref_base_rot_mat_w.transpose(-1, -2))
     ghost_base_rot_mat_w = ref_alignment_rot_mat_w @ ref_base_rot_mat_w
-    return ghost_base_pos_w, ghost_base_rot_mat_w, ref_joint_pos
+    return (ghost_base_pos_w, ghost_base_rot_mat_w, ref_joint_pos)
+
+
+def compute_simulation_parameter_normalization(robot, offset_limits):
+    friction_lower, friction_upper = robot.domain_randomization.friction_range
+    center = default_simulation_parameters(robot, offset_limits.device)
+    scale = torch.cat(
+        (
+            offset_limits.new_tensor([(friction_upper - friction_lower) / 2]),
+            offset_limits.clamp_min(1e-06),
+            offset_limits.new_full((3,), 0.05),
+        )
+    )
+    return (center, scale)

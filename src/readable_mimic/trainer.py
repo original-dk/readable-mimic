@@ -1,5 +1,6 @@
 """Collect -> world model -> imagined actor -> critic; no compilation or CUDA graphs."""
 
+from .simulation_parameters import joint_pos_offset_limits
 import random, shutil
 import numpy as np
 from . import data_transforms as transforms
@@ -42,6 +43,11 @@ class Trainer:
         self.kinematics = Kinematics(self.robot, self.device)
         self.motion = ReferenceMotion.from_dir(config.motion_dir, self.robot, self.kinematics, self.device)
         self.num_simulation_parameters = simulation_parameter_count(self.robot)
+        self.joint_pos_offset_limits = joint_pos_offset_limits(self.robot, self.device)
+        self.simulation_parameter_center, self.simulation_parameter_scale = (
+            transforms.compute_simulation_parameter_normalization(self.robot, self.joint_pos_offset_limits)
+        )
+        self.command_frame_offsets = torch.arange(1, config.goal_frames + 1, device=self.device)
         self.default_joint_pos = torch.tensor(self.robot.default_joint_pos_list(), device=self.device)
         self.observation_dim = transforms.compute_observation_dim(self.robot.num_joints)
         self.observation_noise_limits = transforms.compute_observation_noise_limits(
@@ -105,7 +111,13 @@ class Trainer:
             device=self.device,
         )
         self.buffer = ReplayBuffer(
-            config.buffer_steps, config.num_envs, self.device, joint_count, self.num_simulation_parameters
+            config.buffer_steps,
+            config.num_envs,
+            self.device,
+            joint_count,
+            self.num_simulation_parameters,
+            window_length=config.wm_window,
+            history_length=config.hist,
         )
         self.observation_history = torch.zeros(
             config.num_envs, config.hist, self.observation_dim, device=self.device
@@ -129,6 +141,9 @@ class Trainer:
             actor_average=self.actor_average,
             mirror=self.mirror,
             state_error_floor=self.state_error_floor,
+            simulation_parameter_center=self.simulation_parameter_center,
+            simulation_parameter_scale=self.simulation_parameter_scale,
+            command_frame_offsets=self.command_frame_offsets,
         )
         self.pending_random_states = None
         self.sim_reward_sum = torch.zeros((), device=self.device)
@@ -164,7 +179,7 @@ class Trainer:
                 self.observation_history, observation, self.env.episode_step == 0
             )
             command = transforms.compute_command(
-                self.env.motion_frame_index, self.command_frames, self.motion
+                self.env.motion_frame_index, self.command_frame_offsets, self.motion
             )
             self.actor.observation_normalizer.update(observation)
             self.actor.command_normalizer.update(command)
@@ -181,7 +196,8 @@ class Trainer:
                 transition["action"],
                 transition["last_action"],
                 transition["simulation_parameters"],
-                self.robot,
+                self.simulation_parameter_center,
+                self.simulation_parameter_scale,
             )
             self.world_model.input_normalizer.update(inputs)
             self.world_model.output_normalizer.update(targets)

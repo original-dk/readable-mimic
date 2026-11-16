@@ -175,3 +175,17 @@ Buffer 默认不保存。默认 4096 环境 × 1000 步的原始 Buffer 约 3.6 
 现有同版本字段命名的旧 last.pt 仍可加载；不兼容历史字段重命名之前的权重。
 
 也可不修改配置，直接使用命令行：uv run --no-sync python -m readable_mimic.train --config config.json --resume runs/main/last.pt。--resume 优先于配置中的 resume，路径相对于当前工作目录；配置文件可以省略 resume 字段。总训练目标仍由 iterations 指定。
+
+## 固定数据的初始化
+
+关节偏移范围在 Trainer 和 TrackingEnv 各自构造时计算，不在 update 或 reset 时重新匹配关节正则。
+Trainer 初始化 simulation_parameter_center / simulation_parameter_scale，并显式传给更新器。
+数据转换仍位于 data_transforms.py，归一化只做 (parameters-center)/scale。
+
+以下小张量同样只创建一次：command 的未来帧偏移、Actor 目标的折扣序列、
+Buffer 的 WM 窗口偏移和 history 回看偏移。视频导出时 command 偏移每条视频创建一次。
+Buffer 的窗口长度和历史长度由构造参数确定，采样接口不再重复传入这两个固定长度。
+WM rollout 的整批仿真参数在进入逐步预测前归一化一次。
+
+配置改变后重新构建 Trainer / Env；不使用全局缓存，不缓存随机采样结果、当前状态特征或正在更新的标准化统计。
+缓存由配置推导，不额外写入 checkpoint，不改变权重和优化器的存储格式。

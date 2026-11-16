@@ -28,6 +28,9 @@ class TrainingUpdates:
         actor_average,
         mirror,
         state_error_floor,
+        simulation_parameter_center,
+        simulation_parameter_scale,
+        command_frame_offsets,
     ):
         self.config = config
         self.actor = actor
@@ -51,18 +54,26 @@ class TrainingUpdates:
         self.observation_noise_limits = transforms.compute_observation_noise_limits(
             robot.observation_noise, robot.num_joints
         ).to(self.device)
+        self.simulation_parameter_center = simulation_parameter_center
+        self.simulation_parameter_scale = simulation_parameter_scale
+        self.command_frame_offsets = command_frame_offsets
+        self.discount_factors = (
+            config.gamma ** torch.arange(config.horizon, device=self.device, dtype=torch.float32)[:, None]
+        )
+        self.bootstrap_discount = config.gamma**config.horizon
 
     def world_model_rollout(self, start, action, last_action, simulation_parameters):
         state = transforms.unflatten_state(start[:, 0])
+        normalized_simulation_parameters = transforms.compute_normalized_simulation_parameters(
+            simulation_parameters, self.simulation_parameter_center, self.simulation_parameter_scale
+        )
         predicted_states = []
         for step_index in range(self.config.wm_window):
             state = self.world_model.step(
                 state,
                 action[:, step_index],
                 last_action[:, step_index],
-                transforms.compute_normalized_simulation_parameters(
-                    simulation_parameters[:, step_index], self.robot
-                ),
+                normalized_simulation_parameters[:, step_index],
             )
             predicted_states.append(state)
         return tuple(
@@ -111,7 +122,7 @@ class TrainingUpdates:
             action,
             observation_history,
             next_motion_frame_index,
-            transforms.compute_command(next_motion_frame_index, self.command_frames, self.motion),
+            transforms.compute_command(next_motion_frame_index, self.command_frame_offsets, self.motion),
         )
 
     def reward_and_termination(self, state, motion_frame_index, action, last_action):
@@ -148,7 +159,7 @@ class TrainingUpdates:
         return out
 
     def update_world_model(self):
-        windows = self.buffer.sample_windows(self.config.wm_batch, self.config.wm_window)
+        windows = self.buffer.sample_windows(self.config.wm_batch)
         if self.mirror is not None:
             windows = self.mirror_windows(windows, int(self.config.wm_batch * self.config.wm_mirror))
         predicted_state = self.world_model_rollout(
@@ -172,7 +183,7 @@ class TrainingUpdates:
         for attempt in range(100):
             if num_samples >= batch_size:
                 break
-            start, history = self.buffer.sample_starts(2 * batch_size, self.history_length)
+            start, history = self.buffer.sample_starts(2 * batch_size)
             motion_frame_index = start["motion_frame_index"]
             valid_starts = (
                 motion_frame_index + self.horizon
@@ -205,7 +216,7 @@ class TrainingUpdates:
             start["last_action"],
         )
         normalized_simulation_parameters = transforms.compute_normalized_simulation_parameters(
-            simulation_parameters, self.robot
+            simulation_parameters, self.simulation_parameter_center, self.simulation_parameter_scale
         )
         with torch.no_grad():
             observation_history = transforms.compute_replay_observation_history(
@@ -214,7 +225,9 @@ class TrainingUpdates:
         set_requires_grad(self.world_model, False)
         set_requires_grad(self.critic, False)
         batch_size = self.config.pi_batch
-        initial_command = transforms.compute_command(motion_frame_index, self.command_frames, self.motion)
+        initial_command = transforms.compute_command(
+            motion_frame_index, self.command_frame_offsets, self.motion
+        )
         command = initial_command
         initial_state = state
         rollout_states, rollout_actions, rollout_last_actions, rollout_frames, rollout_commands = (
@@ -267,7 +280,11 @@ class TrainingUpdates:
             )
         )
         actor_return, survival_weights, final_survival = transforms.compute_actor_return(
-            rewards, termination_probabilities, bootstrap_value, self.config.gamma
+            rewards,
+            termination_probabilities,
+            bootstrap_value,
+            self.discount_factors,
+            self.bootstrap_discount,
         )
         reward_sum = (survival_weights * rewards).detach().sum(0)
         detached_rewards, detached_terminations = (rewards.detach(), termination_probabilities.detach())

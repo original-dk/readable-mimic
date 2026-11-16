@@ -23,7 +23,14 @@ def fields(num_joints: int, num_simulation_parameters: int) -> dict:
 
 class ReplayBuffer:
     def __init__(
-        self, capacity: int, num_envs: int, device: str, num_joints: int, num_simulation_parameters: int
+        self,
+        capacity: int,
+        num_envs: int,
+        device: str,
+        num_joints: int,
+        num_simulation_parameters: int,
+        window_length,
+        history_length,
     ):
         self.capacity, self.num_envs, self.device = (capacity, num_envs, device)
         self.fields = fields(num_joints, num_simulation_parameters)
@@ -32,6 +39,9 @@ class ReplayBuffer:
             storage_shape = (capacity, num_envs) + ((shape,) if isinstance(shape, int) else shape)
             self.data[field_name] = torch.zeros(storage_shape, dtype=dtype, device=device)
         self.write_index, self.size = (0, 0)
+        self.window_length = window_length
+        self.window_offsets = torch.arange(window_length, device=device)
+        self.history_lookback = torch.arange(history_length - 1, -1, -1, device=device)[None]
 
     def _randint(self, n, batch_size: int) -> torch.Tensor:
         return torch.randint(0, n, (batch_size,), device=self.device)
@@ -45,11 +55,12 @@ class ReplayBuffer:
     def _row(self, ages: torch.Tensor) -> torch.Tensor:
         return (self.write_index - self.size + ages) % self.capacity
 
-    def sample_windows(self, batch_size: int, window_length: int):
-        """k-step windows; returns dict of (B, k, ...) tensors and a validity mask (B, k)."""
+    def sample_windows(self, batch_size: int):
+        window_length = self.window_length
+        "k-step windows; returns dict of (B, k, ...) tensors and a validity mask (B, k)."
         start_ages = self._randint(self.size - window_length + 1, batch_size)
         env_indices = torch.randint(0, self.num_envs, (batch_size,), device=self.device)
-        ages = start_ages.unsqueeze(-1) + torch.arange(window_length, device=self.device)
+        ages = start_ages.unsqueeze(-1) + self.window_offsets
         rows = self._row(ages)
         window_env_indices = env_indices.unsqueeze(-1).expand_as(rows)
         windows = {
@@ -70,15 +81,15 @@ class ReplayBuffer:
         windows["mask"] = mask
         return windows
 
-    def sample_starts(self, batch_size: int, history_length: int):
+    def sample_starts(self, batch_size: int):
         ages = self._randint(self.size, batch_size)
         env_indices = torch.randint(0, self.num_envs, (batch_size,), device=self.device)
-        return self.starts_at(ages, env_indices, history_length)
+        return self.starts_at(ages, env_indices)
 
-    def starts_at(self, ages: torch.Tensor, env_indices: torch.Tensor, history_length: int):
+    def starts_at(self, ages: torch.Tensor, env_indices: torch.Tensor):
         row_indices = self._row(ages)
         episode_step = self.data["episode_step"][row_indices, env_indices].long()
-        history_rows = self._row(transforms.compute_history_ages(ages, episode_step, history_length))
+        history_rows = self._row(transforms.compute_history_ages(ages, episode_step, self.history_lookback))
         fields = ("state", "last_action", "simulation_parameters", "motion_frame_index")
         start = {field: self.data[field][row_indices, env_indices] for field in fields}
         history = {field: self.data[field][history_rows, env_indices[:, None]] for field in fields}

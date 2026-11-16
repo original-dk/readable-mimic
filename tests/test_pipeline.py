@@ -100,10 +100,17 @@ def tiny_trainer(tmp_path, monkeypatch):
         )
         trainer.actor.observation_normalizer.update(observation)
         trainer.actor.command_normalizer.update(
-            transforms.compute_command(frames, config.goal_frames, trainer.motion)
+            transforms.compute_command(frames, trainer.command_frame_offsets, trainer.motion)
         )
         inputs, targets, increments = transforms.compute_world_model_training_data(
-            trainer.world_model, state, next_state, action, action, parameters, trainer.robot
+            trainer.world_model,
+            state,
+            next_state,
+            action,
+            action,
+            parameters,
+            trainer.simulation_parameter_center,
+            trainer.simulation_parameter_scale,
         )
         trainer.world_model.input_normalizer.update(inputs)
         trainer.world_model.output_normalizer.update(targets)
@@ -172,10 +179,10 @@ def test_state_and_replay_boundaries(tiny_trainer):
     for original, result in zip(state, restored):
         torch.testing.assert_close(original, result)
     trainer.buffer.data["episode_step"].zero_()
-    start, history = trainer.buffer.starts_at(torch.tensor([5]), torch.tensor([0]), 3)
+    start, history = trainer.buffer.starts_at(torch.tensor([5]), torch.tensor([0]))
     torch.testing.assert_close(history["state"][:, 0], history["state"][:, -1])
     trainer.buffer.data["transition_cut"].fill_(True)
-    windows = trainer.buffer.sample_windows(4, 2)
+    windows = trainer.buffer.sample_windows(4)
     assert windows["mask"][:, 0].eq(1).all()
     assert windows["mask"][:, 1].eq(0).all()
 
@@ -267,7 +274,7 @@ def test_collect_and_training_loop(tiny_trainer, tmp_path, monkeypatch):
     import json
 
     rows = [json.loads(line) for line in (tmp_path / "run/metrics.jsonl").read_text().splitlines()]
-    assert all("sim_r" in row and np.isfinite(row["sim_r"]) for row in rows)
+    assert all(("sim_r" in row and np.isfinite(row["sim_r"]) for row in rows))
     assert not (tmp_path / "run/checkpoints/iteration_000001.pt").exists()
     assert (tmp_path / "run/checkpoints/iteration_000002.pt").is_file()
     from copy import deepcopy
@@ -322,7 +329,7 @@ def test_simulation_parameters_match_applied_physics(tiny_trainer):
     torch.testing.assert_close(simulation.model.geom_friction[:, 2, 0], parameters[:, 0])
     torch.testing.assert_close(simulation.model.body_ipos[:, 1], parameters[:, 3:6])
     before = parameters.clone()
-    randomize_joint_pos_offsets(parameters, torch.tensor([1, 3]), trainer.robot)
+    randomize_joint_pos_offsets(parameters, torch.tensor([1, 3]), trainer.joint_pos_offset_limits)
     torch.testing.assert_close(parameters[[0, 2]], before[[0, 2]])
     torch.testing.assert_close(parameters[:, 0], before[:, 0])
     torch.testing.assert_close(parameters[:, 3:], before[:, 3:])
@@ -345,7 +352,9 @@ def test_observation_fields_and_context_normalization(tiny_trainer):
     )
     torch.testing.assert_close(observation[:, :2], state[4] - parameters[:, 1:3])
     torch.testing.assert_close(observation[:, 10:12], last_action)
-    normalized = transforms.compute_normalized_simulation_parameters(parameters, trainer.robot)
+    normalized = transforms.compute_normalized_simulation_parameters(
+        parameters, trainer.simulation_parameter_center, trainer.simulation_parameter_scale
+    )
     torch.testing.assert_close(normalized[:, 1:3], torch.tensor([[0.4, -0.6]]))
     assert observation.shape == (1, 18)
 
@@ -405,9 +414,11 @@ def test_shared_command_and_history_transforms(tiny_trainer):
     trainer = tiny_trainer
     last_frame = int(trainer.motion.clip_end[0])
     frames = torch.tensor([12, last_frame])
-    future_frames = transforms.compute_future_motion_frames(frames, 2, trainer.motion)
+    future_frames = transforms.compute_future_motion_frames(
+        frames, trainer.command_frame_offsets, trainer.motion
+    )
     torch.testing.assert_close(future_frames, torch.tensor([[13, 14], [last_frame, last_frame]]))
-    command = transforms.compute_command(frames, 2, trainer.motion)
+    command = transforms.compute_command(frames, trainer.command_frame_offsets, trainer.motion)
     assert command.shape == (2, transforms.compute_command_dim(2, 2))
     torch.testing.assert_close(command[:, :19][:, 15:17], trainer.motion.joint_pos[future_frames[:, 0]])
     observation = torch.tensor([[1.0, 2.0], [3.0, 4.0]])
@@ -423,7 +434,7 @@ def test_shared_actor_return_and_value_targets():
     terminations = torch.tensor([[0.0], [0.5]])
     bootstrap = torch.tensor([3.0], requires_grad=True)
     actor_return, survival, final_survival = transforms.compute_actor_return(
-        rewards, terminations, bootstrap, 0.9
+        rewards, terminations, bootstrap, torch.tensor([[1.0], [0.9]]), 0.9**2
     )
     torch.testing.assert_close(actor_return, torch.tensor([4 + 0.9 * 5 + 0.9**2 * 0.5 * 3]))
     actor_return.sum().backward()
@@ -440,14 +451,14 @@ def test_updater_dependencies_are_explicit_and_transforms_are_centralized():
 
     source_directory = Path(__file__).parents[1] / "src/readable_mimic"
     update_tree = ast.parse((source_directory / "updates.py").read_text(encoding="utf-8"))
-    update_class = next(node for node in update_tree.body if isinstance(node, ast.ClassDef))
-    constructor = next(node for node in update_class.body if getattr(node, "name", None) == "__init__")
+    update_class = next((node for node in update_tree.body if isinstance(node, ast.ClassDef)))
+    constructor = next((node for node in update_class.body if getattr(node, "name", None) == "__init__"))
     declared = {
         node.attr
         for node in ast.walk(constructor)
         if isinstance(node, ast.Attribute)
         and isinstance(node.value, ast.Name)
-        and node.value.id == "self"
+        and (node.value.id == "self")
         and isinstance(node.ctx, ast.Store)
     }
     methods = {node.name for node in update_class.body if isinstance(node, ast.FunctionDef)}
@@ -456,15 +467,15 @@ def test_updater_dependencies_are_explicit_and_transforms_are_centralized():
         for node in ast.walk(update_class)
         if isinstance(node, ast.Attribute)
         and isinstance(node.value, ast.Name)
-        and node.value.id == "self"
+        and (node.value.id == "self")
         and isinstance(node.ctx, ast.Load)
     }
     assert used <= declared | methods, used - declared - methods
     trainer_tree = ast.parse((source_directory / "trainer.py").read_text(encoding="utf-8"))
-    trainer_class = next(node for node in trainer_tree.body if isinstance(node, ast.ClassDef))
+    trainer_class = next((node for node in trainer_tree.body if isinstance(node, ast.ClassDef)))
     assert trainer_class.bases == []
     transform_tree = ast.parse((source_directory / "data_transforms.py").read_text(encoding="utf-8"))
-    assert not any(isinstance(node, ast.Name) and node.id == "self" for node in ast.walk(transform_tree))
+    assert not any((isinstance(node, ast.Name) and node.id == "self" for node in ast.walk(transform_tree)))
     assert not (source_directory / "objective.py").exists()
     assert not (source_directory / "observation.py").exists()
 
@@ -567,3 +578,49 @@ def test_resume_cli_overrides_config_without_modifying_file(tiny_trainer, tmp_pa
     config_path.write_text(json.dumps(current), encoding="utf-8")
     main(["--config", str(config_path), "--resume", str(checkpoint_path)])
     assert calls["resume"] == str(checkpoint_path)
+
+
+def test_fixed_training_constants_are_not_rebuilt(tiny_trainer, monkeypatch):
+    import readable_mimic.simulation_parameters as parameters_module
+    import readable_mimic.buffer as buffer_module
+
+    trainer = tiny_trainer
+    constants = (
+        trainer.joint_pos_offset_limits,
+        trainer.simulation_parameter_center,
+        trainer.simulation_parameter_scale,
+        trainer.command_frame_offsets,
+        trainer.updates.discount_factors,
+        trainer.buffer.window_offsets,
+        trainer.buffer.history_lookback,
+    )
+    before = [value.clone() for value in constants]
+
+    def unexpected_initialization(*args, **kwargs):
+        raise AssertionError("Fixed constants must not be rebuilt during updates")
+
+    class NoArangeTorch:
+        def __getattr__(self, name):
+            if name == "arange":
+                return unexpected_initialization
+            return getattr(torch, name)
+
+    monkeypatch.setattr(parameters_module, "joint_pos_offset_limits", unexpected_initialization)
+    monkeypatch.setattr(transforms, "compute_simulation_parameter_normalization", unexpected_initialization)
+    monkeypatch.setattr(transforms, "torch", NoArangeTorch())
+    monkeypatch.setattr(buffer_module, "torch", NoArangeTorch())
+    for _ in range(2):
+        trainer.updates.update_world_model()
+        metrics = trainer.updates.update_actor()
+        assert all((torch.isfinite(value).all() for value in metrics))
+    for original, current in zip(before, constants):
+        torch.testing.assert_close(original, current, rtol=0, atol=0)
+    parameters = torch.randn(2, 6, requires_grad=True)
+    normalized = transforms.compute_normalized_simulation_parameters(
+        parameters, trainer.simulation_parameter_center, trainer.simulation_parameter_scale
+    )
+    expected_center = torch.tensor([0.75, 0.0, 0.0, 0.0, 0.0, 0.0])
+    expected_scale = torch.tensor([0.45, 0.01, 0.01, 0.05, 0.05, 0.05])
+    torch.testing.assert_close(normalized, (parameters - expected_center) / expected_scale)
+    normalized.sum().backward()
+    torch.testing.assert_close(parameters.grad, expected_scale.reciprocal().expand_as(parameters))

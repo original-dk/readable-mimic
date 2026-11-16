@@ -76,7 +76,7 @@ def initialize_simulation_parameters(env, randomize=True):
     return parameters
 
 
-def randomize_joint_pos_offsets(parameters, env_indices, robot):
-    num_joints = robot.num_joints
+def randomize_joint_pos_offsets(parameters, env_indices, offset_limits):
+    num_joints = offset_limits.numel()
     offsets = 2 * torch.rand(len(env_indices), num_joints, device=parameters.device) - 1
-    parameters[env_indices, 1 : 1 + num_joints] = offsets * joint_pos_offset_limits(robot, parameters.device)
+    parameters[env_indices, 1 : 1 + num_joints] = offsets * offset_limits

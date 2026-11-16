@@ -149,6 +149,7 @@ def render_motion(
     follow_base,
     output_path,
 ):
+    command_frame_offsets = torch.arange(1, command_frames + 1, device=env.device)
     env_indices = torch.tensor([0], device=env.device)
     env.reset(env_indices, sample_start_frame(motion, clip_index))
     history = transforms.compute_observation_history(env.observe(), history_length)
@@ -165,7 +166,7 @@ def render_motion(
         pixelformat="yuv420p",
     ) as writer:
         for step_index in range(steps):
-            command = transforms.compute_command(env.motion_frame_index, command_frames, motion)
+            command = transforms.compute_command(env.motion_frame_index, command_frame_offsets, motion)
             transition = env.step(actor(history, command))
             robot_state = env.state()
             ref_state = motion.ref_state(env.motion_frame_index)
