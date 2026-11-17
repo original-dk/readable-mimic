@@ -23,6 +23,16 @@ def load_config(path="config.json", resume=None):
     values.setdefault("compile_world_model", True)
     values.setdefault("compile_actor", True)
     values.setdefault("allow_tf32", True)
+    values.setdefault("simulator", "mujoco")
+    values.setdefault(
+        "genesis",
+        {
+            "enable_self_collision": False,
+            "enable_adjacent_collision": False,
+            "enable_mujoco_compatibility": True,
+            "use_hibernation": False,
+        },
+    )
     if resume is not None:
         values["resume"] = str(Path(resume).resolve())
     for key in ("motion_dir", "log_dir", "resume"):
@@ -48,10 +58,13 @@ def load_config(path="config.json", resume=None):
             "compile_world_model",
             "compile_actor",
             "allow_tf32",
+            "simulator",
+            "genesis",
         )
         runtime_config = {name: values[name] for name in runtime_fields}
         values = {**values, **saved_config, **runtime_config}
     config = SimpleNamespace(**values)
+    assert config.simulator in ("mujoco", "genesis"), "simulator must be mujoco or genesis"
     assert config.amp == "none", "Only FP32 is supported."
     assert config.fail_reset == 0, "Only uniform reset sampling is supported."
     assert config.warmup_steps >= config.wm_window

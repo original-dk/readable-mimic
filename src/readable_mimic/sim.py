@@ -1,8 +1,5 @@
-"""Simulation creation, timing, configuration and physical parameter randomization."""
+"""Shared simulation timing, xi and backend selection; engine code lives in sim_mujoco/sim_genesis."""
 
-from mjlab.scene import Scene, SceneCfg
-from mjlab.sim import MujocoCfg, Simulation, SimulationCfg
-from mjlab.terrains import TerrainEntityCfg
 from dataclasses import dataclass, field
 import re
 import torch
@@ -10,11 +7,6 @@ import torch
 CONTROL_DT = 0.02
 DECIMATION = 4
 PHYSICS_DT = CONTROL_DT / DECIMATION
-
-
-class EagerSimulation(Simulation):
-    def _should_use_cuda_graph(self):
-        return False
 
 
 @dataclass(frozen=True)
@@ -51,67 +43,37 @@ def default_xi(robot, device):
     )
 
 
-def initialize_xi(env, randomize=True):
-    """Sample friction / COM once and apply the same values to MuJoCo and replay context."""
-    robot = env.robot_description
-    simulation = env.simulation
-    device = env.device
-    xi = default_xi(robot, device).repeat(env.num_envs, 1)
-    simulation.expand_model_fields(("body_ipos", "geom_friction"))
-    friction = xi[:, :1]
-    if randomize:
-        friction.uniform_(*robot.domain_randomization.friction_range)
-    else:
-        friction.fill_(1.0)
-    ground_geom_indices = (
-        torch.as_tensor(simulation.mj_model.geom_bodyid == 0, device=device).nonzero().flatten()
-    )
-    robot_geom_indices = env.robot.indexing.geom_ids
-    simulation.model.geom_friction[:, ground_geom_indices, 0] = (
-        robot.domain_randomization.friction_range[0] if randomize else 1.0
-    )
-    simulation.model.geom_friction[:, robot_geom_indices, 0] = friction
-    center_of_mass_offset = torch.stack(
-        [
-            torch.empty(env.num_envs, device=device).uniform_(lower, upper)
-            for lower, upper in robot.center_of_mass_offset_range
-        ],
-        -1,
-    )
-    if not randomize:
-        center_of_mass_offset.zero_()
-    xi[:, 1 + robot.num_joints :] = center_of_mass_offset
-    body_index = env.robot.indexing.body_ids[env.robot.find_bodies(robot.center_of_mass_body)[0][0]]
-    simulation.model.body_ipos[:, body_index] = (
-        simulation.get_default_field("body_ipos")[body_index] + center_of_mass_offset
-    )
-    return xi
-
-
 def randomize_joint_pos_offsets(xi, env_indices, offset_limits):
     num_joints = offset_limits.numel()
     offsets = 2 * torch.rand(len(env_indices), num_joints, device=xi.device) - 1
     xi[env_indices, 1 : 1 + num_joints] = offsets * offset_limits
 
 
-def create_simulation(robot, num_envs, device, settings):
-    settings = dict(settings)
-    settings.pop("control_dt")
-    settings.pop("decimation")
-    joint_capacity = settings.pop("njmax")
-    contact_capacity = settings.pop("nconmax")
-    simulation_config = SimulationCfg(
-        njmax=joint_capacity, nconmax=contact_capacity, mujoco=MujocoCfg(timestep=PHYSICS_DT, **settings)
-    )
-    scene_config = SceneCfg(
-        num_envs=num_envs,
-        env_spacing=0.0,
-        terrain=TerrainEntityCfg(terrain_type="plane"),
-        entities={"robot": robot.robot_cfg()},
-    )
-    scene = Scene(scene_config, device=device)
-    simulation = EagerSimulation(
-        num_envs=num_envs, cfg=simulation_config, model=scene.compile(), device=device
-    )
-    scene.initialize(mj_model=simulation.mj_model, model=simulation.model, data=simulation.data)
-    return (scene, simulation)
+def initialize_xi(env, randomize=True):
+    robot = env.robot_description
+    xi = default_xi(robot, env.device).repeat(env.num_envs, 1)
+    if randomize:
+        xi[:, 0].uniform_(*robot.domain_randomization.friction_range)
+        xi[:, 1 + robot.num_joints :] = torch.stack(
+            [
+                torch.empty(env.num_envs, device=env.device).uniform_(lower, upper)
+                for lower, upper in robot.center_of_mass_offset_range
+            ],
+            -1,
+        )
+    else:
+        xi[:, 0] = 1.0
+    env.simulation.apply_xi(xi, randomize)
+    return xi
+
+
+def create_simulation(robot, num_envs, device, settings, backend="mujoco", genesis_settings=None):
+    if backend == "genesis":
+        from .sim_genesis import GenesisSim
+
+        return GenesisSim(robot, num_envs, device, settings, genesis_settings or {})
+    if backend == "mujoco":
+        from .sim_mujoco import MujocoSim
+
+        return MujocoSim(robot, num_envs, device, settings)
+    raise ValueError(f"Unknown simulator: {backend}")

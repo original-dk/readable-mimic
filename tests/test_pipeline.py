@@ -403,7 +403,9 @@ def test_collect_and_training_loop(tiny_trainer, tmp_path, monkeypatch):
 
 
 def test_xi_matches_applied_physics(tiny_trainer):
+    pytest.importorskip("mjlab")
     from readable_mimic.sim import initialize_xi, randomize_joint_pos_offsets
+    from readable_mimic.sim_mujoco import MujocoSim
 
     trainer = tiny_trainer
     default_body_positions = torch.zeros(3, 3)
@@ -413,9 +415,17 @@ def test_xi_matches_applied_physics(tiny_trainer):
         expand_model_fields=lambda names: None,
         get_default_field=lambda name: default_body_positions,
     )
+    backend = MujocoSim.__new__(MujocoSim)
+    backend.physics = simulation
+    backend.robot_description = trainer.robot
+    backend.device = "cpu"
+    backend.robot = SimpleNamespace(
+        indexing=SimpleNamespace(geom_ids=torch.tensor([1, 2]), body_ids=torch.tensor([1, 2])),
+        find_bodies=lambda name: ([0], [name]),
+    )
     env = SimpleNamespace(
         robot_description=trainer.robot,
-        simulation=simulation,
+        simulation=backend,
         num_envs=4,
         device="cpu",
         robot=SimpleNamespace(
@@ -600,6 +610,8 @@ def test_resume_restores_saved_config_and_random_states(tiny_trainer, tmp_path):
         compile_world_model=False,
         compile_actor=False,
         allow_tf32=False,
+        simulator="mujoco",
+        genesis={"enable_self_collision": False},
         iterations=20,
         ckpt_every=5,
         log_dir="new_run",
@@ -611,6 +623,7 @@ def test_resume_restores_saved_config_and_random_states(tiny_trainer, tmp_path):
     assert config.wm_hidden == trainer.config.wm_hidden
     assert config.compile_world_model is False
     assert config.compile_actor is False and config.allow_tf32 is False
+    assert config.simulator == "mujoco" and config.genesis == {"enable_self_collision": False}
     assert config.iterations == 20 and config.ckpt_every == 5
     assert config.log_dir == str(tmp_path / "new_run")
     resumed = Trainer(config)

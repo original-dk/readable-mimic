@@ -1,24 +1,35 @@
 # Readable Mimic
 
-按 Motion → command / obs → history → Actor → MuJoCo → Buffer，以及
+按 Motion → command / obs → history → Actor → 仿真 → Buffer，以及
 Buffer → WM 和 imagined rollout → Actor / Critic 两条分支组织的简化实现。
 
 ## 安装与运行
 
 ```powershell
 cd D:\pycharm_project\readable-mimic
-uv sync
-uv run python tools/download_data.py
-uv run python -m readable_mimic.train --config config.json
-uv run pytest -q
+uv sync --extra genesis
+uv run --extra genesis python tools/download_data.py
+uv run --extra genesis python -m readable_mimic.train --config config.json
+uv run --extra genesis pytest -q
 ```
 
-配置对照和已知差异见 `CONFIG_PARITY.md`。运行 `uv run pytest -q -s` 可看到
+配置对照和已知差异见 `CONFIG_PARITY.md`。运行 `uv run --extra genesis pytest -q -s` 可看到
 原生 MuJoCo CPU 采样后两轮训练的实时损失；该 CPU 环境仅用于测试，不替代 G1 仿真后端。
 
 默认训练配置需要 NVIDIA CUDA 设备。CPU 测试使用小型 MuJoCo 机器人和生成的运动数据，
 覆盖实际 FK、WM 多步更新、可微 imagined rollout、Actor / Critic 更新及保存恢复，
 不代表已完成 G1 训练或复现论文指标。
+
+本分支默认 `simulator: "genesis"`，固定 Genesis 1.4.5。`compile_speed` 保留迁移前的 MuJoCo 实现。
+切换 MuJoCo 时将 config.json 的 simulator 改为 mujoco，并使用 `uv sync --extra mujoco`、`uv run --extra mujoco ...`。
+两个 extra 因第三方 Pillow 要求不兼容而互斥；切换 extra 后 uv 自动同步对应依赖，不能使用 --all-extras。
+所有实验配置仍在 config.json：simulation 保留控制周期与 MuJoCo 参数，genesis 小节只配置 Genesis 选项。
+两后端都使用 50 Hz 控制、200 Hz 物理，Genesis 每次 scene.step 内运行 4 个物理子步。
+Genesis 从同一个 MJCF 加载机器人，按名字映射 joint_pos/joint_vel/action；复用 G1 原 PD、armature 和力矩限制。
+xi 的 friction 和 center_of_mass_offset 会写入物理引擎，joint_pos_offset 仍在 reset 后采样并用于动作目标和 obs。
+FK、motion、Actor、Critic、WM、奖励、Buffer、编译开关和全部速度字段共用。物理引擎不同不等于 MuJoCo 数值复现。
+视频命令同样使用所选后端推进物理，再把统一 state 写入独立 MuJoCo 模型进行离屏渲染；MuJoCo 此时只负责画面。
+Genesis 1.4.5 的安装、批量仿真及控制 API 以该版本源码为准，参考 https://genesis-world.readthedocs.io/。
 
 ## 模块
 
@@ -31,11 +42,13 @@ uv run pytest -q
 | world_model.py | 局部增量预测、结构化状态积分 |
 | updates.py | WM 回归、imagined Actor 更新、独立 Critic 回归 |
 | buffer.py | 时间×环境的循环 Buffer 和历史恢复 |
-| env.py | MuJoCo-Warp 采样，均匀 bin reset |
+| env.py | 共用 obs/reset/reward/transition 流程，均匀 bin reset |
 | motion.py | 参考动作重采样及 command |
 | data_transforms.py | obs、command、history、Critic 输入、Actor 回报、价值目标和状态转换 |
 | task.py | 跟踪奖励和终止条件 |
-| sim.py | 仿真配置、scene/仿真器创建、时间常量及物理参数随机化 |
+| sim.py | 后端选择、时间常量及 xi 采样 |
+| sim_mujoco.py | mjlab/MuJoCo 的 state/reset/step/apply_xi |
+| sim_genesis.py | Genesis 的 state/reset/step/apply_xi |
 | kinematics.py | 上游 FK 算法，重命名状态参数 |
 | rotations.py | 四元数、旋转矩阵、SO(3) 运算 |
 | mirror.py | 左右镜像增强 |
@@ -123,7 +136,7 @@ uv run --no-sync python -m readable_mimic.evaluate \
 Ghost 仅为透明渲染几何体，不参与物理计算。默认读取 EMA Actor，关闭训练噪声和域随机化。
 
 不启动 MuJoCo viewer，也不弹出预览窗口。Linux 无 DISPLAY 时自动选择 EGL；
-如需手动指定，可在命令前加 MUJOCO_GL=egl。编码依赖 imageio[ffmpeg]，更新项目后先执行 uv sync。
+如需手动指定，可在命令前加 MUJOCO_GL=egl。编码依赖 imageio[ffmpeg]，更新项目后先执行 uv sync --extra genesis（MuJoCo 后端使用 --extra mujoco）。
 若之前为解决 MuJoCo 混装手工修复过环境，应保留该处理，再使用 --no-sync 运行导出命令。
 
 这是可视化视频导出，不是完整动作的标准评测分数。
@@ -191,9 +204,8 @@ WM rollout 的整批仿真参数在进入逐步预测前归一化一次。
 缓存由配置推导，不额外写入 checkpoint，不改变权重和优化器的存储格式。
 
 
-仿真相关代码统一位于 sim.py：create_simulation、EagerSimulation、
-CONTROL_DT / DECIMATION / PHYSICS_DT、DomainRandomizationConfig 和参数采样函数。
-env.py 通过 create_simulation 创建 scene/仿真器，只负责环境状态、reset、observe、step。
+sim.py 统一保留 create_simulation、CONTROL_DT / DECIMATION / PHYSICS_DT、DomainRandomizationConfig 和 xi 采样。
+引擎专用实现分别位于 sim_mujoco.py、sim_genesis.py；env.py 只通过 state/reset/step/apply_xi 接口使用仿真器。
 参数归一化等纯数据转换仍位于 data_transforms.py，保留已有模块职责。
 
 
@@ -203,7 +215,7 @@ xi 固定顺序为 [friction, joint_pos_offset, center_of_mass_offset]。
 模型 parameters() 指 PyTorch 权重参数，与 xi 无关；权重和 checkpoint 格式保持不变。
 
 
-create_simulation 直接接收 config.simulation 字典，内部完成配置转换、scene 创建和仿真器初始化；不再提供 make_sim 中间接口。
+create_simulation 接收 config.simulation、simulator 和 genesis 选项，返回对应后端；不再提供 make_sim 中间接口。
 
 训练阶段计时：config.json 的 profile_speed 为 true 时，日志及 metrics.jsonl 输出两次日志之间的每轮平均毫秒数。
 prepare_ms 为学习率和采样步数准备，collect_ms 为真实环境采样及数据入库/标准化，world_model_ms 包含全部 WM 更新。

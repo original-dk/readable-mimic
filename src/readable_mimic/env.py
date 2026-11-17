@@ -1,8 +1,6 @@
-"""Actor action -> MuJoCo step -> state / reward / replay transition."""
+"""Actor action -> physics step -> state / reward / replay transition."""
 
 from .sim import (
-    DECIMATION,
-    PHYSICS_DT,
     create_simulation,
     joint_pos_offset_limits,
     initialize_xi,
@@ -11,7 +9,7 @@ from .sim import (
 from . import data_transforms as transforms
 import torch
 from .task import MAX_STEP_REWARD
-from .rotations import mat_to_quat, quat_to_mat, so3_exp
+from .rotations import so3_exp
 from .timing import TrainingTimer
 
 
@@ -27,6 +25,8 @@ class TrackingEnv:
         max_episode_steps=500,
         evaluation=False,
         timer=None,
+        backend="mujoco",
+        genesis_settings=None,
     ):
         self.evaluation = evaluation
         self.num_envs = num_envs
@@ -37,10 +37,10 @@ class TrackingEnv:
         self.motion = motion
         self.task = task
         self.max_episode_steps = max_episode_steps
-        self.scene, self.simulation = create_simulation(robot, num_envs, device, simulation_settings)
-        self.robot = self.scene["robot"]
-        assert list(self.robot.joint_names) == list(robot.joint_names)
-        self.default_joint_pos = self.robot.data.default_joint_pos[0].clone()
+        self.simulation = create_simulation(
+            robot, num_envs, device, simulation_settings, backend, genesis_settings
+        )
+        self.default_joint_pos = torch.tensor(robot.default_joint_pos_list(), device=device)
         self.action_scale = torch.tensor(robot.action_scale_list(), device=device)
         self.joint_pos_offset_limits = joint_pos_offset_limits(robot, device)
         self.xi = initialize_xi(self, randomize=not evaluation)
@@ -54,16 +54,7 @@ class TrackingEnv:
         ).to(device)
 
     def state(self):
-        robot_indices = self.robot.indexing
-        base_free_joint_pos = self.simulation.data.qpos[:, robot_indices.free_joint_q_adr]
-        base_free_joint_vel = self.simulation.data.qvel[:, robot_indices.free_joint_v_adr]
-        base_pos_w = base_free_joint_pos[:, :3] - self.scene.env_origins
-        base_rot_mat_w = quat_to_mat(base_free_joint_pos[:, 3:7])
-        base_lin_vel_w = base_free_joint_vel[:, :3].clone()
-        base_ang_vel_w = (base_rot_mat_w @ base_free_joint_vel[:, 3:6, None]).squeeze(-1)
-        joint_pos = self.robot.data.joint_pos.clone()
-        joint_vel = self.robot.data.joint_vel.clone()
-        return (base_pos_w, base_rot_mat_w, base_lin_vel_w, base_ang_vel_w, joint_pos, joint_vel)
+        return self.simulation.state()
 
     def sample_motion_frames(self, num_samples):
         bin_indices = torch.randint(self.motion.num_bins, (num_samples,), device=self.device)
@@ -101,25 +92,15 @@ class TrackingEnv:
         joint_pos = joint_pos.clamp(
             self.task.kinematics.joint_pos_lower_limit, self.task.kinematics.joint_pos_upper_limit
         )
-        self.simulation.reset(env_indices)
-        self.scene.reset(env_indices)
-        base_pose_w = torch.cat(
-            (base_pos_w + self.scene.env_origins[env_indices], mat_to_quat(base_rot_mat_w)), -1
+        self.simulation.reset(
+            env_indices, (base_pos_w, base_rot_mat_w, base_lin_vel_w, base_ang_vel_w, joint_pos, joint_vel)
         )
-        self.robot.write_root_link_pose_to_sim(base_pose_w, env_ids=env_indices)
-        self.robot.write_root_link_velocity_to_sim(
-            torch.cat((base_lin_vel_w, base_ang_vel_w), -1), env_ids=env_indices
-        )
-        self.robot.write_joint_position_to_sim(joint_pos, env_ids=env_indices)
-        self.robot.write_joint_velocity_to_sim(joint_vel, env_ids=env_indices)
-        self.robot.set_joint_position_target(joint_pos, env_ids=env_indices)
         self.motion_frame_index[env_indices] = motion_frames
         self.episode_step[env_indices] = 0
         self.last_action[env_indices] = 0
         self.episode_return[env_indices] = 0
         if not self.evaluation:
             randomize_joint_pos_offsets(self.xi, env_indices, self.joint_pos_offset_limits)
-        self.simulation.forward()
 
     def observe(self):
         observation = transforms.compute_observation(
@@ -143,11 +124,7 @@ class TrackingEnv:
         episode_step = self.episode_step.clone()
         joint_pos_offset = self.xi[:, 1 : 1 + self.num_joints]
         target_joint_pos = self.default_joint_pos + joint_pos_offset + self.action_scale * action
-        self.robot.set_joint_position_target(target_joint_pos)
-        for _ in range(DECIMATION):
-            self.scene.write_data_to_sim()
-            self.simulation.step()
-            self.scene.update(PHYSICS_DT)
+        self.simulation.step(target_joint_pos)
         next_state = self.state()
         next_motion_frame_index = motion_frame_index + 1
         self.timer.record("collect_physics")

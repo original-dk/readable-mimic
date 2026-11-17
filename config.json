@@ -1,5 +1,12 @@
 {
   "robot": "g1",
+  "simulator": "genesis",
+  "genesis": {
+    "enable_self_collision": false,
+    "enable_adjacent_collision": false,
+    "enable_mujoco_compatibility": true,
+    "use_hibernation": false
+  },
   "num_envs": 4096,
   "iterations": 3500,
   "buffer_steps": 1000,

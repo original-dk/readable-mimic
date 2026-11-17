@@ -1,5 +1,11 @@
 # 配置对照与复现边界
 
+compile_speed_genesis 默认使用 Genesis 1.4.5；MuJoCo 后端仍保留，可由 simulator 切换。
+Genesis 复用原 G1 MJCF、PD、关节顺序、armature、力矩范围和所有学习超参数，但接触/积分器实现不同，不能视为 MuJoCo 数值复现。
+控制周期 0.02 s、每控制步 4 个物理子步。simulation 中的 iterations/tolerance/ls_iterations/nconmax 映射到 Genesis 刚体求解器。
+MuJoCo 特有的 njmax/ccd_iterations 不映射到 Genesis；genesis 小节显式记录其自身选项，默认启用引擎提供的 MuJoCo compatibility。
+使用各自互斥的 uv extra 安装依赖；不覆盖第三方包的 Pillow 版本要求。
+
 参考上游 commit `d264658d6c9ce61fb52f9f0f8985a369f3ccc409` 的
 `train.py` 默认参数与 `scripts/presets.sh` 中 `PRESET[main]`。
 

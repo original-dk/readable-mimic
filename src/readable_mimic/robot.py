@@ -9,9 +9,11 @@ from .config import ObservationNoiseConfig
 import importlib
 import re
 from dataclasses import dataclass, field
-from typing import Callable
+from typing import Callable, TYPE_CHECKING
 import numpy as np
-from mjlab.entity import EntityCfg
+
+if TYPE_CHECKING:
+    from mjlab.entity import EntityCfg
 from .sim import DomainRandomizationConfig
 
 MotionArrays = tuple[np.ndarray, np.ndarray, np.ndarray, float]
@@ -44,6 +46,11 @@ class RobotSpec:
     njmax: int = 500
     nconmax: int = 128
     "MuJoCo-Warp constraint / contact capacity per world."
+    joint_stiffness: dict[str, float] = field(default_factory=dict)
+    joint_damping: dict[str, float] = field(default_factory=dict)
+    joint_effort_limit: dict[str, float] = field(default_factory=dict)
+    joint_armature: dict[str, float] = field(default_factory=dict)
+    action_delay_steps: int = 0
 
     @property
     def num_joints(self) -> int:
@@ -65,8 +72,7 @@ class RobotSpec:
     @property
     def has_action_delay(self) -> bool:
         """Whether any actuator delays its command (then s_{t+1} also depends on a_{t-1})."""
-        articulation = self.robot_cfg().articulation
-        return articulation is not None and any((act.delay_max_lag > 0 for act in articulation.actuators))
+        return self.action_delay_steps > 0
 
 
 def get_robot(name: str) -> RobotSpec:

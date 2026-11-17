@@ -171,9 +171,11 @@ def render_motion(
             robot_state = env.state()
             ref_state = motion.ref_state(env.motion_frame_index)
             ghost_pose = transforms.compute_ghost_pose(ref_state, robot_state, follow_base)
-            render_data.qpos[:] = env.simulation.data.qpos[0].cpu().numpy()
-            render_data.qvel[:] = env.simulation.data.qvel[0].cpu().numpy()
-            mujoco.mj_forward(env.simulation.mj_model, render_data)
+            render_data.qpos[ghost.base_qpos_indices] = (
+                torch.cat((robot_state[0], mat_to_quat(robot_state[1])), -1)[0].cpu().numpy()
+            )
+            render_data.qpos[ghost.joint_qpos_indices] = robot_state[4][0].cpu().numpy()
+            mujoco.mj_forward(ghost.model, render_data)
             camera.lookat[:] = robot_state[0][0].cpu().numpy()
             renderer.update_scene(render_data, camera=camera)
             ghost.update(renderer.scene, render_data.qpos, ghost_pose, append=True)
@@ -224,17 +226,33 @@ def main(argv=None):
         config.device,
         max_episode_steps=math.ceil(arguments.duration / CONTROL_DT) + 1,
         evaluation=True,
+        backend=config.simulator,
+        genesis_settings=config.genesis,
     )
-    model = env.simulation.mj_model
+    render_spec = mujoco.MjSpec.from_file(robot.mjcf_path)
+    render_spec.worldbody.add_geom(
+        name="render_ground",
+        type=mujoco.mjtGeom.mjGEOM_PLANE,
+        size=[0, 0, 0.1],
+        rgba=[0.8, 0.8, 0.8, 1],
+    )
+    render_spec.worldbody.add_light(pos=[0, -3, 5], dir=[0, 0, -1])
+    model = render_spec.compile()
     model.vis.global_.offwidth = max(model.vis.global_.offwidth, 960)
     model.vis.global_.offheight = max(model.vis.global_.offheight, 720)
     render_data = mujoco.MjData(model)
-    indices = env.robot.indexing
+    free_joint = np.flatnonzero(model.jnt_type == mujoco.mjtJoint.mjJNT_FREE)[0]
+    base_qpos_start = model.jnt_qposadr[free_joint]
+    robot_body = model.jnt_bodyid[free_joint]
+    robot_body_indices = {int(robot_body)}
+    for body_index in range(robot_body + 1, model.nbody):
+        if int(model.body_parentid[body_index]) in robot_body_indices:
+            robot_body_indices.add(body_index)
     ghost = GhostOverlay(
         model,
-        torch.as_tensor(indices.free_joint_q_adr).cpu().numpy(),
-        torch.as_tensor(indices.joint_q_adr).cpu().numpy(),
-        torch.as_tensor(indices.geom_ids).cpu().numpy(),
+        np.arange(base_qpos_start, base_qpos_start + 7),
+        [model.joint(name).qposadr[0] for name in robot.joint_names],
+        np.flatnonzero(np.isin(model.geom_bodyid, list(robot_body_indices))),
     )
     output_directory = Path(arguments.output_dir)
     output_directory.mkdir(parents=True, exist_ok=True)

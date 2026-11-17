@@ -167,6 +167,7 @@ class Trainer:
                 json.dumps(
                     {
                         "speed_settings": {
+                            "simulator": self.config.simulator,
                             "gpu": torch.cuda.get_device_name(self.device),
                             "pytorch": torch.__version__,
                             "cuda": torch.version.cuda,
@@ -187,6 +188,8 @@ class Trainer:
             self.device,
             max_episode_steps=self.config.max_episode_steps,
             timer=self.updates.timer,
+            backend=self.config.simulator,
+            genesis_settings=self.config.genesis,
         )
 
     @torch.no_grad()

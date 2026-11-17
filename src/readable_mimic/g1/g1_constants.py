@@ -9,8 +9,6 @@ from __future__ import annotations
 import os
 import mujoco
 import numpy as np
-from mjlab.actuator import BuiltinPositionActuatorCfg
-from mjlab.entity import EntityArticulationInfoCfg, EntityCfg
 from readable_mimic.robot import MotionArrays, RobotSpec
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
@@ -133,7 +131,9 @@ def get_spec() -> mujoco.MjSpec:
     return spec
 
 
-def _actuators() -> tuple[BuiltinPositionActuatorCfg, ...]:
+def _actuators():
+    from mjlab.actuator import BuiltinPositionActuatorCfg
+
     acts = []
     for name in G1_JOINT_NAMES:
         effort, _, arm = motor_of(name)
@@ -149,7 +149,9 @@ def _actuators() -> tuple[BuiltinPositionActuatorCfg, ...]:
     return tuple(acts)
 
 
-def get_robot_cfg() -> EntityCfg:
+def get_robot_cfg():
+    from mjlab.entity import EntityArticulationInfoCfg, EntityCfg
+
     return EntityCfg(
         init_state=EntityCfg.InitialStateCfg(
             pos=(0.0, 0.0, 0.76), joint_pos=DEFAULT_JOINT_POS, joint_vel={".*": 0.0}
@@ -171,6 +173,10 @@ SPEC = RobotSpec(
     name="g1",
     mjcf_path=MJCF_PATH,
     joint_names=tuple(G1_JOINT_NAMES),
+    joint_stiffness={name: _kp(motor_of(name)[2]) for name in G1_JOINT_NAMES},
+    joint_damping={name: _kd(motor_of(name)[2]) for name in G1_JOINT_NAMES},
+    joint_effort_limit={name: motor_of(name)[0] for name in G1_JOINT_NAMES},
+    joint_armature={name: motor_of(name)[2] for name in G1_JOINT_NAMES},
     tracked_bodies=tuple(TRACKED_BODIES),
     default_joint_pos=DEFAULT_JOINT_POS,
     action_scale={n: action_scale(n) for n in G1_JOINT_NAMES},
