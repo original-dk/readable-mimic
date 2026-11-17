@@ -25,7 +25,8 @@
 | 奖励、随机化、观测噪声 | config.json 对应小节 | 从上游 dataclass 默认值导出 |
 | MuJoCo 参数 | config.json 的 simulation | 与上游相同，50 Hz 控制 / 200 Hz 物理 |
 | 失败、回报优先和 probe reset | 不实现，均匀时间 bin | 按本项目要求简化 |
-| AMP / compile / fused / CUDA Graph | 关闭 | 按本项目要求简化 |
+| FK compile | CUDA 训练默认开启 | compile_fk 配置控制；参考动作预处理保持普通执行 |
+| AMP / fused / CUDA Graph | 关闭 | 按本项目要求简化 |
 
 配置名沿用上游，数据名称采用本项目完整名称。G1 固定关节顺序、驱动器和模型结构
 在 g1_constants.py 中，属于机器人描述；实验参数在 config.json 中。

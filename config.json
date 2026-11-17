@@ -47,6 +47,7 @@
   "seed": 0,
   "resume": null,
   "amp": "none",
+  "compile_fk": true,
   "device": "cuda:0",
   "num_threads": 4,
   "domain_randomization": {

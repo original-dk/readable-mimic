@@ -89,12 +89,12 @@ class Kinematics:
             joint_pos, joint_vel: joint state (B,J) in joint_names order.
         """
         body_positions_w, body_rotations_w, body_linear_velocities_w, body_angular_velocities_w = (
-            [None] * self.num_bodies,
-            [None] * self.num_bodies,
-            [None] * self.num_bodies,
-            [None] * self.num_bodies,
+            [None] * len(self.parent_indices),
+            [None] * len(self.parent_indices),
+            [None] * len(self.parent_indices),
+            [None] * len(self.parent_indices),
         )
-        for body_index in range(self.num_bodies):
+        for body_index in range(len(self.parent_indices)):
             parent_index = self.parent_indices[body_index]
             if parent_index < 0:
                 (
@@ -128,7 +128,7 @@ class Kinematics:
                 body_linear_velocities_w[body_index],
                 body_angular_velocities_w[body_index],
             ) = (body_pos_w, body_rot_mat_w, body_lin_vel_w, body_ang_vel_w)
-        selected_body_indices = range(self.num_bodies) if all_bodies else self.tracked_body_indices
+        selected_body_indices = range(len(self.parent_indices)) if all_bodies else self.tracked_body_indices
         return (
             torch.stack([body_positions_w[body_index] for body_index in selected_body_indices], -2),
             torch.stack([body_rotations_w[body_index] for body_index in selected_body_indices], -3),
