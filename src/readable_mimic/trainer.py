@@ -167,6 +167,7 @@ class Trainer:
             self.task,
             self.device,
             max_episode_steps=self.config.max_episode_steps,
+            timer=self.updates.timer,
         )
 
     @torch.no_grad()
@@ -182,9 +183,12 @@ class Trainer:
             )
             self.actor.observation_normalizer.update(observation)
             self.actor.command_normalizer.update(command)
+            self.updates.timer.record("collect_prepare")
             action = self.actor(self.observation_history, command)
             action = (action + self.config.action_noise * torch.randn_like(action)).clamp(-20, 20)
+            self.updates.timer.record("collect_actor")
             transition = self.env.step(action)
+            self.updates.timer.record("collect_env_other")
             self.sim_reward_sum.add_(transition["reward"].sum())
             self.sim_reward_count += transition["reward"].numel()
             self.buffer.add(transition)
@@ -203,6 +207,7 @@ class Trainer:
             self.world_model.increment_normalizer.update(increments)
             if "normalized_episode_return" in transition:
                 episode_returns.append(float(transition["normalized_episode_return"].mean()))
+            self.updates.timer.record("collect_buffer")
         return episode_returns
 
     def set_learning_rate(self, iteration):
@@ -246,11 +251,11 @@ class Trainer:
             self.updates.timer.record("prepare")
             returns = self.collect(steps)
             return_window.extend(returns)
-            self.updates.timer.record("collect")
+            self.updates.timer.record("collect_other")
             for _ in range(config.wm_batches):
                 world_model_loss, _ = self.updates.update_world_model()
             metrics = {"iteration": iteration + 1, "world_model_loss": float(world_model_loss)}
-            self.updates.timer.record("world_model")
+            self.updates.timer.record("world_model_other")
             if iteration >= config.wm_only_iters:
                 actor_loss, critic_loss, imagined_reward, gradient_norm, survival = (
                     self.updates.update_actor()

@@ -212,3 +212,12 @@ actor_return_ms 为 critic bootstrap 和 actor return，actor_backward_ms 包含
 other_ms 为剩余轮内工作；iteration_ms 为以上阶段之和，不包含日志打印和 checkpoint。各项均按整个日志区间的轮数平均。
 CUDA 阶段边界会同步，以避免异步执行造成耗时归属错误，因此计时模式会影响 it/s；profile_speed=false 恢复普通训练。
 继续训练时 profile_speed 以当前配置为准，计时状态不写入 checkpoint。首次日志可能包含运行时初始化开销，应比较后续稳定日志。
+
+细分计时保留 collect_ms、world_model_ms、actor_backward_ms 汇总，它们由各自子项相加得到，iteration_ms 不会重复计入汇总项。
+collect_prepare_ms：观测、history、command 及 Actor 标准化；collect_actor_ms：Actor 推理和动作噪声。
+collect_physics_ms：状态读取、设置目标和全部物理子步；collect_reward_ms：奖励、终止和超时判断。
+collect_finalize_ms：transition 打包、episode 统计和 reset；collect_buffer_ms：Buffer 写入、WM 数据转换及标准化、回报统计。
+collect_env_other_ms / collect_other_ms：环境返回和循环剩余开销。
+world_model_prepare_ms / forward_ms / backward_ms / clip_ms / optimizer_ms / other_ms：窗口采样与镜像、前向及 loss、清梯度与反传、裁剪、优化器、结果整理及其余开销（各字段均带 world_model_ 前缀）。
+actor_backward_gradients_ms / clip_ms / optimizer_ms / ema_ms / other_ms：清梯度与反传、裁剪、有限性检查及优化器、EMA、恢复梯度开关（各字段均带 actor_backward_ 前缀）。
+所有子项仍按每轮平均，WM 5 次更新、真实采样多个控制步等重复调用的耗时会先累计；不是单次调用耗时。

@@ -32,3 +32,30 @@ def test_disabled_timer_does_not_synchronize_or_read_clock(monkeypatch):
     timer.record("collect")
     timer.end_iteration()
     assert timer.report() == {}
+
+
+def test_parent_totals_do_not_double_count_children(monkeypatch):
+    import itertools
+
+    timestamps = itertools.count()
+    monkeypatch.setattr("readable_mimic.timing.time.perf_counter", lambda: next(timestamps))
+    timer = TrainingTimer(True, "cpu")
+    timer.start_iteration()
+    for stage in (
+        "collect_actor",
+        "collect_physics",
+        "world_model_prepare",
+        "world_model_prepare",
+        "actor_backward_gradients",
+        "actor_backward_optimizer",
+    ):
+        timer.record(stage)
+    timer.end_iteration()
+    metrics = timer.report()
+    assert metrics["collect_ms"] == 2000
+    assert metrics["world_model_ms"] == 2000
+    assert metrics["actor_backward_ms"] == 2000
+    assert metrics["iteration_ms"] == 7000
+    assert metrics["iteration_ms"] == sum(
+        metrics[name] for name in ("collect_ms", "world_model_ms", "actor_backward_ms", "other_ms")
+    )

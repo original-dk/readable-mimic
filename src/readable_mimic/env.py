@@ -12,6 +12,7 @@ from . import data_transforms as transforms
 import torch
 from .task import MAX_STEP_REWARD
 from .rotations import mat_to_quat, quat_to_mat, so3_exp
+from .timing import TrainingTimer
 
 
 class TrackingEnv:
@@ -25,11 +26,13 @@ class TrackingEnv:
         device,
         max_episode_steps=500,
         evaluation=False,
+        timer=None,
     ):
         self.evaluation = evaluation
         self.num_envs = num_envs
         self.num_joints = robot.num_joints
         self.device = device
+        self.timer = timer if timer is not None else TrainingTimer(False, device)
         self.robot_description = robot
         self.motion = motion
         self.task = task
@@ -147,11 +150,13 @@ class TrackingEnv:
             self.scene.update(PHYSICS_DT)
         next_state = self.state()
         next_motion_frame_index = motion_frame_index + 1
+        self.timer.record("collect_physics")
         reward = self.task.reward(next_state, next_motion_frame_index, action, last_action)
         termination = self.task.termination(next_state, next_motion_frame_index)
         clip_end_frame = self.motion.clip_end[self.motion.clip_id[motion_frame_index]]
         timeout = (next_motion_frame_index >= clip_end_frame) | (episode_step + 1 >= self.max_episode_steps)
         done = termination | timeout
+        self.timer.record("collect_reward")
         transition = dict(
             state=transforms.flatten_state(state),
             next_state=transforms.flatten_state(next_state),
@@ -178,4 +183,5 @@ class TrackingEnv:
             )
             if not self.evaluation:
                 self.reset(completed_env_indices)
+        self.timer.record("collect_finalize")
         return transition

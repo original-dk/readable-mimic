@@ -281,6 +281,19 @@ def test_collect_and_training_loop(tiny_trainer, tmp_path, monkeypatch):
     for row in rows:
         assert all(row[f"{name}_ms"] >= 0 for name in stage_names)
         assert row["iteration_ms"] == pytest.approx(sum(row[f"{name}_ms"] for name in stage_names))
+        for group in ("collect", "world_model", "actor_backward"):
+            children = [
+                value for name, value in row.items()
+                if name.startswith(f"{group}_") and name.endswith("_ms") and name != f"{group}_ms"
+            ]
+            assert children
+            assert row[f"{group}_ms"] == pytest.approx(sum(children))
+        assert all(row[f"world_model_{stage}_ms"] >= 0 for stage in (
+            "prepare", "forward", "backward", "clip", "optimizer", "other"
+        ))
+        assert all(row[f"actor_backward_{stage}_ms"] >= 0 for stage in (
+            "gradients", "clip", "optimizer", "ema", "other"
+        ))
     assert not (tmp_path / "run/checkpoints/iteration_000001.pt").exists()
     assert (tmp_path / "run/checkpoints/iteration_000002.pt").is_file()
     from copy import deepcopy

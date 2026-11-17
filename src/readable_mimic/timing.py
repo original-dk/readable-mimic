@@ -41,6 +41,11 @@ class TrainingTimer:
             f"{stage}_ms": seconds * 1000 / self.iterations for stage, seconds in self.stage_seconds.items()
         }
         metrics["iteration_ms"] = sum(metrics.values())
+        # Parent totals are derived from disjoint stages, never timed a second time.
+        for group in ("collect", "world_model", "actor_backward"):
+            children = [value for name, value in metrics.items() if name.startswith(f"{group}_")]
+            if children:
+                metrics[f"{group}_ms"] = sum(children)
         self.stage_seconds.clear()
         self.iterations = 0
         return metrics

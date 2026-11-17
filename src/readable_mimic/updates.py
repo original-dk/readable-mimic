@@ -162,21 +162,28 @@ class TrainingUpdates:
         windows = self.buffer.sample_windows(self.config.wm_batch)
         if self.mirror is not None:
             windows = self.mirror_windows(windows, int(self.config.wm_batch * self.config.wm_mirror))
+        self.timer.record("world_model_prepare")
         predicted_state = self.world_model_rollout(
             windows["state"], windows["action"], windows["last_action"], windows["xi"]
         )
         loss, last_step_state_error = self.world_model_loss(
             predicted_state, windows["next_state"], windows["mask"]
         )
+        self.timer.record("world_model_forward")
         self.world_model_optimizer.zero_grad(set_to_none=True)
         loss.backward()
+        self.timer.record("world_model_backward")
         nn.utils.clip_grad_norm_(self.world_model.parameters(), 1.0)
+        self.timer.record("world_model_clip")
         self.world_model_optimizer.step()
+        self.timer.record("world_model_optimizer")
         last_step_mask = windows["mask"][:, -1]
-        return (
+        result = (
             loss.detach() / self.config.wm_window,
             (last_step_state_error.detach() * last_step_mask).sum() / last_step_mask.sum().clamp(min=1),
         )
+        self.timer.record("world_model_other")
+        return result
 
     def sample_valid_starts(self, batch_size: int):
         starts, histories, num_samples = ([], [], 0)
@@ -293,16 +300,20 @@ class TrainingUpdates:
         self.timer.record("actor_return")
         self.actor_optimizer.zero_grad(set_to_none=True)
         loss.backward()
+        self.timer.record("actor_backward_gradients")
         gradient_norm = nn.utils.clip_grad_norm_(self.actor.parameters(), 1.0)
         if self.config.pi_clip_value > 0:
             nn.utils.clip_grad_value_(self.actor.parameters(), self.config.pi_clip_value)
+        self.timer.record("actor_backward_clip")
         if torch.isfinite(gradient_norm):
             self.actor_optimizer.step()
+        self.timer.record("actor_backward_optimizer")
         if self.actor_average is not None:
             self.actor_average.update_parameters(self.actor)
+        self.timer.record("actor_backward_ema")
         set_requires_grad(self.world_model, True)
         set_requires_grad(self.critic, True)
-        self.timer.record("actor_backward")
+        self.timer.record("actor_backward_other")
         critic_loss = self.update_critic(
             initial_state,
             rollout_states,
