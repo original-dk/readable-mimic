@@ -281,8 +281,14 @@ class Trainer:
                 )
                 last_log_time = log_time
                 last_log_iteration = self.iteration
+                formatted_metrics = ", ".join(
+                    f'"{name}": {value:.{4 if name.endswith("loss") else 3}f}'
+                    if isinstance(value, float)
+                    else f'"{name}": {value}'
+                    for name, value in metrics.items()
+                )
                 print(
-                    f"{json.dumps(metrics)} | {metrics['iterations_per_second']:.2f} it/s",
+                    f"{{{formatted_metrics}}} | {metrics['iterations_per_second']:.3f} it/s",
                     flush=True,
                 )
                 with (output / "metrics.jsonl").open("a", encoding="utf-8") as stream:
