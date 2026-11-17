@@ -60,7 +60,7 @@ FK、旋转、参考处理、奖励与网络动力学公式从其 MIT 代码改�
 默认数值来自 `scripts/presets.sh` 的 main：WM 3×1024、Actor encoder/decoder
 2048-1024-512-256、lr=4e-4、WM mirror=0.5、EMA=0.995、结构化 WM、参考 skip、Muon。
 不包含失败优先 / return 优先 / evaluation-probe 采样；reset 在时间 bin 间均匀采样。
-仅 FK 支持 torch.compile；不包含 AMP、CUDA Graph、fused Adam 或异步 checkpoint。
+不包含 AMP、torch.compile、CUDA Graph、fused Adam 或异步 checkpoint。
 因此采样分布、浮点舍入和速度与论文运行不同，不保证原论文的时间和回报。
 Muon 内部正交化遵循 torch.optim.Muon 原实现，FP32 指网络与状态计算不使用 autocast。
 
@@ -204,5 +204,3 @@ xi 固定顺序为 [friction, joint_pos_offset, center_of_mass_offset]。
 
 
 create_simulation 直接接收 config.simulation 字典，内部完成配置转换、scene 创建和仿真器初始化；不再提供 make_sim 中间接口。
-
-FK 编译：config.json 的 compile_fk 默认 true，仅在 CUDA 训练中启用 torch.compile。参考动作预处理仍直接计算；训练 FK 使用 fullgraph 和动态 batch，保持 FP32，并关闭 Inductor CUDA Graph。首次调用需要编译，前几个日志区间可能较慢。CPU 和视频评测保留普通执行。旧 checkpoint 可继续加载，compile_fk 以当前配置为准。

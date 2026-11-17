@@ -147,32 +147,6 @@ def test_fk_matches_mujoco_and_has_gradients(tiny_trainer):
     assert torch.isfinite(state[4].grad).all()
 
 
-@torch._dynamo.config.patch(enable_cpp_symbolic_shape_guards=False)
-def test_compiled_fk_matches_outputs_and_gradients(tiny_trainer):
-    kinematics = tiny_trainer.kinematics
-    # AOTAutograd validates full-graph capture and backward without a CUDA compiler.
-    compiled_forward = torch.compile(
-        kinematics.forward, backend="aot_eager", fullgraph=True, dynamic=True
-    )
-    for batch_size in (2, 5):
-        state = tiny_trainer.motion.ref_state(torch.arange(10, 10 + batch_size))
-        eager_state = tuple(value.detach().clone().requires_grad_() for value in state)
-        compiled_state = tuple(value.detach().clone().requires_grad_() for value in state)
-        for all_bodies in (False, True):
-            expected = kinematics.forward(*eager_state, all_bodies=all_bodies)
-            actual = compiled_forward(*compiled_state, all_bodies=all_bodies)
-            for actual_value, expected_value in zip(actual, expected):
-                torch.testing.assert_close(actual_value, expected_value)
-            expected_gradients = torch.autograd.grad(
-                sum(value.square().sum() for value in expected), eager_state
-            )
-            actual_gradients = torch.autograd.grad(
-                sum(value.square().sum() for value in actual), compiled_state
-            )
-            for actual_gradient, expected_gradient in zip(actual_gradients, expected_gradients):
-                torch.testing.assert_close(actual_gradient, expected_gradient)
-
-
 def test_full_training_updates_and_checkpoint(tiny_trainer, tmp_path):
     trainer = tiny_trainer
     before_world_model = [value.detach().clone() for value in trainer.world_model.parameters()]

@@ -1,4 +1,4 @@
-"""Collect -> world model -> imagined actor -> critic, with optional compiled FK."""
+"""Collect -> world model -> imagined actor -> critic; no compilation or CUDA graphs."""
 
 from .sim import joint_pos_offset_limits, CONTROL_DT, DomainRandomizationConfig, compute_xi_dim
 import random, shutil
@@ -41,13 +41,6 @@ class Trainer:
         )
         self.kinematics = Kinematics(self.robot, self.device)
         self.motion = ReferenceMotion.from_dir(config.motion_dir, self.robot, self.kinematics, self.device)
-        if config.compile_fk and torch.device(self.device).type == "cuda":
-            self.kinematics.forward = torch.compile(
-                self.kinematics.forward,
-                fullgraph=True,
-                dynamic=True,
-                options={"triton.cudagraphs": False},
-            )
         self.xi_dim = compute_xi_dim(self.robot)
         self.joint_pos_offset_limits = joint_pos_offset_limits(self.robot, self.device)
         self.xi_center, self.xi_scale = transforms.compute_xi_normalization(
