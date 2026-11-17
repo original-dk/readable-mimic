@@ -1,6 +1,7 @@
 """Eager FP32 world-model, actor and critic update equations adapted from BlinkMimic."""
 
 from . import data_transforms as transforms
+from .timing import TrainingTimer
 import torch
 from torch import nn
 
@@ -47,6 +48,7 @@ class TrainingUpdates:
         self.mirror = mirror
         self.state_error_floor = state_error_floor
         self.device = config.device
+        self.timer = TrainingTimer(config.profile_speed, self.device)
         self.horizon = config.horizon
         self.history_length = config.hist
         self.command_frames = config.goal_frames
@@ -233,6 +235,7 @@ class TrainingUpdates:
             [],
             [],
         )
+        self.timer.record("actor_prepare")
         for step_index in range(self.horizon):
             rollout_last_actions.append(last_action)
             state, last_action, observation_history, motion_frame_index, command = self.imagine_step(
@@ -250,6 +253,7 @@ class TrainingUpdates:
                 rollout_frames.append(motion_frame_index),
                 rollout_commands.append(command),
             )
+        self.timer.record("actor_rollout")
         flat = lambda xs: torch.stack(xs).flatten(0, 1)
         all_states = tuple(
             (
@@ -265,6 +269,7 @@ class TrainingUpdates:
             rewards.view(self.horizon, batch_size),
             termination_probabilities.view(self.horizon, batch_size),
         )
+        self.timer.record("reward")
         bootstrap_value = self.critic(
             transforms.compute_critic_input(
                 state,
@@ -285,6 +290,7 @@ class TrainingUpdates:
         reward_sum = (survival_weights * rewards).detach().sum(0)
         detached_rewards, detached_terminations = (rewards.detach(), termination_probabilities.detach())
         loss = -actor_return.mean()
+        self.timer.record("actor_return")
         self.actor_optimizer.zero_grad(set_to_none=True)
         loss.backward()
         gradient_norm = nn.utils.clip_grad_norm_(self.actor.parameters(), 1.0)
@@ -296,6 +302,7 @@ class TrainingUpdates:
             self.actor_average.update_parameters(self.actor)
         set_requires_grad(self.world_model, True)
         set_requires_grad(self.critic, True)
+        self.timer.record("actor_backward")
         critic_loss = self.update_critic(
             initial_state,
             rollout_states,
@@ -308,6 +315,7 @@ class TrainingUpdates:
             detached_terminations,
             batch_size,
         )
+        self.timer.record("critic")
         return (
             loss.detach(),
             critic_loss.detach(),

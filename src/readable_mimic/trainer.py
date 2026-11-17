@@ -238,15 +238,19 @@ class Trainer:
         last_log_iteration = self.iteration
         next_checkpoint_time = start_time + config.ckpt_minutes * 60
         for iteration in range(self.iteration, config.iterations):
+            self.updates.timer.start_iteration()
             self.set_learning_rate(iteration)
             self.collection_remainder += 1 / config.utd
             steps = int(self.collection_remainder)
             self.collection_remainder -= steps
+            self.updates.timer.record("prepare")
             returns = self.collect(steps)
             return_window.extend(returns)
+            self.updates.timer.record("collect")
             for _ in range(config.wm_batches):
                 world_model_loss, _ = self.updates.update_world_model()
             metrics = {"iteration": iteration + 1, "world_model_loss": float(world_model_loss)}
+            self.updates.timer.record("world_model")
             if iteration >= config.wm_only_iters:
                 actor_loss, critic_loss, imagined_reward, gradient_norm, survival = (
                     self.updates.update_actor()
@@ -259,7 +263,9 @@ class Trainer:
                     survival=float(survival),
                 )
             self.iteration = iteration + 1
+            self.updates.timer.end_iteration()
             if self.iteration % config.log_every == 0:
+                metrics.update(self.updates.timer.report())
                 average_return = sum(return_window) / max(len(return_window), 1)
                 deadline = config.lr_decay_by > 0 and self.iteration >= config.lr_decay_by
                 if (

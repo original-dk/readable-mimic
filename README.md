@@ -204,3 +204,11 @@ xi 固定顺序为 [friction, joint_pos_offset, center_of_mass_offset]。
 
 
 create_simulation 直接接收 config.simulation 字典，内部完成配置转换、scene 创建和仿真器初始化；不再提供 make_sim 中间接口。
+
+训练阶段计时：config.json 的 profile_speed 为 true 时，日志及 metrics.jsonl 输出两次日志之间的每轮平均毫秒数。
+prepare_ms 为学习率和采样步数准备，collect_ms 为真实环境采样及数据入库/标准化，world_model_ms 包含全部 WM 更新。
+actor_prepare_ms 为 replay 起点采样和历史/command 准备，actor_rollout_ms 为 imagined rollout，reward_ms 为轨迹整理、奖励和终止概率计算。
+actor_return_ms 为 critic bootstrap 和 actor return，actor_backward_ms 包含反向传播、梯度裁剪、优化器和 EMA；critic_ms 包含 critic 特征/目标计算及全部更新。
+other_ms 为剩余轮内工作；iteration_ms 为以上阶段之和，不包含日志打印和 checkpoint。各项均按整个日志区间的轮数平均。
+CUDA 阶段边界会同步，以避免异步执行造成耗时归属错误，因此计时模式会影响 it/s；profile_speed=false 恢复普通训练。
+继续训练时 profile_speed 以当前配置为准，计时状态不写入 checkpoint。首次日志可能包含运行时初始化开销，应比较后续稳定日志。

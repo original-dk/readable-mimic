@@ -274,6 +274,13 @@ def test_collect_and_training_loop(tiny_trainer, tmp_path, monkeypatch):
     rows = [json.loads(line) for line in (tmp_path / "run/metrics.jsonl").read_text().splitlines()]
     assert all(("sim_r" in row and np.isfinite(row["sim_r"]) for row in rows))
     assert all(0 < row["iterations_per_second"] < float("inf") for row in rows)
+    stage_names = (
+        "prepare", "collect", "world_model", "actor_prepare", "actor_rollout",
+        "reward", "actor_return", "actor_backward", "critic", "other",
+    )
+    for row in rows:
+        assert all(row[f"{name}_ms"] >= 0 for name in stage_names)
+        assert row["iteration_ms"] == pytest.approx(sum(row[f"{name}_ms"] for name in stage_names))
     assert not (tmp_path / "run/checkpoints/iteration_000001.pt").exists()
     assert (tmp_path / "run/checkpoints/iteration_000002.pt").is_file()
     from copy import deepcopy

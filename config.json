@@ -42,6 +42,7 @@
   "ckpt_minutes": 0,
   "max_hours": null,
   "log_every": 50,
+  "profile_speed": true,
   "motion_dir": "data/lafan1_g1",
   "log_dir": "runs/main",
   "seed": 0,
