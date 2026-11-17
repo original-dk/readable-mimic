@@ -23,6 +23,10 @@ uv run --extra genesis pytest -q
 本分支默认 `simulator: "genesis"`，固定 Genesis 1.4.5。`compile_speed` 保留迁移前的 MuJoCo 实现。
 切换 MuJoCo 时将 config.json 的 simulator 改为 mujoco，并使用 `uv sync --extra mujoco`、`uv run --extra mujoco ...`。
 两个 extra 因第三方 Pillow 要求不兼容而互斥；切换 extra 后 uv 自动同步对应依赖，不能使用 --all-extras。
+从 MuJoCo extra 切换到 Genesis extra 时，使用 `uv sync --extra genesis --reinstall-package mujoco`。
+mujoco 与 mujoco-core 共享 Python 包文件，卸载后者可能移除前者的 __init__.py / 二进制绑定，导致 MjModel 缺失。
+修复后可用 `uv run --extra genesis python -c "import mujoco; print(mujoco.__file__, mujoco.MjModel)"` 检查。
+本项目固定 mujoco==3.11.0；Genesis 使用该包加载原版 FK 和离屏渲染，物理推进仍由 Genesis 完成。
 所有实验配置仍在 config.json：simulation 保留控制周期与 MuJoCo 参数，genesis 小节只配置 Genesis 选项。
 两后端都使用 50 Hz 控制、200 Hz 物理，Genesis 每次 scene.step 内运行 4 个物理子步。
 Genesis 从同一个 MJCF 加载机器人，按名字映射 joint_pos/joint_vel/action；复用 G1 原 PD、armature 和力矩限制。

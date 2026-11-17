@@ -15,6 +15,14 @@ from .rotations import axis_angle_to_mat, mm3, mv3, quat_to_mat
 
 class Kinematics:
     def __init__(self, robot: RobotSpec, device: str):
+        if not hasattr(mujoco, "MjModel"):
+            raise ImportError(
+                f"MuJoCo bindings are incomplete or shadowed (imported from {getattr(mujoco, '__file__', None)}). "
+                "Switching extras can remove files shared with mujoco-core. Repair with: "
+                "uv sync --extra genesis --reinstall-package mujoco "
+                "(use --extra mujoco for the MuJoCo backend). "
+                "Also check for a local mujoco.py or mujoco/ directory shadowing the package."
+            )
         mujoco_model = mujoco.MjModel.from_xml_path(robot.mjcf_path)
         self.device = device
         tracked_body_names = robot.tracked_bodies

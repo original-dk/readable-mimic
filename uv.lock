@@ -2937,7 +2937,7 @@ requires-dist = [
     { name = "genesis-world", marker = "extra == 'genesis'", specifier = "==1.4.5" },
     { name = "imageio", extras = ["ffmpeg"], specifier = ">=2.37" },
     { name = "mjlab", marker = "extra == 'mujoco'", specifier = "==1.6.0" },
-    { name = "mujoco" },
+    { name = "mujoco", specifier = "==3.11.0" },
     { name = "numpy" },
     { name = "torch", marker = "sys_platform != 'linux'", specifier = "==2.9.0" },
     { name = "torch", marker = "sys_platform == 'linux'", specifier = "==2.9.0", index = "https://download.pytorch.org/whl/cu128" },
