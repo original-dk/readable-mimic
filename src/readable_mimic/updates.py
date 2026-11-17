@@ -1,4 +1,4 @@
-"""FP32 update equations with optional compilation of WM rollout and loss."""
+"""Update equations with optional compilation of WM and imagined actor computations."""
 
 from . import data_transforms as transforms
 from .timing import TrainingTimer
@@ -72,6 +72,19 @@ class TrainingUpdates:
             )
             self.world_model_loss = torch.compile(
                 self.world_model_loss,
+                fullgraph=True,
+                dynamic=False,
+                options={"triton.cudagraphs": False},
+            )
+        if config.compile_actor and torch.device(self.device).type == "cuda":
+            self.imagine_step = torch.compile(
+                self.imagine_step,
+                fullgraph=True,
+                dynamic=False,
+                options={"triton.cudagraphs": False},
+            )
+            self.reward_and_termination = torch.compile(
+                self.reward_and_termination,
                 fullgraph=True,
                 dynamic=False,
                 options={"triton.cudagraphs": False},

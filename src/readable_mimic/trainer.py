@@ -28,6 +28,9 @@ class Trainer:
     def __init__(self, config):
         self.config = config
         self.device = config.device
+        if torch.device(self.device).type == "cuda":
+            torch.backends.cuda.matmul.allow_tf32 = config.allow_tf32
+            torch.backends.cudnn.allow_tf32 = config.allow_tf32
         torch.set_num_threads(config.num_threads)
         torch.manual_seed(config.seed)
         self.horizon = config.horizon
@@ -159,6 +162,22 @@ class Trainer:
             raise RuntimeError(
                 "G1 training requires a CUDA-enabled PyTorch and an NVIDIA GPU. CPU tests: uv run pytest -q"
             )
+        if self.config.profile_speed and self.device.startswith("cuda"):
+            print(
+                json.dumps(
+                    {
+                        "speed_settings": {
+                            "gpu": torch.cuda.get_device_name(self.device),
+                            "pytorch": torch.__version__,
+                            "cuda": torch.version.cuda,
+                            "allow_tf32": torch.backends.cuda.matmul.allow_tf32,
+                            "compile_world_model": self.config.compile_world_model,
+                            "compile_actor": self.config.compile_actor,
+                        }
+                    }
+                ),
+                flush=True,
+            )
         self.env = TrackingEnv(
             self.config.simulation,
             self.config.num_envs,
@@ -254,22 +273,26 @@ class Trainer:
             self.updates.timer.record("collect_other")
             for _ in range(config.wm_batches):
                 world_model_loss, _ = self.updates.update_world_model()
-            metrics = {"iteration": iteration + 1, "world_model_loss": float(world_model_loss)}
+            metrics = {"iteration": iteration + 1, "world_model_loss": world_model_loss}
             self.updates.timer.record("world_model_other")
             if iteration >= config.wm_only_iters:
                 actor_loss, critic_loss, imagined_reward, gradient_norm, survival = (
                     self.updates.update_actor()
                 )
                 metrics.update(
-                    actor_loss=float(actor_loss),
-                    critic_loss=float(critic_loss),
-                    imagined_reward=float(imagined_reward),
-                    gradient_norm=float(gradient_norm),
-                    survival=float(survival),
+                    actor_loss=actor_loss,
+                    critic_loss=critic_loss,
+                    imagined_reward=imagined_reward,
+                    gradient_norm=gradient_norm,
+                    survival=survival,
                 )
             self.iteration = iteration + 1
             self.updates.timer.end_iteration()
             if self.iteration % config.log_every == 0:
+                metrics = {
+                    name: float(value) if isinstance(value, torch.Tensor) else value
+                    for name, value in metrics.items()
+                }
                 metrics.update(self.updates.timer.report())
                 average_return = sum(return_window) / max(len(return_window), 1)
                 deadline = config.lr_decay_by > 0 and self.iteration >= config.lr_decay_by

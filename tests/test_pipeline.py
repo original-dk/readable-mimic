@@ -182,6 +182,54 @@ def test_separately_compiled_world_model_outputs_and_gradients(tiny_trainer):
             world_model.increment_normalizer.var.mul_(1.01)
 
 
+def test_compiled_actor_step_and_reward_gradients(tiny_trainer):
+    updates = tiny_trainer.updates
+    start, history = updates.sample_valid_starts(tiny_trainer.config.pi_batch)
+    initial_state = transforms.unflatten_state(start["state"])
+    xi = start["xi"]
+    normalized_xi = transforms.compute_normalized_xi(xi, updates.xi_center, updates.xi_scale)
+    initial_history = transforms.compute_replay_observation_history(
+        history, updates.motion, updates.default_joint_pos, updates.observation_noise_limits
+    )
+    initial_command = transforms.compute_command(
+        start["motion_frame_index"], updates.command_frame_offsets, updates.motion
+    )
+    with torch.no_grad():
+        updates.world_model.network[-1].weight.normal_(0, 0.01)
+    for parameter in updates.world_model.parameters():
+        parameter.requires_grad_(False)
+    compiled_step = torch.compile(updates.imagine_step, backend="aot_eager", fullgraph=True, dynamic=False)
+    compiled_reward = torch.compile(
+        updates.reward_and_termination, backend="aot_eager", fullgraph=True, dynamic=False
+    )
+
+    def rollout(step, reward):
+        state, observation_history, command = initial_state, initial_history, initial_command
+        frames, last_action = start["motion_frame_index"], start["last_action"]
+        objective = torch.zeros(())
+        for _ in range(2):
+            previous_action = last_action
+            state, last_action, observation_history, frames, command = step(
+                state, observation_history, last_action, frames, xi, normalized_xi, command
+            )
+            rewards, termination = reward(state, frames, last_action, previous_action)
+            objective = objective + (rewards * (1 - termination)).sum() + 0.01 * last_action.square().sum()
+        gradients = torch.autograd.grad(objective, tuple(updates.actor.parameters()))
+        return state, objective, gradients
+
+    torch.manual_seed(47)
+    expected_state, expected_objective, expected_gradients = rollout(
+        updates.imagine_step, updates.reward_and_termination
+    )
+    torch.manual_seed(47)
+    actual_state, actual_objective, actual_gradients = rollout(compiled_step, compiled_reward)
+    for actual, expected in zip(actual_state, expected_state):
+        torch.testing.assert_close(actual, expected)
+    torch.testing.assert_close(actual_objective, expected_objective)
+    for actual, expected in zip(actual_gradients, expected_gradients):
+        torch.testing.assert_close(actual, expected, atol=1e-5, rtol=1e-4)
+
+
 def test_full_training_updates_and_checkpoint(tiny_trainer, tmp_path):
     trainer = tiny_trainer
     before_world_model = [value.detach().clone() for value in trainer.world_model.parameters()]
@@ -550,6 +598,8 @@ def test_resume_restores_saved_config_and_random_states(tiny_trainer, tmp_path):
         lr=0.123,
         wm_hidden="9,9",
         compile_world_model=False,
+        compile_actor=False,
+        allow_tf32=False,
         iterations=20,
         ckpt_every=5,
         log_dir="new_run",
@@ -560,6 +610,7 @@ def test_resume_restores_saved_config_and_random_states(tiny_trainer, tmp_path):
     assert config.lr == trainer.config.lr
     assert config.wm_hidden == trainer.config.wm_hidden
     assert config.compile_world_model is False
+    assert config.compile_actor is False and config.allow_tf32 is False
     assert config.iterations == 20 and config.ckpt_every == 5
     assert config.log_dir == str(tmp_path / "new_run")
     resumed = Trainer(config)

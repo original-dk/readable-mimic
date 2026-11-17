@@ -30,8 +30,7 @@ class RunningNorm(nn.Module):
     @torch.no_grad()
     def update(self, values: torch.Tensor):
         values = values.reshape(-1, values.shape[-1]).float()
-        if self.count >= self.max_count:
-            return
+        update_statistics = self.count < self.max_count
         batch_count = values.shape[0]
         batch_mean, batch_variance = (values.mean(0), values.var(0, unbiased=False))
         total_count = self.count + batch_count
@@ -42,9 +41,9 @@ class RunningNorm(nn.Module):
             + batch_variance * batch_count
             + delta**2 * self.count * batch_count / total_count
         ) / total_count
-        self.mean.copy_(mean)
-        self.var = var
-        self.count = total_count
+        self.mean.copy_(torch.where(update_statistics, mean, self.mean))
+        self.var.copy_(torch.where(update_statistics, var, self.var))
+        self.count.copy_(torch.where(update_statistics, total_count, self.count))
 
     def forward(self, values):
         return (values - self.mean) / torch.sqrt(self.var + self.epsilon**2)

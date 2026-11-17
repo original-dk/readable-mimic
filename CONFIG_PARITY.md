@@ -26,6 +26,8 @@
 | MuJoCo 参数 | config.json 的 simulation | 与上游相同，50 Hz 控制 / 200 Hz 物理 |
 | 失败、回报优先和 probe reset | 不实现，均匀时间 bin | 按本项目要求简化 |
 | WM rollout / loss compile | CUDA 训练默认开启 | compile_world_model 控制，分别编译两个已有方法 |
+| imagined Actor step / reward compile | CUDA 训练默认开启 | compile_actor 控制，分别编译两个已有方法 |
+| TF32 matmul / cuDNN | 默认允许，与上游一致 | allow_tf32 控制；float32 张量，矩阵乘法精度不同于严格 FP32 |
 | AMP / fused / CUDA Graph | 关闭 | 按本项目要求简化 |
 
 配置名沿用上游，数据名称采用本项目完整名称。G1 固定关节顺序、驱动器和模型结构
