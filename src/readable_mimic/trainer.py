@@ -234,6 +234,8 @@ class Trainer:
             self.restore_random_states()
         last_saved_iteration = None
         start_time = time.monotonic()
+        last_log_time = start_time
+        last_log_iteration = self.iteration
         next_checkpoint_time = start_time + config.ckpt_minutes * 60
         for iteration in range(self.iteration, config.iterations):
             self.set_learning_rate(iteration)
@@ -273,7 +275,16 @@ class Trainer:
                 self.sim_reward_sum.zero_()
                 self.sim_reward_count = 0
                 return_window.clear()
-                print(json.dumps(metrics), flush=True)
+                log_time = time.monotonic()
+                metrics["iterations_per_second"] = (self.iteration - last_log_iteration) / max(
+                    log_time - last_log_time, 1e-9
+                )
+                last_log_time = log_time
+                last_log_iteration = self.iteration
+                print(
+                    f"{json.dumps(metrics)} | {metrics['iterations_per_second']:.2f} it/s",
+                    flush=True,
+                )
                 with (output / "metrics.jsonl").open("a", encoding="utf-8") as stream:
                     stream.write(json.dumps(metrics) + "\n")
             timed_checkpoint = config.ckpt_minutes > 0 and time.monotonic() >= next_checkpoint_time
