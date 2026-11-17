@@ -147,6 +147,41 @@ def test_fk_matches_mujoco_and_has_gradients(tiny_trainer):
     assert torch.isfinite(state[4].grad).all()
 
 
+def test_separately_compiled_world_model_outputs_and_gradients(tiny_trainer):
+    updates = tiny_trainer.updates
+    world_model = tiny_trainer.world_model
+    windows = tiny_trainer.buffer.sample_windows(tiny_trainer.config.wm_batch)
+    with torch.no_grad():
+        world_model.network[-1].weight.normal_(0, 0.01)
+    # CPU AOTAutograd checks both compiled graphs and their composed backward.
+    compiled_rollout = torch.compile(updates.world_model_rollout, backend="aot_eager", fullgraph=True, dynamic=False)
+    compiled_loss = torch.compile(updates.world_model_loss, backend="aot_eager", fullgraph=True, dynamic=False)
+    for _ in range(2):
+        expected_states = updates.world_model_rollout(
+            windows["state"], windows["action"], windows["last_action"], windows["xi"]
+        )
+        expected_loss, expected_error = updates.world_model_loss(
+            expected_states, windows["next_state"], windows["mask"]
+        )
+        expected_gradients = torch.autograd.grad(expected_loss, tuple(world_model.parameters()))
+        actual_states = compiled_rollout(
+            windows["state"], windows["action"], windows["last_action"], windows["xi"]
+        )
+        actual_loss, actual_error = compiled_loss(actual_states, windows["next_state"], windows["mask"])
+        actual_gradients = torch.autograd.grad(actual_loss, tuple(world_model.parameters()))
+        for actual, expected in zip(actual_states, expected_states):
+            torch.testing.assert_close(actual, expected)
+        torch.testing.assert_close(actual_loss, expected_loss)
+        torch.testing.assert_close(actual_error, expected_error)
+        for actual, expected in zip(actual_gradients, expected_gradients):
+            torch.testing.assert_close(actual, expected)
+        # Compiled methods must read current weights and normalizer buffers.
+        with torch.no_grad():
+            world_model.network[-1].bias.add_(0.001)
+            world_model.input_normalizer.mean.add_(0.01)
+            world_model.increment_normalizer.var.mul_(1.01)
+
+
 def test_full_training_updates_and_checkpoint(tiny_trainer, tmp_path):
     trainer = tiny_trainer
     before_world_model = [value.detach().clone() for value in trainer.world_model.parameters()]
@@ -514,6 +549,7 @@ def test_resume_restores_saved_config_and_random_states(tiny_trainer, tmp_path):
         resume="saved.pt",
         lr=0.123,
         wm_hidden="9,9",
+        compile_world_model=False,
         iterations=20,
         ckpt_every=5,
         log_dir="new_run",
@@ -523,6 +559,7 @@ def test_resume_restores_saved_config_and_random_states(tiny_trainer, tmp_path):
     config = load_config(tmp_path / "config.json")
     assert config.lr == trainer.config.lr
     assert config.wm_hidden == trainer.config.wm_hidden
+    assert config.compile_world_model is False
     assert config.iterations == 20 and config.ckpt_every == 5
     assert config.log_dir == str(tmp_path / "new_run")
     resumed = Trainer(config)

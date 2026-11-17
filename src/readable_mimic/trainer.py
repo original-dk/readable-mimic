@@ -1,4 +1,4 @@
-"""Collect -> world model -> imagined actor -> critic; no compilation or CUDA graphs."""
+"""Collect -> world model -> imagined actor -> critic, with optional compiled WM updates."""
 
 from .sim import joint_pos_offset_limits, CONTROL_DT, DomainRandomizationConfig, compute_xi_dim
 import random, shutil

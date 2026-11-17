@@ -1,4 +1,4 @@
-"""Eager FP32 world-model, actor and critic update equations adapted from BlinkMimic."""
+"""FP32 update equations with optional compilation of WM rollout and loss."""
 
 from . import data_transforms as transforms
 from .timing import TrainingTimer
@@ -63,6 +63,19 @@ class TrainingUpdates:
             config.gamma ** torch.arange(config.horizon, device=self.device, dtype=torch.float32)[:, None]
         )
         self.bootstrap_discount = config.gamma**config.horizon
+        if config.compile_world_model and torch.device(self.device).type == "cuda":
+            self.world_model_rollout = torch.compile(
+                self.world_model_rollout,
+                fullgraph=True,
+                dynamic=False,
+                options={"triton.cudagraphs": False},
+            )
+            self.world_model_loss = torch.compile(
+                self.world_model_loss,
+                fullgraph=True,
+                dynamic=False,
+                options={"triton.cudagraphs": False},
+            )
 
     def world_model_rollout(self, start, action, last_action, xi):
         state = transforms.unflatten_state(start[:, 0])

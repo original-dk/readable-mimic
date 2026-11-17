@@ -60,7 +60,7 @@ FK、旋转、参考处理、奖励与网络动力学公式从其 MIT 代码改�
 默认数值来自 `scripts/presets.sh` 的 main：WM 3×1024、Actor encoder/decoder
 2048-1024-512-256、lr=4e-4、WM mirror=0.5、EMA=0.995、结构化 WM、参考 skip、Muon。
 不包含失败优先 / return 优先 / evaluation-probe 采样；reset 在时间 bin 间均匀采样。
-不包含 AMP、torch.compile、CUDA Graph、fused Adam 或异步 checkpoint。
+仅 WM rollout 和 loss 支持 torch.compile；不包含 AMP、CUDA Graph、fused Adam 或异步 checkpoint。
 因此采样分布、浮点舍入和速度与论文运行不同，不保证原论文的时间和回报。
 Muon 内部正交化遵循 torch.optim.Muon 原实现，FP32 指网络与状态计算不使用 autocast。
 
@@ -221,3 +221,8 @@ collect_env_other_ms / collect_other_ms：环境返回和循环剩余开销。
 world_model_prepare_ms / forward_ms / backward_ms / clip_ms / optimizer_ms / other_ms：窗口采样与镜像、前向及 loss、清梯度与反传、裁剪、优化器、结果整理及其余开销（各字段均带 world_model_ 前缀）。
 actor_backward_gradients_ms / clip_ms / optimizer_ms / ema_ms / other_ms：清梯度与反传、裁剪、有限性检查及优化器、EMA、恢复梯度开关（各字段均带 actor_backward_ 前缀）。
 所有子项仍按每轮平均，WM 5 次更新、真实采样多个控制步等重复调用的耗时会先累计；不是单次调用耗时。
+
+WM 编译：compile_world_model 默认 true，仅在 CUDA 训练中分别编译 world_model_rollout 和 world_model_loss。
+保持 FP32、固定 batch/window 形状，显式关闭 Inductor CUDA Graph；FK、Actor、Critic、采样、优化器和计时边界不变。
+首次前向和反传会触发编译，应比较后续稳定日志中的 world_model_forward_ms、world_model_backward_ms、world_model_ms 和 iteration_ms。
+compile_world_model=false 可直接对照普通执行；续训时使用当前配置的开关。checkpoint 权重和优化器格式不变，CPU 保留普通执行。

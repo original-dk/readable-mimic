@@ -20,6 +20,7 @@ def load_config(path="config.json", resume=None):
     values = json.loads(path.read_text(encoding="utf-8"))
     values.setdefault("resume", None)
     values.setdefault("profile_speed", False)
+    values.setdefault("compile_world_model", True)
     if resume is not None:
         values["resume"] = str(Path(resume).resolve())
     for key in ("motion_dir", "log_dir", "resume"):
@@ -42,6 +43,7 @@ def load_config(path="config.json", resume=None):
             "max_hours",
             "log_every",
             "profile_speed",
+            "compile_world_model",
         )
         runtime_config = {name: values[name] for name in runtime_fields}
         values = {**values, **saved_config, **runtime_config}
