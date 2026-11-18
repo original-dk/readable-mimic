@@ -52,3 +52,21 @@ def test_archive_import_rejects_path_escape_and_can_resume(tmp_path):
     assert (tmp_path / "raw/ACCAD/S1/walk_stageii.npz").read_bytes() == b"npz"
     manifest, prepared = prepare(config, archives)
     assert "ACCAD" not in prepared
+
+
+def test_archive_import_respects_selected_datasets(tmp_path):
+    prepare = runpy.run_path(str(ROOT / "tools/prepare_amass.py"))["prepare_archives"]
+    config = tmp_path / "config.json"
+    config.write_text(json.dumps(dict(input_dir="raw", datasets=["CMU"])))
+    archives = tmp_path / "archives"
+    archives.mkdir()
+    for dataset in ["ACCAD", "CMU"]:
+        with tarfile.open(archives / (dataset + ".tar.bz2"), "w:bz2") as archive:
+            entry = tarfile.TarInfo(dataset + "/walk_stageii.npz")
+            entry.size = 3
+            archive.addfile(entry, io.BytesIO(b"npz"))
+    manifest, prepared = prepare(config, archives)
+    assert prepared == ["CMU"]
+    assert manifest["ACCAD"]["status"] == "excluded"
+    assert not (tmp_path / "raw/ACCAD").exists()
+    assert (tmp_path / "raw/CMU/walk_stageii.npz").exists()

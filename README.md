@@ -173,7 +173,8 @@ Windows 的压缩包目录可以传 `--archives D:/Downloads`。只处理下载�
 不会读取 `.crdownload`；解压检查路径边界，并把压缩包 SHA256 和状态记入 `data/amass/download_manifest.json`。
 原始压缩包留在下载目录，不额外复制一整份。已有文件按清单续跑，新完成的下载可再次执行上述命令。
 
-配置统一放在 `retarget_amass.json`；`datasets: []` 表示处理当前输入目录中的全部子集。
+配置统一放在 `retarget_amass.json`；`datasets` 同时限定解压和转换的子集（空列表表示全部）。
+当前已排除并删除 ACCAD、BMLmovi、BMLrub、DFaust、EKUT、HumanEva，不再导入这些子集。
 筛选子集时填写解压后的顶层目录名称（部分官方目录使用 MPI_HDM05、MPI_mosh 等别名）。
 默认匹配 `*_stageii.npz`，排除 `neutral_stagei` 等辅助文件。
 读取人体形状及前 22 个身体关节，进行 FK；平移线性插值、关节旋转 SLERP，按真实源帧率重采样到 30 Hz。
@@ -198,7 +199,7 @@ G1 使用项目原模型和共用的 Mink IK、支撑阶段贴地；足尖任务
 ```bash
 UV_PROJECT_ENVIRONMENT=.venv-retarget uv run --extra retarget \
   python tools/play_motion.py \
-  --motion data/amass_g1_candidates/HumanEva__S1__Walking_3_stageii.csv --loop
+  --motion data/amass_g1_candidates/CNRS__283__-01_L_1_stageii.csv --loop
 ```
 
 输出仍为无表头的 36 列、30 Hz CSV：`base_pos_w[3], base_quat_xyzw[4], joint_pos[29]`。
@@ -206,7 +207,7 @@ UV_PROJECT_ENVIRONMENT=.venv-retarget uv run --extra retarget \
 来源、身体模型、配置、源码和 CSV 校验值记录在报告中；重复转换会校验后复用已有结果。
 修改 IK 或身体模型时使用新候选输出目录，避免混用不同版本。
 
-已完成的初始验证：HumanEva 28 条、15,264 帧；全部 14,396 个识别出的支撑帧有足底—地面接触。
+历史初始验证使用 HumanEva 28 条、15,264 帧，14,396 个识别出的支撑帧均有足底—地面接触；该子集现已按实测结果删除，这些历史验证不代表动作可用于训练。
 人体 FK 与官方 SMPL-X 的实测最大关节位置差约 `1.74e-7 m`；训练读取和 G1 FK 已验证。
 这些结果只证明格式、运动学和接触检查通过，尚未证明策略能稳定跟踪。
 

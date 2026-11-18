@@ -540,7 +540,26 @@
     "vertical_velocity_threshold": 0.5
   },
   "motion_glob": "*_stageii.npz",
-  "datasets": [],
+  "datasets": [
+    "CMU",
+    "CNRS",
+    "EyesJapanDataset",
+    "Eyes_Japan_Dataset",
+    "GRAB",
+    "HDM05",
+    "KIT",
+    "LARa",
+    "MOYO",
+    "MoSh",
+    "PosePrior",
+    "SFU",
+    "SOMA",
+    "SSM",
+    "TCDHands",
+    "TotalCapture",
+    "Transitions",
+    "WEIZMANN"
+  ],
   "body_model_type": "smplx",
   "body_models": {
     "neutral": "data/body_models/smplx/SMPLX_NEUTRAL.npz"

@@ -43,6 +43,9 @@ def prepare_archives(config_path, archive_dir):
     manifest = json.loads(manifest_path.read_text(encoding="utf-8")) if manifest_path.exists() else {}
     prepared = []
     for name in NEUTRAL_DATASETS:
+        if settings.get("datasets") and name not in settings["datasets"]:
+            manifest[name] = dict(status="excluded")
+            continue
         archive = Path(archive_dir) / (name + ".tar.bz2")
         if not archive.is_file():
             manifest.setdefault(name, dict(status="not_downloaded"))
