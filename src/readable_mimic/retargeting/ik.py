@@ -81,8 +81,8 @@ class MotionRetargeter:
         return qpos
 
 
-def ground_motion(model, qpos, foot_body_names, clearance):
-    """Apply one constant clip offset; never pin each frame's feet to the floor."""
+def ground_motion(model, qpos, foot_body_names, clearance, support_mask=None):
+    """Align support poses to collision surfaces and interpolate corrections through flight."""
     data = mujoco.MjData(model)
     foot_ids = {model.body(name).id for name in foot_body_names}
     geom_indices = [
@@ -93,19 +93,53 @@ def ground_motion(model, qpos, foot_body_names, clearance):
     ]
     if not geom_indices:
         raise ValueError("No collision geoms on the G1 feet")
-    minimum_height = np.inf
+    geom_indices = np.asarray(geom_indices)
+    geom_types = model.geom_type[geom_indices]
+    sphere_mask = geom_types == mujoco.mjtGeom.mjGEOM_SPHERE
+    if not np.all(sphere_mask | (geom_types == mujoco.mjtGeom.mjGEOM_BOX)):
+        raise ValueError("Expected sphere or box collision geoms on the G1 feet")
+    sizes = model.geom_size[geom_indices]
+    foot_heights = []
     for frame in qpos:
         data.qpos[:] = frame
         mujoco.mj_kinematics(model, data)
-        for index in geom_indices:
-            rotation = data.geom_xmat[index].reshape(3, 3)
-            if model.geom_type[index] == mujoco.mjtGeom.mjGEOM_SPHERE:
-                vertical_radius = model.geom_size[index, 0]
-            elif model.geom_type[index] == mujoco.mjtGeom.mjGEOM_BOX:
-                vertical_radius = np.abs(rotation[2]) @ model.geom_size[index]
-            else:
-                raise ValueError("Expected sphere or box collision geoms on the G1 feet")
-            height = data.geom_xpos[index, 2] - vertical_radius
-            minimum_height = min(minimum_height, height)
-    qpos[:, 2] += clearance - minimum_height
-    return float(clearance - minimum_height)
+        rotations = data.geom_xmat[geom_indices].reshape(-1, 3, 3)
+        box_radius = np.einsum("ij,ij->i", np.abs(rotations[:, 2]), sizes)
+        vertical_radius = np.where(sphere_mask, sizes[:, 0], box_radius)
+        foot_heights.append(np.min(data.geom_xpos[geom_indices, 2] - vertical_radius))
+    foot_heights = np.asarray(foot_heights)
+    if support_mask is None:
+        offset = clearance - foot_heights.min()
+        qpos[:, 2] += offset
+        return float(offset)
+    support_frames = np.flatnonzero(support_mask)
+    if len(support_frames) < 2:
+        raise ValueError("Fewer than two support frames detected; check source grounding thresholds")
+    from scipy.interpolate import PchipInterpolator
+
+    offsets = clearance - foot_heights
+    frame_indices = np.arange(len(qpos))
+    # Interpolate the correction through flight; do not flatten the jump trajectory.
+    correction = PchipInterpolator(support_frames, offsets[support_frames], extrapolate=False)(
+        np.clip(frame_indices, support_frames[0], support_frames[-1])
+    )
+    correction = np.maximum(correction, offsets)  # prevent any foot penetrating below clearance
+    qpos[:, 2] += correction
+    return {
+        "support_frames": int(support_mask.sum()),
+        "flight_frames": int((~support_mask).sum()),
+        "min_offset": float(correction.min()),
+        "max_offset": float(correction.max()),
+    }
+
+
+def detect_support_frames(human, settings):
+    """Infer support from source toe height and vertical speed (metres, seconds)."""
+    indices = [human.body_names.index(name) for name in settings["human_foot_bodies"]]
+    height = human.body_pos_w[:, indices, 2]
+    floor = np.quantile(height, settings["floor_quantile"])
+    vertical_velocity = np.gradient(height, 1.0 / human.frame_rate, axis=0)
+    contact = (height - floor < settings["height_threshold"]) & (
+        np.abs(vertical_velocity) < settings["vertical_velocity_threshold"]
+    )
+    return contact.any(axis=1)

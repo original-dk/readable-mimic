@@ -12,7 +12,7 @@ import time
 import mujoco
 import numpy as np
 from .bvh import load_bvh
-from .ik import MotionRetargeter, ground_motion
+from .ik import MotionRetargeter, ground_motion, detect_support_frames
 from ..robot import get_robot
 
 
@@ -67,7 +67,13 @@ def convert_clip(source, output_dir, settings, cuts):
             for index, (pos, rotation) in enumerate(zip(human.body_pos_w, human.body_rot_mat_w))
         ]
     )
-    ground_offset = ground_motion(model, qpos, settings["foot_bodies"], settings["ground_clearance"])
+    ground_offset = ground_motion(
+        model,
+        qpos,
+        settings["foot_bodies"],
+        settings["ground_clearance"],
+        detect_support_frames(human, settings["grounding"]),
+    )
     base_start = retargeter.base_qpos_start
     base_pos_w = qpos[:, base_start : base_start + 3]
     base_pos_w[:, :2] -= base_pos_w[0, :2].copy()

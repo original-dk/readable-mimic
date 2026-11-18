@@ -111,3 +111,35 @@ def test_grounding_uses_collision_surface_and_preserves_vertical_motion():
     assert offset == pytest.approx(0.202)
     np.testing.assert_allclose(qpos[:, 2].min() - 0.3, 0.002)
     np.testing.assert_allclose(np.diff(qpos[:, 2]), difference)
+
+
+def test_support_grounding_keeps_flight_height():
+    model = mujoco.MjModel.from_xml_string(
+        '<mujoco><worldbody><body name="foot"><freejoint/><geom type="sphere" size=".1"/></body></worldbody></mujoco>'
+    )
+    qpos = np.tile(model.qpos0, (7, 1))
+    qpos[:, 2] = [0.1, 0.12, 0.3, 0.4, 0.3, 0.11, 0.1]
+    support = np.array([True, True, False, False, False, True, True])
+    original_rotation = qpos[:, 3:].copy()
+    ground_motion(model, qpos, ["foot"], -0.0001, support)
+    np.testing.assert_allclose(qpos[support, 2] - 0.1, -0.0001, atol=1e-12)
+    assert qpos[3, 2] - 0.1 > 0.25
+    np.testing.assert_array_equal(qpos[:, 3:], original_rotation)
+
+
+def test_support_detection_does_not_ground_a_raised_foot():
+    from readable_mimic.retargeting.ik import detect_support_frames
+
+    positions = np.zeros((7, 2, 3))
+    positions[:, 0, 2] = [0, 0, 0.1, 0.1, 0.1, 0, 0]
+    positions[:, 1, 2] = 0.2
+    human = SimpleNamespace(body_names=["LeftToe", "RightToe"], body_pos_w=positions, frame_rate=30)
+    settings = dict(
+        human_foot_bodies=human.body_names,
+        floor_quantile=0.02,
+        height_threshold=0.04,
+        vertical_velocity_threshold=100,
+    )
+    np.testing.assert_array_equal(
+        detect_support_frames(human, settings), [True, True, False, False, False, True, True]
+    )

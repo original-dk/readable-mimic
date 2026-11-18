@@ -106,11 +106,17 @@ UV_PROJECT_ENVIRONMENT=.venv-retarget uv run --extra retarget \
 所有路径相对此配置文件解析。训练读取的 CSV 固定为 30 Hz。
 做子集实验时同时设置新的 `output_dir`；筛选只控制本次转换，不会删除目录中已有的其他 CSV。
 
-流程为：按官方标注裁剪首尾 → BVH FK/坐标转换 → 两阶段 Mink IK → 整段足底高度校正 → CSV。
+流程为：按官方标注裁剪首尾 → BVH FK/坐标转换 → 两阶段 Mink IK → 支撑阶段足底高度校正 → CSV。
 BVH 的通道旋转顺序逐关节读取；厘米转换为米，Y-up 转为 Z-up；不镜像、不人为改变播放速度。
 IK 的身体对应关系与初始权重参考 GMR，手臂坐标偏移和比例按本项目的 G1 模型调整；不需要安装完整 GMR。
 裁剪范围按零起点 `[START, STOP)` 解释，60 Hz 输入每隔一帧求解得到 30 Hz。
-整段使用同一个高度偏移，不逐帧把脚压到地面，保留跳跃高度变化。
+根据源动作脚趾高度和垂直速度识别支撑阶段；支撑帧的最低足底碰撞面校正到地面下 0.1 mm，以形成接触。
+腾空段用 PCHIP 插值高度补偿，保留跳跃；阈值统一放在 grounding 配置中。接触识别为启发式，极端风格仍需检查。
+已有旧 CSV 可执行 `UV_PROJECT_ENVIRONMENT=.venv-retarget uv run --extra retarget python tools/reground_100style.py --config retarget_100style.json`，无需重跑 IK。
+原始 CSV 和元数据会备份到输出目录同级的 `100style_g1_before_grounding`；此命令只修改基座高度。
+已更新本地全部 810 条数据，原有格式、四元数、关节限位及训练 FK 检查通过。
+步行、展臂步行、双脚跳和左右单脚跳的代表片段，支撑帧均检测到足底—地面接触，跳跃保留无接触腾空帧。
+该修正保证支撑帧的最低足底贴地，不等价于双脚锁定、防滑或动力学稳定性验证。
 
 输出到 `data/100style_g1/*.csv`：每行 `base_pos_w[3], base_quat_xyzw[4], joint_pos[29]`，
 无表头，米/弧度，关节顺序复用 `G1_JOINT_NAMES`，与 LAFAN1 训练数据格式一致。

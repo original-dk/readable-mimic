@@ -14,7 +14,7 @@
     "left_ankle_roll_link",
     "right_ankle_roll_link"
   ],
-  "ground_clearance": 0.002,
+  "ground_clearance": -0.0001,
   "joint_limit_tolerance": 0.0001,
   "ik": {
     "human_base_body": "Hips",
@@ -534,5 +534,14 @@
         }
       ]
     ]
+  },
+  "grounding": {
+    "human_foot_bodies": [
+      "LeftToe",
+      "RightToe"
+    ],
+    "floor_quantile": 0.02,
+    "height_threshold": 0.04,
+    "vertical_velocity_threshold": 0.5
   }
 }
