@@ -248,3 +248,5 @@ Actor 编译：compile_actor=true 时，CUDA 训练分别编译 imagine_step 和
 allow_tf32=true 与 BlinkMimic 的矩阵乘法设置对齐：张量和累加保持 float32，允许 TF32 矩阵乘法，数值精度与严格 FP32 有区别；仍不使用 BF16/autocast。
 compile_actor 和 allow_tf32 都以当前配置为准，支持旧 checkpoint 续训；可分别关闭进行对照。
 训练指标仅在日志输出轮次转为 Python 数值，RunningNorm 用设备端掩码保持 max_count 冻结规则，减少主机等待 GPU；不改变采样、奖励和更新次数。
+
+MuJoCo 后端固定 mjviser==0.0.16：0.0.17 引入 mujoco-core>=4.0.1，与本项目 mujoco==3.11.0 的包文件冲突。更新代码后对已有环境执行一次 UV_PROJECT_ENVIRONMENT=.venv-mujoco uv sync --extra mujoco --reinstall-package mujoco；后续可正常使用 uv run --extra mujoco，无需 --no-sync。
