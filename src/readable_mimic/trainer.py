@@ -29,10 +29,10 @@ class Trainer:
         self.config = config
         self.device = config.device
         if torch.device(self.device).type == "cuda":
-            precision = "tf32" if config.allow_tf32 else "ieee"
-            torch.backends.cuda.matmul.fp32_precision = precision
-            torch.backends.cudnn.conv.fp32_precision = precision
-            torch.backends.cudnn.rnn.fp32_precision = precision
+            # PyTorch 2.9 Inductor still reads allow_tf32 (pad_mm.py).
+            # Keep backend state on the legacy API until that dependency is upgraded.
+            torch.set_float32_matmul_precision("high" if config.allow_tf32 else "highest")
+            torch.backends.cudnn.allow_tf32 = config.allow_tf32
         torch.set_num_threads(config.num_threads)
         torch.manual_seed(config.seed)
         self.horizon = config.horizon
@@ -173,7 +173,7 @@ class Trainer:
                             "gpu": torch.cuda.get_device_name(self.device),
                             "pytorch": torch.__version__,
                             "cuda": torch.version.cuda,
-                            "allow_tf32": torch.backends.cuda.matmul.fp32_precision == "tf32",
+                            "allow_tf32": torch.backends.cuda.matmul.allow_tf32,
                             "compile_world_model": self.config.compile_world_model,
                             "compile_actor": self.config.compile_actor,
                         }
