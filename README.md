@@ -84,6 +84,46 @@ data/lafan1_g1/*.csv
 
 数据不存入 Git。LAFAN1 与机器人资产分别遵循其原许可证，见第三方声明。
 
+### 100STYLE → G1 训练数据
+
+离线重定向使用独立 uv 环境，CPU 即可；训练/评估环境无需安装重定向依赖。
+
+```bash
+UV_PROJECT_ENVIRONMENT=.venv-retarget uv sync --extra retarget --locked
+UV_PROJECT_ENVIRONMENT=.venv-retarget uv run --extra retarget python tools/download_100style.py
+UV_PROJECT_ENVIRONMENT=.venv-retarget uv run --extra retarget \
+  python -m readable_mimic.retargeting.convert_100style --config retarget_100style.json
+```
+
+下载器获取并校验官方原始 BVH 压缩包（约 1.5 GB）和 `Frame_Cuts.csv`，解压到 `data/100style_bvh`。
+已有数据可直接设置 `retarget_100style.json` 中的 `input_dir` 和 `frame_cuts`，跳过下载。
+机器人模型仍使用前面的 `data/g1_description/g1_29dof.xml`。
+完整数据包含 100 个风格、810 条片段；源数据和转换结果均不提交 Git。
+
+重定向的路径、风格筛选、动作类型筛选、进程数、比例和 IK 权重统一在 `retarget_100style.json`。
+`styles: []`、`movements: []` 表示全部；例如 `styles: ["Aeroplane", "Angry"]`、
+`movements: ["FW", "FR"]`。`workers` 控制 CPU 并行数，默认 6。
+所有路径相对此配置文件解析。训练读取的 CSV 固定为 30 Hz。
+
+流程为：按官方标注裁剪首尾 → BVH FK/坐标转换 → 两阶段 Mink IK → 整段足底高度校正 → CSV。
+BVH 的通道旋转顺序逐关节读取；厘米转换为米，Y-up 转为 Z-up；不镜像、不人为改变播放速度。
+IK 的身体对应关系与初始权重参考 GMR，手臂坐标偏移和比例按本项目的 G1 模型调整；不需要安装完整 GMR。
+裁剪范围按零起点 `[START, STOP)` 解释，60 Hz 输入每隔一帧求解得到 30 Hz。
+整段使用同一个高度偏移，不逐帧把脚压到地面，保留跳跃高度变化。
+
+输出到 `data/100style_g1/*.csv`：每行 `base_pos_w[3], base_quat_xyzw[4], joint_pos[29]`，
+无表头，米/弧度，关节顺序复用 `G1_JOINT_NAMES`，与 LAFAN1 训练数据格式一致。
+每条轨迹旁的 JSON 保存来源、裁剪区间、帧数、关节顺序、最大关节速度和校验值。
+汇总及失败详情在 `conversion_report.json`；有失败时命令以非零状态退出。
+相同源数据、模型和转换设置会复用已经校验的输出；改变 IK 设置时请使用新的 `output_dir`。
+
+训练时将实验配置的 `motion_dir` 改为 `data/100style_g1`，并设置单独的 `log_dir`，
+然后使用前述 Genesis 或 MuJoCo 训练命令；训练代码会照常重采样到 50 Hz 并计算 FK。
+这里完成的是运动学重定向；极端风格可能触及关节限位或需要筛选，并不保证 PD 跟踪和动力学可行性。
+
+数据遵循 [100STYLE 的 CC BY 4.0](https://www.ianxmason.com/100style/)，
+GMR 对应关系遵循 MIT，引用和许可证见 `THIRD_PARTY_NOTICES.md`。
+
 ## 3. 训练配置与启动
 
 所有实验配置放在 JSON 中。仓库 `config.json` 默认 `simulator: "genesis"`。

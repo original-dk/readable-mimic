@@ -17,6 +17,11 @@ deploy = [
     "onnxruntime>=1.20",
     "onnxscript>=0.3",
 ]
+retarget = [
+    "daqp>=0.7",
+    "mink==1.2.0",
+    "scipy>=1.13",
+]
 
 [tool.uv]
 conflicts = [[{ extra = "mujoco" }, { extra = "genesis" }]]
