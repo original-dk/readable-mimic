@@ -15,7 +15,7 @@ class ObservationNoiseConfig:
     ref_base_rot_noise: float = 0.05
 
 
-def load_config(path="config.json", resume=None):
+def load_config(path="config.json", resume=None, *, restore_training_config=True):
     path = Path(path).resolve()
     values = json.loads(path.read_text(encoding="utf-8"))
     values.setdefault("resume", None)
@@ -38,7 +38,7 @@ def load_config(path="config.json", resume=None):
     for key in ("motion_dir", "log_dir", "resume"):
         if values[key] is not None:
             values[key] = str((path.parent / values[key]).resolve())
-    if values["resume"] is not None:
+    if restore_training_config and values["resume"] is not None:
         import torch
 
         checkpoint = torch.load(values["resume"], map_location="cpu", weights_only=False)

@@ -14,7 +14,7 @@ def test_missing_mujoco_bindings_explain_repair(monkeypatch):
 
 
 def test_tf32_settings_use_new_api_without_warnings():
-    code = '''
+    code = """
 from types import SimpleNamespace
 from unittest.mock import patch
 import warnings
@@ -37,6 +37,22 @@ for allowed in (True, False):
     assert torch.backends.cuda.matmul.fp32_precision == expected
     assert torch.backends.cudnn.conv.fp32_precision == expected
     assert torch.backends.cudnn.rnn.fp32_precision == expected
-'''
+"""
     result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_evaluation_config_ignores_training_resume(tmp_path):
+    import json
+    from pathlib import Path
+    from readable_mimic.config import load_config
+
+    config = json.loads((Path(__file__).parents[1] / "config.json").read_text(encoding="utf-8"))
+    config["resume"] = "missing_training_checkpoint.pt"
+    config["simulator"] = "mujoco"
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps(config), encoding="utf-8")
+    evaluation = load_config(path, restore_training_config=False)
+    assert evaluation.simulator == "mujoco"
+    with pytest.raises(FileNotFoundError):
+        load_config(path)

@@ -200,7 +200,7 @@ def render_motion(
 
 def main(argv=None):
     arguments = parse_args(argv)
-    config = load_config(arguments.config)
+    config = load_config(arguments.config, restore_training_config=False)
     checkpoint = torch.load(arguments.checkpoint, map_location="cpu", weights_only=False)
     actor_config = checkpoint["config"]
     if actor_config["robot"] != config.robot:

@@ -6,4 +6,5 @@ data/
 runs/
 *.egg-info/
 .idea/
-.venv-genesis/
+.venv-*/
+videos/

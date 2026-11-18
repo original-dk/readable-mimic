@@ -1,254 +1,239 @@
 # Readable Mimic
 
-按 Motion → command / obs → history → Actor → 仿真 → Buffer，以及
-Buffer → WM 和 imagined rollout → Actor / Critic 两条分支组织的简化实现。
+按 `Motion → command / obs → history → Actor → 仿真 → ReplayBuffer`，以及
+`ReplayBuffer → WM → imagined rollout → Actor / Critic` 组织的动作跟踪实现。
 
-## 安装与运行
+本分支为 `compile_speed_genesis`，同时支持 Genesis 与 MuJoCo/mjlab。
+`compile_speed` 保留迁移 Genesis 之前的实现；`pure_mimic` 是更早的基线。
 
-```powershell
-cd D:\pycharm_project\readable-mimic
-uv sync --extra genesis
-uv run --extra genesis python tools/download_data.py
-uv run --extra genesis python -m readable_mimic.train --config config.json
-uv run --extra genesis pytest -q
+## 1. 安装：两个后端分别使用独立 uv 环境
+
+以下命令在项目根目录执行，示例使用 Linux Bash。需要 uv、NVIDIA GPU 和可用的 CUDA 驱动。
+Python 支持 3.11–3.13，本地验证使用 3.11；Linux 的 PyTorch 2.9.0 从 cu128 源安装。
+CPU 小模型测试不代表已经验证 GPU 上的训练速度或论文复现指标。
+
+```bash
+cd ~/readable-mimic
+git switch compile_speed_genesis
+uv --version
+
+UV_PROJECT_ENVIRONMENT=.venv-genesis uv sync --extra genesis --locked
+UV_PROJECT_ENVIRONMENT=.venv-mujoco uv sync --extra mujoco --locked
 ```
 
-配置对照和已知差异见 `CONFIG_PARITY.md`。运行 `uv run --extra genesis pytest -q -s` 可看到
-原生 MuJoCo CPU 采样后两轮训练的实时损失；该 CPU 环境仅用于测试，不替代 G1 仿真后端。
+首次新建环境可在 sync 后加 `--python 3.11`。已有可用环境无需为了文档示例更换 Python。
+不要使用 `--all-extras`：两个后端的第三方 Pillow 要求不兼容，extra 已声明互斥。
+每次运行都同时指定环境目录和 extra；目录名称本身不会选择物理后端，后端由配置的 `simulator` 决定。
+`uv run` 正常自动同步依赖，不需要手动激活环境或常规使用 `--no-sync`。
 
-默认训练配置需要 NVIDIA CUDA 设备。CPU 测试使用小型 MuJoCo 机器人和生成的运动数据，
-覆盖实际 FK、WM 多步更新、可微 imagined rollout、Actor / Critic 更新及保存恢复，
-不代表已完成 G1 训练或复现论文指标。
+Windows PowerShell 使用相同命令，但先单独设置环境变量，例如：
 
-本分支默认 `simulator: "genesis"`，固定 Genesis 1.4.5。`compile_speed` 保留迁移前的 MuJoCo 实现。
-切换 MuJoCo 时将 config.json 的 simulator 改为 mujoco，并使用 `uv sync --extra mujoco`、`uv run --extra mujoco ...`。
-两个 extra 因第三方 Pillow 要求不兼容而互斥；切换 extra 后 uv 自动同步对应依赖，不能使用 --all-extras。
-从 MuJoCo extra 切换到 Genesis extra 时，使用 `uv sync --extra genesis --reinstall-package mujoco`。
-mujoco 与 mujoco-core 共享 Python 包文件，卸载后者可能移除前者的 __init__.py / 二进制绑定，导致 MjModel 缺失。
-修复后可用 `uv run --extra genesis python -c "import mujoco; print(mujoco.__file__, mujoco.MjModel)"` 检查。
-本项目固定 mujoco==3.11.0；Genesis 使用该包加载原版 FK 和离屏渲染，物理推进仍由 Genesis 完成。
-所有实验配置仍在 config.json：simulation 保留控制周期与 MuJoCo 参数，genesis 小节只配置 Genesis 选项。
-两后端都使用 50 Hz 控制、200 Hz 物理，Genesis 每次 scene.step 内运行 4 个物理子步。
-Genesis 从同一个 MJCF 加载机器人，按名字映射 joint_pos/joint_vel/action；复用 G1 原 PD、armature 和力矩限制。
-xi 的 friction 和 center_of_mass_offset 会写入物理引擎，joint_pos_offset 仍在 reset 后采样并用于动作目标和 obs。
-FK、motion、Actor、Critic、WM、奖励、Buffer、编译开关和全部速度字段共用。物理引擎不同不等于 MuJoCo 数值复现。
-视频按 simulator 自动选择原生渲染：MuJoCo 使用 MuJoCo Renderer，Genesis 使用 Genesis 相机和默认地面/光照。Genesis 的独立显示场景只写入机器人与无碰撞 ghost 的姿态，不参与 rollout 物理；使用 PyAV 进程内编码 H.264。轨迹列表、时长、随机起点、ghost follow/reference 和 50 FPS 保持一致。
-Genesis 1.4.5 的安装、批量仿真及控制 API 以该版本源码为准，参考 https://genesis-world.readthedocs.io/。
+```powershell
+$env:UV_PROJECT_ENVIRONMENT = ".venv-genesis"
+uv sync --extra genesis --locked
+uv run --extra genesis python -m readable_mimic.train --config config.json
+```
 
-## 模块
+固定版本：`torch==2.9.0`、`mujoco==3.11.0`、`genesis-world==1.4.5`、
+`mjlab==1.6.0`、`mjviser==0.0.16`、`warp-lang==1.16.0`；以 `uv.lock` 为准。
+mjviser 0.0.17 会引入与 MuJoCo 3.11 文件冲突的 mujoco-core 4.x，因此不使用它。
+
+### 已有损坏环境的恢复
+
+旧环境可能曾混装 mujoco/mujoco-core。更新锁文件不会自动修复已经丢失的包文件。
+对发生错误的那个环境执行一次：
+
+```bash
+UV_PROJECT_ENVIRONMENT=.venv-genesis uv sync --extra genesis --reinstall-package mujoco --no-cache
+# MuJoCo 环境出错时改用下面这一条：
+UV_PROJECT_ENVIRONMENT=.venv-mujoco uv sync --extra mujoco --reinstall-package mujoco --no-cache
+```
+
+不要再单独安装 mujoco-core，也不需要卸载整个 PyTorch 或删除项目数据。
+如果仍报动态库错误，保留完整输出，检查实际包路径和动态库，不能只凭包版本判断安装正确。
+
+### 安装检查
+
+```bash
+UV_PROJECT_ENVIRONMENT=.venv-genesis uv run --extra genesis python -c \
+  "import torch,mujoco,genesis; print(torch.__version__,torch.version.cuda,torch.cuda.is_available()); print(mujoco.__file__,mujoco.__version__,mujoco.MjModel); print(genesis.__version__)"
+
+UV_PROJECT_ENVIRONMENT=.venv-mujoco uv run --extra mujoco python -c \
+  "import torch,mujoco,mjlab; print(torch.__version__,torch.version.cuda,torch.cuda.is_available()); print(mujoco.__file__,mujoco.__version__,mujoco.MjModel)"
+```
+
+训练配置默认 `device: "cuda:0"`；若 CUDA 不可用，先检查 `nvidia-smi` 与上面打印的 PyTorch/CUDA 信息。
+Genesis 也需要 MuJoCo 绑定来加载原版 FK，但它的物理和视频渲染均由 Genesis 完成。
+
+## 2. 准备模型和动作数据
+
+```bash
+UV_PROJECT_ENVIRONMENT=.venv-genesis uv run --extra genesis python tools/download_data.py
+```
+
+此脚本下载 LAFAN1 G1 动作、URDF 和 meshes，再运行 `tools/urdf_to_mjcf.py` 生成 MJCF。
+两后端共用同一份数据，无需各下载一次。已有完整文件会跳过，下载中的内容写入 `.part` 文件。
+训练前应存在：
+
+```text
+data/g1_description/g1_29dof_rev_1_0.urdf
+data/g1_description/g1_29dof.xml
+data/g1_description/meshes/
+data/lafan1_g1/*.csv
+```
+
+数据不存入 Git。LAFAN1 与机器人资产分别遵循其原许可证，见第三方声明。
+
+## 3. 训练配置与启动
+
+所有实验配置放在 JSON 中。仓库 `config.json` 默认 `simulator: "genesis"`。
+
+```bash
+UV_PROJECT_ENVIRONMENT=.venv-genesis uv run --extra genesis \
+  python -m readable_mimic.train --config config.json
+```
+
+如果训练 MuJoCo，先在项目根目录复制配置，修改其中的 `simulator` 为 `mujoco`，
+并给 `log_dir` 设置单独的目录，例如 `runs/mujoco`，避免覆盖另一个实验：
+
+```bash
+cp config.json config.mujoco.json
+# 编辑 config.mujoco.json：simulator=mujoco，log_dir=runs/mujoco
+UV_PROJECT_ENVIRONMENT=.venv-mujoco uv run --extra mujoco \
+  python -m readable_mimic.train --config config.mujoco.json
+```
+
+`motion_dir`、`log_dir`、配置中的 `resume` 相对于配置文件目录解析。
+不要直接将根目录配置移到 `runs/main/` 后继续使用原来的相对路径。
+训练保存的 `runs/main/config.json` 包含已解析的绝对路径；复制到另一台机器时要检查这些路径。
+
+主要配置：
+
+| 字段 | 含义 |
+|---|---|
+| simulator | genesis 或 mujoco；必须与运行 extra 匹配 |
+| num_envs / iterations | 并行环境数 / 总训练轮数 |
+| motion_dir / log_dir | 动作目录 / 本次实验输出目录 |
+| simulation | 50 Hz 控制、4 个物理子步及求解器参数 |
+| genesis | Genesis 特有选项；默认关闭自碰撞，与 G1 MuJoCo 设置对齐 |
+| domain_randomization / observation_noise / reward | 随机化、观测噪声、奖励参数 |
+| compile_world_model / compile_actor | CUDA 训练中的 WM、Actor 路径编译开关 |
+| allow_tf32 | 允许 float32 矩阵使用 TF32；不是严格 FP32 精度，不使用 BF16/autocast |
+| profile_speed | 分阶段同步计时，会增加诊断开销 |
+
+两后端复用 G1 关节顺序、PD 增益、力矩限制、armature、奖励和学习超参数。
+摩擦和质心随机化实际写入引擎；积分器和接触求解实现仍有差别，不能视为数值等价。
+MuJoCo 专用选项不会全部映射到 Genesis，具体边界见 `CONFIG_PARITY.md`。
+
+## 4. 日志、checkpoint 与继续训练
+
+`log_dir` 下保存完整配置、`metrics.jsonl`、`last.pt` 和独立的编号 checkpoint：
+
+```text
+runs/main/config.json
+runs/main/metrics.jsonl
+runs/main/last.pt
+runs/main/checkpoints/iteration_000100.pt
+```
+
+`ckpt_every` 控制保存间隔；正常结束也会保存。checkpoint 包含四个模型及标准化统计、
+三个优化器、配置、轮次、学习率控制和随机状态；不保存 Buffer 或仿真环境。
+恢复后会重新采样 warmup，是 warm restart，不保证与不间断训练逐步完全一致。
+
+将当前配置的 `iterations` 改为大于 checkpoint 轮数的总目标后运行：
+
+```bash
+UV_PROJECT_ENVIRONMENT=.venv-genesis uv run --extra genesis \
+  python -m readable_mimic.train --config config.json --resume runs/main/last.pt
+```
+
+也可设置配置中的 `resume`。CLI 的 `--resume` 优先，路径相对于当前工作目录。
+网络和算法设置从 checkpoint 恢复；当前配置中的设备、路径、总轮数、保存/日志间隔、
+计时/编译/TF32 开关和仿真后端设置仍有效。回退旧 checkpoint 时建议换 log_dir。
+历史字段重命名前的 checkpoint 不保证兼容；换物理后端继续训练也不等于精确续跑。
+
+日志中 loss 显示四位小数，其他浮点数三位，`metrics.jsonl` 保留原始精度。
+`sim_r` 是训练采样得到的归一化单步奖励，`episode_return` 是已结束 episode 的归一化回报，二者统计口径不同。
+计时字段为日志窗口内平均每轮毫秒数：collect、world_model、actor_backward 的汇总由子项相加。
+`iteration_ms` 不重复计入汇总，不含日志和 checkpoint；`it/s` 按日志之间的实际墙钟时间计算。
+第一次前向/反传可能触发编译，应比较稳定后的日志；正常测速时可关闭 profile_speed。
+
+## 5. Genesis 原生视频评估
+
+```bash
+UV_PROJECT_ENVIRONMENT=.venv-genesis uv run --extra genesis \
+  python -m readable_mimic.evaluate \
+  --config runs/main/config.json \
+  --checkpoint runs/main/last.pt \
+  --motions "walk1_subject1|dance1_subject1" \
+  --duration 30 --ghost-base follow --output-dir videos/genesis
+```
+
+确认评估配置的 simulator 为 genesis。评估只使用 `--checkpoint` 指定的权重，
+不会跟随配置中的训练 resume 再加载另一个 checkpoint。
+网络结构取自 checkpoint，EMA Actor 有效时优先使用，否则使用 Actor。
+环境、物理后端与数据路径取自评估配置。
+
+Genesis 使用原生相机及默认地面/光照，机器人和透明 ghost 放在独立显示场景，
+不改变实际 rollout 的接触或摩擦；使用 PyAV 进程内编码。无需启动 viewer。
+
+## 6. 用 MuJoCo 评估同一个 checkpoint
+
+从根配置复制为 `config.mujoco.json`，设置 simulator=mujoco，并确认 motion_dir 有效。
+checkpoint 可以是 Genesis 训练的，无需修改权重：
+
+```bash
+UV_PROJECT_ENVIRONMENT=.venv-mujoco uv run --extra mujoco \
+  python -m readable_mimic.evaluate \
+  --config config.mujoco.json \
+  --checkpoint runs/main/last.pt \
+  --motions "walk1_subject1|dance1_subject1" \
+  --duration 30 --ghost-base follow --output-dir videos/mujoco
+```
+
+这是真正的 MuJoCo 物理与渲染，不是只换输出目录。MuJoCo 视频使用棋盘地面。
+跨后端评估用于检查差异，不应由画面相似推断动力学一致。
+
+两后端都每条轨迹输出一个 MP4，固定 50 FPS、960×720。
+`--duration` 是每条视频的模拟秒数；`--motions all` 导出全部，列表中的 `|` 必须加引号。
+每条轨迹随机起点，摔倒或片段结束后在同一轨迹重新随机起步。
+`--ghost-base follow` 对齐机器人 xy/yaw，`reference` 保留原始世界轨迹。
+评估关闭训练噪声和随机化：摩擦为 1.0，关节偏移和质心偏移为零。
+视频生成不等待实时；此命令是可视化 rollout，不是完整动作的标准评测分数。
+Linux 无 DISPLAY 时使用离屏渲染；MuJoCo 可显式设置 `MUJOCO_GL=egl`，Genesis 原生相机使用其离屏后端。
+
+## 7. 验证
+
+```bash
+UV_PROJECT_ENVIRONMENT=.venv-genesis uv run --extra genesis pytest -q
+UV_PROJECT_ENVIRONMENT=.venv-mujoco uv run --extra mujoco pytest -q
+uv lock --check
+```
+
+可选后端未安装时，对应测试会跳过。测试包含 FK 数值与梯度、编译图、Replay 窗口、
+训练/续训、速度统计、视频帧数与 reset；Genesis 测试实际运行 CPU 物理。
+原生 Genesis 相机和 MP4 编解码另已在本机执行过真实 smoke test；不代表已验证 Linux/5090 全部驱动组合。
+
+## 模块与数据约定
 
 | 文件 | 职责 |
 |---|---|
-| config.json | 训练、奖励、observation_noise、domain_randomization；训练超参数保留上游键名 |
-| trainer.py | 构建模块、采样、学习率、日志、保存恢复 |
-| actor.py | command encoder 和 history decoder |
-| critic.py | 状态价值网络 |
-| world_model.py | 局部增量预测、结构化状态积分 |
-| updates.py | WM 回归、imagined Actor 更新、独立 Critic 回归 |
-| buffer.py | 时间×环境的循环 Buffer 和历史恢复 |
-| env.py | 共用 obs/reset/reward/transition 流程，均匀 bin reset |
-| motion.py | 参考动作重采样及 command |
-| data_transforms.py | obs、command、history、Critic 输入、Actor 回报、价值目标和状态转换 |
-| task.py | 跟踪奖励和终止条件 |
-| sim.py | 后端选择、时间常量及 xi 采样 |
-| sim_mujoco.py | mjlab/MuJoCo 的 state/reset/step/apply_xi |
-| sim_genesis.py | Genesis 的 state/reset/step/apply_xi |
-| kinematics.py | 上游 FK 算法，重命名状态参数 |
-| rotations.py | 四元数、旋转矩阵、SO(3) 运算 |
-| mirror.py | 左右镜像增强 |
-| optimizers.py | Muon 隐藏矩阵 + Adam 边界层 |
-| g1/g1_constants.py | G1 固定模型描述、关节顺序、驱动器定义 |
+| trainer.py / updates.py | 采样与训练调度 / WM、Actor、Critic 更新 |
+| env.py | 共用 obs、reset、reward、transition 流程 |
+| sim.py / sim_mujoco.py / sim_genesis.py | 时间常量与 xi / 各物理后端 |
+| evaluate.py / render_genesis.py | 评估、MuJoCo 视频 / Genesis 原生视频 |
+| data_transforms.py | obs、command、history、Critic 输入与训练目标转换 |
+| actor.py / critic.py / world_model.py | 三个网络 |
+| motion.py / kinematics.py / task.py | 参考动作 / 原版 FK / 奖励和终止 |
+| buffer.py / mirror.py / optimizers.py / timing.py | 回放 / 镜像 / 优化器 / 计时 |
+| robot.py / g1/g1_constants.py | 通用机器人描述 / G1 关节与驱动参数 |
 
-Critic 输入由 invariant state、参考关节差、身体/根位置误差、相对姿态、
-normalized_xi **和 command** 拼接。Actor 输入只有 history 和 command。
-Actor 更新期间冻结 WM / Critic 参数，但保留对状态和动作的梯度。
+数据使用 `ref_`、`base_`、`joint_pos`、`joint_vel`、`last_action` 等名称；
+`_w` 表示世界系，`_heading` 表示 yaw 坐标系，`body_*_w` 对应 link 原点。
+xi 顺序为 `[friction, joint_pos_offset, center_of_mass_offset]`，Buffer 保存原值，
+WM/Critic 输入处归一化；Actor 使用 history 与 command。
+固定索引、偏移范围和归一化尺度在初始化构建，不缓存随机采样或正在更新的统计。
 
-## 命名
-
-`base_lin_vel` / `base_ang_vel` 表示机体系速度，`_w` 表示世界系，
-`_heading` 表示 yaw 坐标系。`body_*_w` 是各 link 原点的运动学量，
-不是质心位置或质心线速度。动作历史统一为 `last_action`。
-
-## 与上游的边界
-
-参考 fuyichen0725/blinkmimic，commit `d264658d6c9ce61fb52f9f0f8985a369f3ccc409`。
-FK、旋转、参考处理、奖励与网络动力学公式从其 MIT 代码改编；保留 LICENSE 和第三方声明。
-
-默认数值来自 `scripts/presets.sh` 的 main：WM 3×1024、Actor encoder/decoder
-2048-1024-512-256、lr=4e-4、WM mirror=0.5、EMA=0.995、结构化 WM、参考 skip、Muon。
-不包含失败优先 / return 优先 / evaluation-probe 采样；reset 在时间 bin 间均匀采样。
-WM rollout/loss 和 imagined Actor step/reward 支持 torch.compile；不包含 AMP、CUDA Graph、fused Adam 或异步 checkpoint。
-因此采样分布、浮点舍入和速度与论文运行不同，不保证原论文的时间和回报。
-Muon 内部正交化遵循 torch.optim.Muon 原实现，FP32 指网络与状态计算不使用 autocast。
-
-checkpoint 恢复网络、标准化统计、优化器、迭代和学习率控制状态；
-与上游一样，环境与 replay 重新 warm-up，属于 warm restart，不是逐步精确续跑。
-数据由外部下载：LAFAN1 遵循 CC BY-NC-ND 4.0，机器人资产遵循其原许可证。
-
-## 当前数据流中的对象
-
-环境直接保存 `num_envs`、`num_joints`、`last_action`、`episode_step` 和 `xi`。
-`data_transforms.py` 统一转换数据；Trainer 保存 history。
-不再包含 ObsPipeline、XiLayout、传感滤波/延迟状态或动态参数注册。
-
-`xi` 是网络和 Buffer 使用的数值向量，顺序固定为：
-`[friction (1), joint_pos_offset (num_joints), center_of_mass_offset (3)]`。
-只有到 WM / Critic 的输入处才归一化，物理仿真和 Buffer 保存原始值。
-向量切片仅用于这三个明确字段，不再维护额外的 layout 对象。
-
-本次修改了网络参数名称和 observation_noise 配置结构。旧版代码由 Git 历史保留，
-旧版 checkpoint 不直接加载到新命名版本；需要续跑旧模型时先切回对应提交。
-
-## 数据字段约定
-
-参考数据统一 `ref_`，根身体统一 `base_`；姿态字段用 `rot`，速度用 `lin_vel` / `ang_vel`。
-误差用 `_error`，奖励用 `_reward`，惩罚用 `_penalty`。
-奖励详情字典的键与变量名称一致，不保留 `track`、`e_*` 等旧键。
-训练超参数仍采用上游的配置键；奖励与观测数据相关配置使用本项目名称，数值不变。
-外部 mjlab API（如 write_root_link_pose_to_sim）保持依赖库规定的名称。
-
-## 数据转换与训练更新
-
-所有张量输入、历史与训练目标转换集中在 `data_transforms.py`：
-`compute_observation`、`compute_command`、`compute_observation_history`、
-`update_observation_history`、`compute_replay_observation_history`、`compute_critic_input`、
-`compute_actor_return`、`compute_value_targets`、状态打包与参数归一化。
-这些函数的输入都通过参数传入，不读取 Trainer 或更新器的内部状态。
-
-`Trainer` 不再继承更新类。它通过关键字参数创建 `TrainingUpdates`，
-后者在自身构造函数中定义所有模型、优化器、Buffer 和配置依赖。
-训练调用为 `self.updates.update_world_model()` 和 `self.updates.update_actor()`。
-删除仅承载一个函数的 objective.py，以及转换逻辑分散的 observation.py。
-
-## 随机起点视频导出
-
-```bash
-uv run --no-sync python -m readable_mimic.evaluate \
-  --checkpoint runs/main/last.pt \
-  --motions "walk1_subject1|dance1_subject1" \
-  --duration 30 \
-  --ghost-base follow \
-  --output-dir videos
-```
-
-每条轨迹输出一个 MP4，文件名为轨迹名称。列表必须加引号，轨迹名可省略 .csv；
---motions all 导出全部轨迹。--duration 是每条视频的模拟时长（秒），输出固定为 50 FPS、960×720。
-仿真不等待墙钟时间，生成过程可能慢于实时，但视频播放速度由编码帧率确定。
-
-每条轨迹随机起步；片段结束或摔倒后，在同一条轨迹重新随机起步。
---ghost-base follow 对齐机器人 xy/yaw，reference 保留参考世界轨迹。
-Ghost 仅为透明渲染几何体，不参与物理计算。默认读取 EMA Actor，关闭训练噪声和域随机化。
-
-不启动 MuJoCo viewer，也不弹出预览窗口。Linux 无 DISPLAY 时自动选择 EGL；
-如需手动指定，可在命令前加 MUJOCO_GL=egl。编码依赖 imageio[ffmpeg]，更新项目后先执行 uv sync --extra genesis（MuJoCo 后端使用 --extra mujoco）。
-若之前为解决 MuJoCo 混装手工修复过环境，应保留该处理，再使用 --no-sync 运行导出命令。
-
-这是可视化视频导出，不是完整动作的标准评测分数。
-
-## Checkpoint 与继续训练
-
-所有设置仍放在 config.json：
-
-```json
-{
-  "ckpt_every": 100,
-  "resume": null,
-  "iterations": 3500
-}
-```
-
-每 100 个训练迭代保存 log_dir/checkpoints/iteration_000100.pt 等独立文件，
-并更新 log_dir/last.pt。训练正常结束时也保存，即使最后一次迭代不是保存间隔的倍数。
-文件先写临时文件再替换，避免半写入的 checkpoint 覆盖有效文件。
-
-每个文件包含 Actor、EMA Actor、Critic、WM、各自标准化统计、三个优化器
-（包含 Muon 与 Adam 子状态）、完整配置、已完成迭代数、采样余数、学习率触发状态，
-以及 Python、NumPy、PyTorch CPU 和 CUDA 随机状态。不保存 Replay Buffer 和仿真环境。
-
-继续训练时修改 config.json：
-
-```json
-{
-  "resume": "runs/main/checkpoints/iteration_001500.pt",
-  "iterations": 5000,
-  "ckpt_every": 100
-}
-```
-
-然后执行原训练命令：
-
-```bash
-uv run --no-sync python -m readable_mimic.train --config config.json
-```
-
-iterations 是总目标，不是追加轮数：上例从完成的第 1500 次迭代继续，训练到第 5000 次。
-模型结构与算法配置从 checkpoint 自动恢复；当前配置中的 device、num_threads、
-motion_dir、log_dir、resume、iterations、保存/日志间隔和本次时长限制仍然有效。
-如果回退到较早的 checkpoint，建议修改 log_dir，避免与已有日志混在一起。
-
-Buffer 默认不保存。默认 4096 环境 × 1000 步的原始 Buffer 约 3.6 GiB，
-而它可以通过重新采样恢复；继续训练会创建新环境并执行 warmup_steps，再恢复随机数状态进入更新。
-因此这是恢复模型/优化器后的 warm restart，不保证与不间断运行逐步完全一致。
-现有同版本字段命名的旧 last.pt 仍可加载；不兼容历史字段重命名之前的权重。
-
-也可不修改配置，直接使用命令行：uv run --no-sync python -m readable_mimic.train --config config.json --resume runs/main/last.pt。--resume 优先于配置中的 resume，路径相对于当前工作目录；配置文件可以省略 resume 字段。总训练目标仍由 iterations 指定。
-
-## 固定数据的初始化
-
-关节偏移范围在 Trainer 和 TrackingEnv 各自构造时计算，不在 update 或 reset 时重新匹配关节正则。
-Trainer 初始化 xi_center / xi_scale，并显式传给更新器。
-数据转换仍位于 data_transforms.py，归一化只做 (xi-xi_center)/xi_scale。
-
-以下小张量同样只创建一次：command 的未来帧偏移、Actor 目标的折扣序列、
-Buffer 的 WM 窗口偏移和 history 回看偏移。视频导出时 command 偏移每条视频创建一次。
-Buffer 的窗口长度和历史长度由构造参数确定，采样接口不再重复传入这两个固定长度。
-WM rollout 的整批仿真参数在进入逐步预测前归一化一次。
-
-配置改变后重新构建 Trainer / Env；不使用全局缓存，不缓存随机采样结果、当前状态特征或正在更新的标准化统计。
-缓存由配置推导，不额外写入 checkpoint，不改变权重和优化器的存储格式。
-
-
-sim.py 统一保留 create_simulation、CONTROL_DT / DECIMATION / PHYSICS_DT、DomainRandomizationConfig 和 xi 采样。
-引擎专用实现分别位于 sim_mujoco.py、sim_genesis.py；env.py 只通过 state/reset/step/apply_xi 接口使用仿真器。
-参数归一化等纯数据转换仍位于 data_transforms.py，保留已有模块职责。
-
-
-物理上下文统一命名为 xi：xi_dim 为维度，normalized_xi 为归一化结果，
-xi_center / xi_scale 为初始化生成的归一化常量。
-xi 固定顺序为 [friction, joint_pos_offset, center_of_mass_offset]。
-模型 parameters() 指 PyTorch 权重参数，与 xi 无关；权重和 checkpoint 格式保持不变。
-
-
-create_simulation 接收 config.simulation、simulator 和 genesis 选项，返回对应后端；不再提供 make_sim 中间接口。
-
-训练阶段计时：config.json 的 profile_speed 为 true 时，日志及 metrics.jsonl 输出两次日志之间的每轮平均毫秒数。
-prepare_ms 为学习率和采样步数准备，collect_ms 为真实环境采样及数据入库/标准化，world_model_ms 包含全部 WM 更新。
-actor_prepare_ms 为 replay 起点采样和历史/command 准备，actor_rollout_ms 为 imagined rollout，reward_ms 为轨迹整理、奖励和终止概率计算。
-actor_return_ms 为 critic bootstrap 和 actor return，actor_backward_ms 包含反向传播、梯度裁剪、优化器和 EMA；critic_ms 包含 critic 特征/目标计算及全部更新。
-other_ms 为剩余轮内工作；iteration_ms 为以上阶段之和，不包含日志打印和 checkpoint。各项均按整个日志区间的轮数平均。
-CUDA 阶段边界会同步，以避免异步执行造成耗时归属错误，因此计时模式会影响 it/s；profile_speed=false 恢复普通训练。
-继续训练时 profile_speed 以当前配置为准，计时状态不写入 checkpoint。首次日志可能包含运行时初始化开销，应比较后续稳定日志。
-
-细分计时保留 collect_ms、world_model_ms、actor_backward_ms 汇总，它们由各自子项相加得到，iteration_ms 不会重复计入汇总项。
-collect_prepare_ms：观测、history、command 及 Actor 标准化；collect_actor_ms：Actor 推理和动作噪声。
-collect_physics_ms：状态读取、设置目标和全部物理子步；collect_reward_ms：奖励、终止和超时判断。
-collect_finalize_ms：transition 打包、episode 统计和 reset；collect_buffer_ms：Buffer 写入、WM 数据转换及标准化、回报统计。
-collect_env_other_ms / collect_other_ms：环境返回和循环剩余开销。
-world_model_prepare_ms / forward_ms / backward_ms / clip_ms / optimizer_ms / other_ms：窗口采样与镜像、前向及 loss、清梯度与反传、裁剪、优化器、结果整理及其余开销（各字段均带 world_model_ 前缀）。
-actor_backward_gradients_ms / clip_ms / optimizer_ms / ema_ms / other_ms：清梯度与反传、裁剪、有限性检查及优化器、EMA、恢复梯度开关（各字段均带 actor_backward_ 前缀）。
-所有子项仍按每轮平均，WM 5 次更新、真实采样多个控制步等重复调用的耗时会先累计；不是单次调用耗时。
-
-WM 编译：compile_world_model 默认 true，仅在 CUDA 训练中分别编译 world_model_rollout 和 world_model_loss。
-保持 FP32、固定 batch/window 形状，显式关闭 Inductor CUDA Graph；FK、Actor、Critic、采样、优化器和计时边界不变。
-首次前向和反传会触发编译，应比较后续稳定日志中的 world_model_forward_ms、world_model_backward_ms、world_model_ms 和 iteration_ms。
-compile_world_model=false 可直接对照普通执行；续训时使用当前配置的开关。checkpoint 权重和优化器格式不变，CPU 保留普通执行。
-
-Actor 编译：compile_actor=true 时，CUDA 训练分别编译 imagine_step 和 reward_and_termination，含其中的 WM、观测/command 转换及奖励/FK。
-保留原有方法和全部计时边界；不编译优化器，不单独编译 FK，不开启 CUDA Graph。CPU 保留普通执行。
-allow_tf32=true 与 BlinkMimic 的矩阵乘法设置对齐：张量和累加保持 float32，允许 TF32 矩阵乘法，数值精度与严格 FP32 有区别；仍不使用 BF16/autocast。
-compile_actor 和 allow_tf32 都以当前配置为准，支持旧 checkpoint 续训；可分别关闭进行对照。
-训练指标仅在日志输出轮次转为 Python 数值，RunningNorm 用设备端掩码保持 max_count 冻结规则，减少主机等待 GPU；不改变采样、奖励和更新次数。
-
-MuJoCo 后端固定 mjviser==0.0.16：0.0.17 引入 mujoco-core>=4.0.1，与本项目 mujoco==3.11.0 的包文件冲突。更新代码后对已有环境执行一次 UV_PROJECT_ENVIRONMENT=.venv-mujoco uv sync --extra mujoco --reinstall-package mujoco；后续可正常使用 uv run --extra mujoco，无需 --no-sync。
-
-Genesis 原生视频无需额外命令开关；使用 UV_PROJECT_ENVIRONMENT=.venv-genesis uv run --extra genesis python -m readable_mimic.evaluate ...，并在配置中选择 simulator=genesis。
+参考 BlinkMimic commit `d264658d6c9ce61fb52f9f0f8985a369f3ccc409`，保留 LICENSE 和第三方声明。
+未实现失败优先/probe reset、AMP、手工 CUDA Graph、fused Adam 或异步 checkpoint。
+更多超参数及算法边界见 `CONFIG_PARITY.md`。
