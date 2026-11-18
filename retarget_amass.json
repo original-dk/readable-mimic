@@ -683,7 +683,6 @@
   },
   "motion_glob": "*_stageii.npz",
   "datasets": [
-    "MoSh",
     "PosePrior",
     "SFU"
   ],

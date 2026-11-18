@@ -174,7 +174,7 @@ Windows 的压缩包目录可以传 `--archives D:/Downloads`。只处理下载�
 原始压缩包留在下载目录，不额外复制一整份。已有文件按清单续跑，新完成的下载可再次执行上述命令。
 
 配置统一放在 `retarget_amass.json`；`datasets` 同时限定解压和转换的子集（空列表表示全部）。
-当前已排除并删除 ACCAD、BMLmovi、BMLrub、DFaust、EKUT、HumanEva、Eyes_Japan_Dataset、KIT，不再导入这些子集。
+当前已排除并删除 ACCAD、BMLmovi、BMLrub、DFaust、EKUT、HumanEva、Eyes_Japan_Dataset、KIT、MoSh，不再导入这些子集。
 
 AMASS 的 IK 按 GMR 原版设置运行：身高缩放、单位基座四元数/零关节初始姿态、离线收紧限位、足尖目标坐标系与迭代停止条件。训练机器人的 XML 和限位不变；足底支撑修正仍只作用于输出的 base z。
 修复前候选保存在 `data/amass_g1_candidates_before_gmr_fix`，不要用于训练。
