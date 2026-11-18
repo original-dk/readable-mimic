@@ -1,0 +1,577 @@
+{
+  "robot": "g1",
+  "mjcf_path": "data/g1_description/g1_29dof.xml",
+  "input_dir": "data/amass",
+  "output_dir": "data/amass_g1_candidates",
+  "output_frame_rate": 30,
+  "workers": 4,
+  "foot_bodies": [
+    "left_ankle_roll_link",
+    "right_ankle_roll_link"
+  ],
+  "ground_clearance": -0.0001,
+  "joint_limit_tolerance": 0.0001,
+  "ik": {
+    "human_base_body": "pelvis",
+    "base_position_scale": 0.78,
+    "solver": "daqp",
+    "damping": 0.5,
+    "lm_damping": 1,
+    "max_iterations": 5,
+    "convergence_tolerance": 0.001,
+    "stages": [
+      [
+        {
+          "robot_body": "pelvis",
+          "human_body": "pelvis",
+          "position_cost": 100,
+          "orientation_cost": 10,
+          "position_scale": 0.78,
+          "position_offset": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "rotation_offset_wxyz": [
+            0.5,
+            -0.5,
+            -0.5,
+            -0.5
+          ]
+        },
+        {
+          "robot_body": "left_hip_roll_link",
+          "human_body": "left_hip",
+          "position_cost": 0,
+          "orientation_cost": 10,
+          "position_scale": 0.78,
+          "position_offset": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "rotation_offset_wxyz": [
+            0.4267755048530407,
+            -0.5637931078484661,
+            -0.5637931078484661,
+            -0.4267755048530407
+          ]
+        },
+        {
+          "robot_body": "left_knee_link",
+          "human_body": "left_knee",
+          "position_cost": 0,
+          "orientation_cost": 10,
+          "position_scale": 0.78,
+          "position_offset": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "rotation_offset_wxyz": [
+            0.5,
+            -0.5,
+            -0.5,
+            -0.5
+          ]
+        },
+        {
+          "robot_body": "left_ankle_roll_link",
+          "human_body": "left_foot",
+          "position_cost": 100,
+          "orientation_cost": 10,
+          "position_scale": 0.78,
+          "position_offset": [
+            -0.1,
+            0.02,
+            0.02
+          ],
+          "rotation_offset_wxyz": [
+            0.5,
+            -0.5,
+            -0.5,
+            -0.5
+          ]
+        },
+        {
+          "robot_body": "right_hip_roll_link",
+          "human_body": "right_hip",
+          "position_cost": 0,
+          "orientation_cost": 10,
+          "position_scale": 0.78,
+          "position_offset": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "rotation_offset_wxyz": [
+            0.4267755048530407,
+            -0.5637931078484661,
+            -0.5637931078484661,
+            -0.4267755048530407
+          ]
+        },
+        {
+          "robot_body": "right_knee_link",
+          "human_body": "right_knee",
+          "position_cost": 0,
+          "orientation_cost": 10,
+          "position_scale": 0.78,
+          "position_offset": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "rotation_offset_wxyz": [
+            0.5,
+            -0.5,
+            -0.5,
+            -0.5
+          ]
+        },
+        {
+          "robot_body": "right_ankle_roll_link",
+          "human_body": "right_foot",
+          "position_cost": 100,
+          "orientation_cost": 10,
+          "position_scale": 0.78,
+          "position_offset": [
+            -0.1,
+            -0.02,
+            0.02
+          ],
+          "rotation_offset_wxyz": [
+            0.5,
+            -0.5,
+            -0.5,
+            -0.5
+          ]
+        },
+        {
+          "robot_body": "torso_link",
+          "human_body": "spine3",
+          "position_cost": 0,
+          "orientation_cost": 10,
+          "position_scale": 0.78,
+          "position_offset": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "rotation_offset_wxyz": [
+            0.5,
+            -0.5,
+            -0.5,
+            -0.5
+          ]
+        },
+        {
+          "robot_body": "left_shoulder_yaw_link",
+          "human_body": "left_shoulder",
+          "position_cost": 0,
+          "orientation_cost": 10,
+          "position_scale": 0.65,
+          "position_offset": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "rotation_offset_wxyz": [
+            0.70710678,
+            0.0,
+            -0.70710678,
+            0.0
+          ]
+        },
+        {
+          "robot_body": "left_elbow_link",
+          "human_body": "left_elbow",
+          "position_cost": 0,
+          "orientation_cost": 10,
+          "position_scale": 0.65,
+          "position_offset": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "rotation_offset_wxyz": [
+            1.0,
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        {
+          "robot_body": "left_wrist_yaw_link",
+          "human_body": "left_wrist",
+          "position_cost": 0,
+          "orientation_cost": 10,
+          "position_scale": 0.65,
+          "position_offset": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "rotation_offset_wxyz": [
+            1.0,
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        {
+          "robot_body": "right_shoulder_yaw_link",
+          "human_body": "right_shoulder",
+          "position_cost": 0,
+          "orientation_cost": 10,
+          "position_scale": 0.65,
+          "position_offset": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "rotation_offset_wxyz": [
+            0.0,
+            0.70710678,
+            0.0,
+            0.70710678
+          ]
+        },
+        {
+          "robot_body": "right_elbow_link",
+          "human_body": "right_elbow",
+          "position_cost": 0,
+          "orientation_cost": 10,
+          "position_scale": 0.65,
+          "position_offset": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "rotation_offset_wxyz": [
+            0.0,
+            0.0,
+            0.0,
+            -1.0
+          ]
+        },
+        {
+          "robot_body": "right_wrist_yaw_link",
+          "human_body": "right_wrist",
+          "position_cost": 0,
+          "orientation_cost": 10,
+          "position_scale": 0.65,
+          "position_offset": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "rotation_offset_wxyz": [
+            0.0,
+            0.0,
+            0.0,
+            -1.0
+          ]
+        }
+      ],
+      [
+        {
+          "robot_body": "pelvis",
+          "human_body": "pelvis",
+          "position_cost": 100,
+          "orientation_cost": 5,
+          "position_scale": 0.78,
+          "position_offset": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "rotation_offset_wxyz": [
+            0.5,
+            -0.5,
+            -0.5,
+            -0.5
+          ]
+        },
+        {
+          "robot_body": "left_hip_roll_link",
+          "human_body": "left_hip",
+          "position_cost": 10,
+          "orientation_cost": 5,
+          "position_scale": 0.78,
+          "position_offset": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "rotation_offset_wxyz": [
+            0.4267755048530407,
+            -0.5637931078484661,
+            -0.5637931078484661,
+            -0.4267755048530407
+          ]
+        },
+        {
+          "robot_body": "left_knee_link",
+          "human_body": "left_knee",
+          "position_cost": 10,
+          "orientation_cost": 5,
+          "position_scale": 0.78,
+          "position_offset": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "rotation_offset_wxyz": [
+            0.5,
+            -0.5,
+            -0.5,
+            -0.5
+          ]
+        },
+        {
+          "robot_body": "left_ankle_roll_link",
+          "human_body": "left_foot",
+          "position_cost": 100,
+          "orientation_cost": 50,
+          "position_scale": 0.78,
+          "position_offset": [
+            -0.1,
+            0.0,
+            0.02
+          ],
+          "rotation_offset_wxyz": [
+            -0.5,
+            0.5,
+            0.5,
+            0.5
+          ]
+        },
+        {
+          "robot_body": "right_hip_roll_link",
+          "human_body": "right_hip",
+          "position_cost": 10,
+          "orientation_cost": 5,
+          "position_scale": 0.78,
+          "position_offset": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "rotation_offset_wxyz": [
+            0.4267755048530407,
+            -0.5637931078484661,
+            -0.5637931078484661,
+            -0.4267755048530407
+          ]
+        },
+        {
+          "robot_body": "right_knee_link",
+          "human_body": "right_knee",
+          "position_cost": 10,
+          "orientation_cost": 5,
+          "position_scale": 0.78,
+          "position_offset": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "rotation_offset_wxyz": [
+            0.5,
+            -0.5,
+            -0.5,
+            -0.5
+          ]
+        },
+        {
+          "robot_body": "right_ankle_roll_link",
+          "human_body": "right_foot",
+          "position_cost": 100,
+          "orientation_cost": 50,
+          "position_scale": 0.78,
+          "position_offset": [
+            -0.1,
+            0.0,
+            0.02
+          ],
+          "rotation_offset_wxyz": [
+            -0.5,
+            0.5,
+            0.5,
+            0.5
+          ]
+        },
+        {
+          "robot_body": "torso_link",
+          "human_body": "spine3",
+          "position_cost": 0,
+          "orientation_cost": 10,
+          "position_scale": 0.78,
+          "position_offset": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "rotation_offset_wxyz": [
+            0.5,
+            -0.5,
+            -0.5,
+            -0.5
+          ]
+        },
+        {
+          "robot_body": "left_shoulder_yaw_link",
+          "human_body": "left_shoulder",
+          "position_cost": 10,
+          "orientation_cost": 5,
+          "position_scale": 0.65,
+          "position_offset": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "rotation_offset_wxyz": [
+            0.70710678,
+            0.0,
+            -0.70710678,
+            0.0
+          ]
+        },
+        {
+          "robot_body": "left_elbow_link",
+          "human_body": "left_elbow",
+          "position_cost": 10,
+          "orientation_cost": 5,
+          "position_scale": 0.65,
+          "position_offset": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "rotation_offset_wxyz": [
+            1.0,
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        {
+          "robot_body": "left_wrist_yaw_link",
+          "human_body": "left_wrist",
+          "position_cost": 10,
+          "orientation_cost": 5,
+          "position_scale": 0.65,
+          "position_offset": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "rotation_offset_wxyz": [
+            1.0,
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        {
+          "robot_body": "right_shoulder_yaw_link",
+          "human_body": "right_shoulder",
+          "position_cost": 10,
+          "orientation_cost": 5,
+          "position_scale": 0.65,
+          "position_offset": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "rotation_offset_wxyz": [
+            0.0,
+            0.70710678,
+            0.0,
+            0.70710678
+          ]
+        },
+        {
+          "robot_body": "right_elbow_link",
+          "human_body": "right_elbow",
+          "position_cost": 10,
+          "orientation_cost": 5,
+          "position_scale": 0.65,
+          "position_offset": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "rotation_offset_wxyz": [
+            0.0,
+            0.0,
+            0.0,
+            -1.0
+          ]
+        },
+        {
+          "robot_body": "right_wrist_yaw_link",
+          "human_body": "right_wrist",
+          "position_cost": 10,
+          "orientation_cost": 5,
+          "position_scale": 0.65,
+          "position_offset": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "rotation_offset_wxyz": [
+            0.0,
+            0.0,
+            0.0,
+            -1.0
+          ]
+        }
+      ]
+    ]
+  },
+  "grounding": {
+    "human_foot_bodies": [
+      "left_foot",
+      "right_foot"
+    ],
+    "floor_quantile": 0.02,
+    "height_threshold": 0.04,
+    "vertical_velocity_threshold": 0.5
+  },
+  "motion_glob": "*_stageii.npz",
+  "datasets": [],
+  "body_model_type": "smplx",
+  "body_models": {
+    "neutral": "data/body_models/smplx/SMPLX_NEUTRAL.npz"
+  },
+  "screening": {
+    "training_dir": "data/amass_g1_train",
+    "sample_stride": 5,
+    "quaternion_tolerance": 1e-05,
+    "joint_limit_tolerance": 0.0001,
+    "velocity_limit_multiplier": 1.0,
+    "min_base_height": 0.4,
+    "max_base_tilt_degrees": 50,
+    "unsupported_contact_penetration": 0.003,
+    "review_keywords": [
+      "sit",
+      "sitting",
+      "chair",
+      "crawl",
+      "lie",
+      "lying",
+      "roll",
+      "cartwheel",
+      "climb",
+      "pickup",
+      "lift",
+      "carry",
+      "object"
+    ],
+    "context_review_datasets": [
+      "GRAB",
+      "MOYO"
+    ]
+  }
+}

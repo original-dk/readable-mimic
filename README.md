@@ -152,6 +152,64 @@ CSV 的基座四元数是 `xyzw`，赋值前转成 MuJoCo 的 `wxyz` 并归一�
 `--headless` 不创建窗口、不等待墙钟时间，用于快速检查数据。关窗或 Ctrl+C 可退出。
 该工具只需要 NumPy 和原生 MuJoCo，也可在已有的 Genesis、MuJoCo 或 deploy uv 环境运行。
 
+### AMASS / SMPL-X neutral → G1 候选动作
+
+在 AMASS 官网下载 **SMPL-X N**，不要混入 SMPL-X G、SMPL+H 或 Render。
+下载需要本人已获得的账号和各子集授权；工具不保存账号、密码或浏览器凭据。
+身体模型使用授权下载的 `SMPLX_NEUTRAL.npz`，放在 `data/body_models/smplx/`。
+模型和数据均不随 Git 分发。
+
+```bash
+UV_PROJECT_ENVIRONMENT=.venv-retarget uv sync --extra retarget --locked
+UV_PROJECT_ENVIRONMENT=.venv-retarget uv run --extra retarget \
+  python tools/prepare_amass.py --config retarget_amass.json --archives /path/to/downloads
+UV_PROJECT_ENVIRONMENT=.venv-retarget uv run --extra retarget \
+  python -m readable_mimic.retargeting.convert_amass --config retarget_amass.json
+UV_PROJECT_ENVIRONMENT=.venv-retarget uv run --extra retarget \
+  python tools/screen_amass.py --config retarget_amass.json
+```
+
+Windows 的压缩包目录可以传 `--archives D:/Downloads`。只处理下载完整的 `.tar.bz2`，
+不会读取 `.crdownload`；解压检查路径边界，并把压缩包 SHA256 和状态记入 `data/amass/download_manifest.json`。
+原始压缩包留在下载目录，不额外复制一整份。已有文件按清单续跑，新完成的下载可再次执行上述命令。
+
+配置统一放在 `retarget_amass.json`；`datasets: []` 表示处理当前输入目录中的全部子集。
+筛选子集时填写解压后的顶层目录名称（部分官方目录使用 MPI_HDM05、MPI_mosh 等别名）。
+默认匹配 `*_stageii.npz`，排除 `neutral_stagei` 等辅助文件。
+读取人体形状及前 22 个身体关节，进行 FK；平移线性插值、关节旋转 SLERP，按真实源帧率重采样到 30 Hz。
+不计算手指、表情和软组织变形，也不需要在运行端生成完整人体网格。
+G1 使用项目原模型和共用的 Mink IK、支撑阶段贴地；足尖任务换算到项目实际存在的 ankle_roll_link。
+
+三个阶段独立保存：
+
+| 目录 | 内容 |
+|---|---|
+| data/amass | 原始 AMASS 参数及下载清单 |
+| data/amass_g1_candidates | 重定向候选 CSV、转换报告和 screening_report.json |
+| data/amass_g1_train | 人工复核及仿真跟踪验证后选入的训练动作 |
+
+**转换成功不等于动作适合 G1。** 初筛报告检查格式、四元数、关节限位和速度、基座高度与倾斜，
+抽样检查非足部地面接触，并提示可能依赖道具/地面支撑的动作名称及数据集。
+它只标记风险，所有动作仍是 `needs_review`，不会自动复制到训练目录；无标记也不代表动力学可行。
+筛选阈值和训练目录统一放在 `screening` 中，实际训练只指向复核后的目录。
+
+运动学预览：
+
+```bash
+UV_PROJECT_ENVIRONMENT=.venv-retarget uv run --extra retarget \
+  python tools/play_motion.py \
+  --motion data/amass_g1_candidates/HumanEva__S1__Walking_3_stageii.csv --loop
+```
+
+输出仍为无表头的 36 列、30 Hz CSV：`base_pos_w[3], base_quat_xyzw[4], joint_pos[29]`。
+文件名前缀保留子集与受试者路径，避免不同受试者同名动作相互覆盖。
+来源、身体模型、配置、源码和 CSV 校验值记录在报告中；重复转换会校验后复用已有结果。
+修改 IK 或身体模型时使用新候选输出目录，避免混用不同版本。
+
+已完成的初始验证：HumanEva 28 条、15,264 帧；全部 14,396 个识别出的支撑帧有足底—地面接触。
+人体 FK 与官方 SMPL-X 的实测最大关节位置差约 `1.74e-7 m`；训练读取和 G1 FK 已验证。
+这些结果只证明格式、运动学和接触检查通过，尚未证明策略能稳定跟踪。
+
 ## 3. 训练配置与启动
 
 所有实验配置放在 JSON 中。仓库 `config.json` 默认 `simulator: "genesis"`。

@@ -67,7 +67,7 @@ checkpoints) are not covered by this repository's MIT License.
 
 ## GMR retargeting correspondence and IK approach
 
-The Xsens/G1 task correspondences and initial weights in `retarget_100style.json` are adapted from [GMR](https://github.com/YanjieZe/GMR), revision `25f56db79ac411258b377b6d4ccba0c8ff3372ac`. The two-stage Mink IK follows the same approach; the BVH reader and batch converter are project implementations. Scaling and naming are adapted for this project.
+The Xsens/G1 task correspondences and initial weights in `retarget_100style.json` and `retarget_amass.json` are adapted from [GMR](https://github.com/YanjieZe/GMR), revision `25f56db79ac411258b377b6d4ccba0c8ff3372ac`. The two-stage Mink IK follows the same approach; the BVH reader and batch converter are project implementations. Scaling and naming are adapted for this project.
 
 ```text
 Copyright 2025 Yanjieze
@@ -82,3 +82,15 @@ THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR I
 ## 100STYLE
 
 The 100STYLE Dataset — Ian Mason, Sebastian Starke, Taku Komura. [Official dataset](https://www.ianxmason.com/100style/), [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). Source data and generated robot trajectories are excluded from Git. When using the dataset, credit the authors and cite *Real-Time Style Modelling of Human Locomotion via Feature-Wise Transformations and Local Motion Phases* (2022), DOI: 10.1145/3522618.
+
+
+## AMASS and SMPL-family models
+
+[AMASS](https://amass.is.tue.mpg.de/) data and [SMPL-X](https://smpl-x.is.tue.mpg.de/) model files
+are separately licensed assets obtained by the user from their official distribution.
+They and derived robot trajectories are excluded from Git. Follow each source dataset's license and citation requirements.
+The project implements body-joint FK from numeric model parameters; it does not redistribute model parameters or meshes.
+The SMPL-X/G1 IK correspondence is adapted from GMR under the MIT notice above.
+
+References: Mahmood et al., *AMASS: Archive of Motion Capture as Surface Shapes*, ICCV 2019;
+Pavlakos et al., *Expressive Body Capture: 3D Hands, Face, and Body from a Single Image*, CVPR 2019.
