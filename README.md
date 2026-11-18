@@ -131,6 +131,21 @@ IK 的身体对应关系与初始权重参考 GMR，手臂坐标偏移和比例�
 数据遵循 [100STYLE 的 CC BY 4.0](https://www.ianxmason.com/100style/)，
 GMR 对应关系遵循 MIT，引用和许可证见 `THIRD_PARTY_NOTICES.md`。
 
+### 直接查看 CSV 动作（运动学播放）
+
+```bash
+UV_PROJECT_ENVIRONMENT=.venv-retarget uv run --extra retarget \
+  python tools/play_motion.py \
+  --motion data/100style_g1/Aeroplane_FW.csv --loop
+```
+
+直接把 CSV 姿态写入 MuJoCo `data.qpos`，调用 `mj_forward` 后显示；不运行策略、PD 或 `mj_step`。
+CSV 的基座四元数是 `xyzw`，赋值前转成 MuJoCo 的 `wxyz` 并归一化。
+关节列按项目 G1 MJCF 的顺序使用。默认 30 fps，也适用于现有 LAFAN1 CSV。
+`--loop` 循环播放，省略则播放一遍；`--fps` 指定源帧率，`--mjcf` 指定模型。
+`--headless` 不创建窗口、不等待墙钟时间，用于快速检查数据。关窗或 Ctrl+C 可退出。
+该工具只需要 NumPy 和原生 MuJoCo，也可在已有的 Genesis、MuJoCo 或 deploy uv 环境运行。
+
 ## 3. 训练配置与启动
 
 所有实验配置放在 JSON 中。仓库 `config.json` 默认 `simulator: "genesis"`。
