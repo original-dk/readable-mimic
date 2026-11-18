@@ -91,3 +91,5 @@ ghost 不修改物理模型，以及独立子进程不导入 Torch/训练 Env �
 该 smoke test 使用生成的测试权重和参考姿态，不代表用户训练 checkpoint 的跟踪质量已经验证。
 
 主循环保留 ONNX、显式 PD、mj_step、history 和 viewer；不再包含分阶段计时。ghost 的几何更新独立放在 ghost.py。显式 PD 与训练中的隐式/近似隐式控制离散化不同，sim2sim 跟踪结果可能变化。
+
+播放等待按累计 deadline 对齐墙钟时间，减少逐步 sleep 的唤醒误差累积；物理步长不变。片段末尾仅打印一次 wall_seconds、work_ms（不含主动 sleep）和 rtf，方便区分计算超过 20 ms 的慢放与策略跟踪差异。

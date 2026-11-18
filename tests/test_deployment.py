@@ -114,6 +114,41 @@ from readable_mimic.deployment.play_mujoco import play
 summaries = play(sys.argv[1], duration=0.1, headless=True)
 assert summaries[0]['policy_steps'] == 5
 assert summaries[0]['physics_steps'] == 20
+assert summaries[0]['work_ms'] >= 0
+assert summaries[0]['rtf'] > 0
+from types import SimpleNamespace
+from contextlib import nullcontext
+from mujoco import viewer
+from readable_mimic.deployment import play_mujoco as playback
+class Clock:
+    now = 0.0
+    def perf_counter(self):
+        return self.now
+    def sleep(self, seconds):
+        self.now += seconds + 0.003
+clock = Clock()
+workload = 0.007
+class Viewer:
+    cam = SimpleNamespace(lookat=__import__('numpy').zeros(3))
+    def __enter__(self): return self
+    def __exit__(self, *args): pass
+    def is_running(self): return True
+    def lock(self): return nullcontext()
+    def sync(self): clock.now += workload
+viewer.launch_passive = lambda model, data: Viewer()
+playback.time = clock
+paced = play(sys.argv[1], duration=0.1, ghost_base='off')
+assert abs(paced[0]['wall_seconds'] - 0.103) < 1e-6, paced
+assert paced[0]['work_ms'] == 7.0
+clock = Clock()
+workload = 0.035
+def unexpected_sleep(seconds):
+    raise AssertionError('Do not sleep when the control loop is behind schedule')
+clock.sleep = unexpected_sleep
+playback.time = clock
+busy = play(sys.argv[1], duration=0.1, ghost_base='off')
+assert abs(busy[0]['wall_seconds'] - 0.175) < 1e-6, busy
+assert busy[0]['work_ms'] == 35.0
 assert 'torch' not in sys.modules
 assert not any(name.startswith(('readable_mimic.env', 'mjlab', 'genesis')) for name in sys.modules)
 print('Pure ONNX Runtime + native MuJoCo passed')

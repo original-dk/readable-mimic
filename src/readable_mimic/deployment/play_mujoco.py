@@ -147,6 +147,8 @@ def play(
             start, end = (int(motion["clip_start"][index]), int(motion["clip_end"][index]))
             frame, history = reset(start, end)
             steps, resets = (0, 0)
+            playback_start = time.perf_counter()
+            work_seconds = 0.0
             for _ in range(math.ceil(duration / settings["control_dt"])):
                 wall_start = time.perf_counter()
                 inputs = {
@@ -194,14 +196,22 @@ def play(
                 else:
                     history[:, :-1] = history[:, 1:]
                     history[:, -1] = observe(frame)
+                work_seconds += time.perf_counter() - wall_start
                 if viewer is not None:
-                    time.sleep(max(0, settings["control_dt"] - (time.perf_counter() - wall_start)))
+                    deadline = playback_start + steps * settings["control_dt"]
+                    remaining = deadline - time.perf_counter()
+                    if remaining > 0:
+                        time.sleep(remaining)
+            wall_seconds = time.perf_counter() - playback_start
             summary = {
                 "motion": name,
                 "policy_steps": steps,
                 "physics_steps": steps * settings["decimation"],
                 "resets": resets,
                 "simulated_seconds": steps * settings["control_dt"],
+                "wall_seconds": round(wall_seconds, 3),
+                "work_ms": round(work_seconds * 1000 / max(steps, 1), 3),
+                "rtf": round(steps * settings["control_dt"] / max(wall_seconds, 1e-9), 3),
             }
             summaries.append(summary)
             print(json.dumps(summary), flush=True)
