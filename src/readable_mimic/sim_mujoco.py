@@ -1,6 +1,7 @@
 """MuJoCo/mjlab implementation of the shared state, reset and step interface."""
 
 import torch
+import mujoco
 from mjlab.scene import Scene, SceneCfg
 from mjlab.sim import MujocoCfg, Simulation, SimulationCfg
 from mjlab.terrains import TerrainEntityCfg
@@ -85,7 +86,7 @@ class MujocoSim:
         physics, robot = self.physics, self.robot_description
         physics.expand_model_fields(("body_ipos", "geom_friction"))
         ground_indices = (
-            torch.as_tensor(physics.mj_model.geom_bodyid == 0, device=self.device).nonzero().flatten()
+            torch.as_tensor(physics.mj_model.geom_type == mujoco.mjtGeom.mjGEOM_PLANE, device=self.device).nonzero().flatten()
         )
         physics.model.geom_friction[:, ground_indices, 0] = (
             robot.domain_randomization.friction_range[0] if randomize else 1.0

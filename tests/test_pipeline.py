@@ -411,7 +411,7 @@ def test_xi_matches_applied_physics(tiny_trainer):
     default_body_positions = torch.zeros(3, 3)
     simulation = SimpleNamespace(
         model=SimpleNamespace(geom_friction=torch.zeros(4, 3, 3), body_ipos=torch.zeros(4, 3, 3)),
-        mj_model=SimpleNamespace(geom_bodyid=np.array([0, 1, 2])),
+        mj_model=SimpleNamespace(geom_bodyid=np.array([3, 1, 2]), geom_type=np.array([mujoco.mjtGeom.mjGEOM_PLANE, mujoco.mjtGeom.mjGEOM_SPHERE, mujoco.mjtGeom.mjGEOM_SPHERE])),
         expand_model_fields=lambda names: None,
         get_default_field=lambda name: default_body_positions,
     )
@@ -434,6 +434,7 @@ def test_xi_matches_applied_physics(tiny_trainer):
         ),
     )
     xi = initialize_xi(env)
+    torch.testing.assert_close(simulation.model.geom_friction[:, 0, 0], torch.full((4,), trainer.robot.domain_randomization.friction_range[0]))
     torch.testing.assert_close(simulation.model.geom_friction[:, 1, 0], xi[:, 0])
     torch.testing.assert_close(simulation.model.geom_friction[:, 2, 0], xi[:, 0])
     torch.testing.assert_close(simulation.model.body_ipos[:, 1], xi[:, 3:6])
