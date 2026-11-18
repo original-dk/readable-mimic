@@ -4,7 +4,7 @@
   "input_dir": "data/amass",
   "output_dir": "data/amass_g1_candidates",
   "output_frame_rate": 30,
-  "workers": 4,
+  "workers": 8,
   "foot_bodies": [
     "left_ankle_roll_link",
     "right_ankle_roll_link"
@@ -683,22 +683,9 @@
   },
   "motion_glob": "*_stageii.npz",
   "datasets": [
-    "CMU",
-    "CNRS",
-    "GRAB",
-    "HDM05",
     "KIT",
-    "LARa",
-    "MOYO",
-    "MoSh",
-    "PosePrior",
-    "SFU",
     "SOMA",
-    "SSM",
-    "TCDHands",
-    "TotalCapture",
-    "Transitions",
-    "WEIZMANN"
+    "Transitions"
   ],
   "body_model_type": "smplx",
   "body_models": {
