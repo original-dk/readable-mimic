@@ -92,9 +92,14 @@ def test_export_onnx_and_play_without_training_imports(tiny_trainer, tmp_path, m
     assert scene.ngeom > 0
     np.testing.assert_array_equal(model.qpos0, qpos_before)
     np.testing.assert_allclose(model.dof_armature[6:], 0.01)
-    np.testing.assert_allclose(model.actuator_gainprm[:, 0], 5)
-    np.testing.assert_allclose(model.actuator_biasprm[:, 2], -1)
+    np.testing.assert_allclose(model.actuator_gainprm[:, 0], 1)
+    np.testing.assert_allclose(model.actuator_biasprm, 0)
     np.testing.assert_allclose(model.actuator_forcerange, np.tile([-20, 20], (2, 1)))
+    data = mujoco.MjData(model)
+    data.ctrl[:] = [5.0, -7.0]
+    mujoco.mj_forward(model, data)
+    np.testing.assert_allclose(data.actuator_force, [5.0, -7.0])
+
     history = torch.randn(1, trainer.config.hist, trainer.observation_dim)
     command = torch.randn(1, transforms.compute_command_dim(robot.num_joints, trainer.command_frames))
     actual = ort.InferenceSession(str(model_path), providers=["CPUExecutionProvider"]).run(

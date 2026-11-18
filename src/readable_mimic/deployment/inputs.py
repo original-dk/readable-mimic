@@ -45,3 +45,11 @@ def command(motion, frame, end_frame, command_frames):
         .reshape(1, -1)
         .astype(np.float32)
     )
+
+
+def rotation_matrix(quaternion):
+    import mujoco
+
+    values = np.empty(9)
+    mujoco.mju_quat2Mat(values, np.asarray(quaternion, dtype=np.float64))
+    return values.reshape(3, 3)

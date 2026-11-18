@@ -6,12 +6,11 @@ import json
 import math
 from pathlib import Path
 import time
-
 import mujoco
 import numpy as np
 import onnxruntime as ort
-
-from .inputs import command, observation, yaw_matrix
+from .inputs import command, observation, rotation_matrix
+from .ghost import Ghost
 
 
 def create_model(settings, model_path):
@@ -20,7 +19,7 @@ def create_model(settings, model_path):
         raise ValueError("Use the original robot MJCF without training-generated actuators.")
     for geom in spec.geoms:
         if geom.contype or geom.conaffinity:
-            geom.contype, geom.conaffinity = 0, 1
+            geom.contype, geom.conaffinity = (0, 1)
         geom.friction[0] = settings["friction"]
     spec.add_texture(
         name="ground_checker",
@@ -42,18 +41,12 @@ def create_model(settings, model_path):
     )
     spec.worldbody.add_light(pos=[0, -3, 5], dir=[0, 0, -1])
     for index, name in enumerate(settings["joint_names"]):
-        stiffness = settings["joint_stiffness"][index] * settings["kp_scale"]
-        damping = settings["joint_damping"][index] * settings["kd_scale"]
         effort = settings["joint_effort_limit"][index]
         spec.joint(name).armature = settings["joint_armature"][index]
         spec.add_actuator(
-            name=f"position_{name}",
+            name=f"motor_{name}",
             target=name,
             trntype=mujoco.mjtTrn.mjTRN_JOINT,
-            gaintype=mujoco.mjtGain.mjGAIN_FIXED,
-            gainprm=[stiffness] + [0] * 9,
-            biastype=mujoco.mjtBias.mjBIAS_AFFINE,
-            biasprm=[0, -stiffness, -damping] + [0] * 7,
             forcelimited=True,
             forcerange=[-effort, effort],
         )
@@ -66,64 +59,6 @@ def create_model(settings, model_path):
     for name in ("iterations", "ls_iterations", "tolerance", "ccd_iterations"):
         setattr(model.opt, name, physics[name])
     return model
-
-
-def rotation_matrix(quaternion):
-    values = np.empty(9)
-    mujoco.mju_quat2Mat(values, np.asarray(quaternion, dtype=np.float64))
-    return values.reshape(3, 3)
-
-
-class Ghost:
-    def __init__(self, model, base_qpos_indices, joint_qpos_indices):
-        self.model, self.data = model, mujoco.MjData(model)
-        self.base_qpos_indices, self.joint_qpos_indices = base_qpos_indices, joint_qpos_indices
-        self.scene = mujoco.MjvScene(model, maxgeom=model.ngeom + 32)
-        self.options, self.camera, self.perturbation = (
-            mujoco.MjvOption(),
-            mujoco.MjvCamera(),
-            mujoco.MjvPerturb(),
-        )
-
-    def update(self, target_scene, qpos, motion, frame, follow):
-        self.data.qpos[:] = qpos
-        position = motion["base_pos_w"][frame].copy()
-        rotation = motion["base_rot_mat_w"][frame].copy()
-        if follow:
-            base = qpos[self.base_qpos_indices]
-            rotation = yaw_matrix(rotation_matrix(base[3:]) @ rotation.T) @ rotation
-            position[:2] = base[:2]
-        quaternion = np.empty(4)
-        mujoco.mju_mat2Quat(quaternion, np.asarray(rotation, dtype=np.float64).reshape(9))
-        self.data.qpos[self.base_qpos_indices] = np.concatenate((position, quaternion))
-        self.data.qpos[self.joint_qpos_indices] = motion["joint_pos"][frame]
-        mujoco.mj_kinematics(self.model, self.data)
-        mujoco.mjv_updateScene(
-            self.model,
-            self.data,
-            self.options,
-            self.perturbation,
-            self.camera,
-            mujoco.mjtCatBit.mjCAT_ALL,
-            self.scene,
-        )
-        target_scene.ngeom = 0
-        for index in range(self.scene.ngeom):
-            source = self.scene.geoms[index]
-            if source.objtype != mujoco.mjtObj.mjOBJ_GEOM or self.model.geom_bodyid[source.objid] == 0:
-                continue
-            target = target_scene.geoms[target_scene.ngeom]
-            mujoco.mjv_initGeom(
-                target,
-                source.type,
-                source.size.astype(np.float64),
-                source.pos.astype(np.float64),
-                source.mat.astype(np.float64).reshape(9),
-                np.array([0.2, 0.65, 1, 0.3], dtype=np.float32),
-            )
-            target.dataid, target.modelrbound, target.matid = source.dataid, source.modelrbound, -1
-            target.transparent = True
-            target_scene.ngeom += 1
 
 
 def play(
@@ -155,10 +90,13 @@ def play(
     free_joint = np.flatnonzero(model.jnt_type == mujoco.mjtJoint.mjJNT_FREE)
     if len(free_joint) != 1:
         raise ValueError("Expected a single floating-base robot")
-    base_qpos_start, base_dof_start = model.jnt_qposadr[free_joint[0]], model.jnt_dofadr[free_joint[0]]
+    base_qpos_start, base_dof_start = (model.jnt_qposadr[free_joint[0]], model.jnt_dofadr[free_joint[0]])
     base_qpos_indices = np.arange(base_qpos_start, base_qpos_start + 7)
     default_joint_pos = np.asarray(settings["default_joint_pos"], dtype=np.float32)
     action_scale = np.asarray(settings["action_scale"], dtype=np.float32)
+    kp = np.asarray(settings["joint_stiffness"]) * settings["kp_scale"]
+    kd = np.asarray(settings["joint_damping"]) * settings["kd_scale"]
+    force_limit = np.asarray(settings["joint_effort_limit"])
     rng = np.random.default_rng(seed)
     last_action = np.zeros(len(joint_qpos_indices), dtype=np.float32)
 
@@ -186,11 +124,11 @@ def play(
             (motion["base_lin_vel_w"][frame], rotation.T @ motion["base_ang_vel_w"][frame])
         )
         data.qvel[joint_dof_indices] = motion["joint_vel"][frame]
-        data.ctrl[:] = data.qpos[joint_qpos_indices]
+        data.ctrl[:] = 0
         last_action.fill(0)
         mujoco.mj_forward(model, data)
         history = np.repeat(observe(frame)[None, None, :], settings["history_length"], axis=1)
-        return frame, history
+        return (frame, history)
 
     viewer_context = nullcontext(None)
     if not headless:
@@ -206,29 +144,27 @@ def play(
         )
         for name in requested:
             index = names.index(name)
-            start, end = int(motion["clip_start"][index]), int(motion["clip_end"][index])
+            start, end = (int(motion["clip_start"][index]), int(motion["clip_end"][index]))
             frame, history = reset(start, end)
-            steps, resets = 0, 0
-            timing_start = time.perf_counter()
-            timing_steps = 0
-            costs = dict(input_ms=0.0, onnx_ms=0.0, physics_ms=0.0, ghost_ms=0.0, display_ms=0.0)
+            steps, resets = (0, 0)
             for _ in range(math.ceil(duration / settings["control_dt"])):
                 wall_start = time.perf_counter()
                 inputs = {
                     "observation_history": history.astype(np.float32),
                     "command": command(motion, frame, end, settings["command_frames"]),
                 }
-                inference_start = time.perf_counter()
-                costs["input_ms"] += (inference_start - wall_start) * 1000
                 action = session.run(["action"], inputs)[0][0]
-                physics_start = time.perf_counter()
-                costs["onnx_ms"] += (physics_start - inference_start) * 1000
                 if not np.isfinite(action).all():
                     raise RuntimeError("ONNX Actor produced non-finite actions")
-                data.ctrl[:] = default_joint_pos + action_scale * action
+                target_joint_pos = default_joint_pos + action_scale * action
                 for _ in range(settings["decimation"]):
+                    tau = (
+                        kp * (target_joint_pos - data.qpos[joint_qpos_indices])
+                        - kd * data.qvel[joint_dof_indices]
+                    )
+                    tau = np.clip(tau, -force_limit, force_limit)
+                    data.ctrl[:] = tau
                     mujoco.mj_step(model, data)
-                costs["physics_ms"] += (time.perf_counter() - physics_start) * 1000
                 if not np.isfinite(data.qpos).all() or not np.isfinite(data.qvel).all():
                     raise RuntimeError("MuJoCo produced a non-finite state")
                 frame += 1
@@ -246,39 +182,20 @@ def play(
                 if viewer is not None:
                     if not viewer.is_running():
                         return summaries
-                    display_start = time.perf_counter()
                     mujoco.mj_kinematics(model, data)
                     with viewer.lock():
                         if ghost is not None:
-                            ghost_start = time.perf_counter()
                             ghost.update(viewer.user_scn, data.qpos, motion, frame, ghost_base == "follow")
-                            costs["ghost_ms"] += (time.perf_counter() - ghost_start) * 1000
                         viewer.cam.lookat[:] = base[:3]
                     viewer.sync()
-                    costs["display_ms"] += (time.perf_counter() - display_start) * 1000
                 if done:
                     frame, history = reset(start, end)
                     resets += 1
                 else:
-                    history = np.concatenate((history[:, 1:], observe(frame)[None, None]), axis=1)
+                    history[:, :-1] = history[:, 1:]
+                    history[:, -1] = observe(frame)
                 if viewer is not None:
                     time.sleep(max(0, settings["control_dt"] - (time.perf_counter() - wall_start)))
-                timing_steps += 1
-                if timing_steps == 250 or steps == math.ceil(duration / settings["control_dt"]):
-                    elapsed = time.perf_counter() - timing_start
-                    # display includes ghost work; subtract it to keep stage costs disjoint.
-                    costs["display_ms"] -= costs["ghost_ms"]
-                    report = {key: round(value / timing_steps, 3) for key, value in costs.items()}
-                    report.update(
-                        motion=name,
-                        simulated_seconds=round(steps * settings["control_dt"], 3),
-                        rtf=round(timing_steps * settings["control_dt"] / max(elapsed, 1e-9), 3),
-                    )
-                    print(json.dumps(report), flush=True)
-                    costs = dict.fromkeys(costs, 0.0)
-                    timing_steps = 0
-                    timing_start = time.perf_counter()
-
             summary = {
                 "motion": name,
                 "policy_steps": steps,

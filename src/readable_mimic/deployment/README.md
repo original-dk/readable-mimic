@@ -76,7 +76,7 @@ headless 不创建 viewer 或 GL 场景，不等待墙钟时间，每条轨迹�
 - 观测包含 joint_pos-default_joint_pos、joint_vel、机体系 base_ang_vel、projected_gravity、last_action、相对参考姿态 6D。
 - 不输入 xi，不添加训练噪声和域随机化；joint_pos_offset 默认为零。
 - ONNX 内执行标准化和 reference skip；MuJoCo 目标仅为 `default_joint_pos + action_scale * action`。
-- 使用原生隐式 PD position actuator 和力矩限制，按 control_dt/decimation 推进物理。
+- ONNX 按控制周期更新目标；每个物理子步显式计算 tau=kp*(target_joint_pos-joint_pos)-kd*joint_vel，按力矩范围裁剪后 data.ctrl[:]=tau，再 mj_step。
 - 基座线速度使用世界系，MuJoCo free-joint 角速度使用机体系；reset 时显式转换。
 
 可在 policy.json 中修改 friction、kp_scale、kd_scale，或逐关节的 stiffness/damping/armature/effort，
@@ -90,4 +90,4 @@ ghost 不修改物理模型，以及独立子进程不导入 Torch/训练 Env �
 另使用真实 G1 29DoF 模型完成过 headless 100 次控制/400 次物理步 smoke test。
 该 smoke test 使用生成的测试权重和参考姿态，不代表用户训练 checkpoint 的跟踪质量已经验证。
 
-播放耗时：每 250 个控制步及片段末尾输出 input_ms、onnx_ms、physics_ms、ghost_ms、display_ms 和 RTF，数值为窗口内平均每控制步毫秒数。RTF≈1 为实时，低于 1 为慢于实时；headless 不主动等待，因此可以大于 1。可用 --ghost-base off 对照 ghost 开销。Ghost 只运行 mj_kinematics，正常步进后也不额外求解完整动力学；控制周期的等待包含 history/reset 开销。
+主循环保留 ONNX、显式 PD、mj_step、history 和 viewer；不再包含分阶段计时。ghost 的几何更新独立放在 ghost.py。显式 PD 与训练中的隐式/近似隐式控制离散化不同，sim2sim 跟踪结果可能变化。
