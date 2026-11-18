@@ -683,8 +683,9 @@
   },
   "motion_glob": "*_stageii.npz",
   "datasets": [
-    "SOMA",
-    "Transitions"
+    "MoSh",
+    "PosePrior",
+    "SFU"
   ],
   "body_model_type": "smplx",
   "body_models": {
