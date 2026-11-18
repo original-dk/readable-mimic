@@ -25,5 +25,10 @@
     "GRAB",
     "MOYO"
   ],
-  "excluded_motions": []
+  "excluded_motions": [],
+  "foot_contact_height": 0.02,
+  "max_foot_penetration": 0.003,
+  "min_flight_check_duration": 0.1,
+  "max_flight_duration": 0.6,
+  "max_flight_fit_error": 0.04
 }

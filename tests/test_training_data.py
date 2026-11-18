@@ -97,3 +97,87 @@ def test_shared_gate_keeps_manually_excluded_motion_out_of_train(tmp_path):
     assert [path.name for path in (tmp_path / "train").iterdir()] == ["accepted.csv"]
     rejected = next(item for item in report["motions"] if item["name"] == "excluded")
     assert rejected["flags"] == ["excluded_motion"]
+
+
+def support_rules():
+    return json.loads((ROOT / "motion_filter.json").read_text())
+
+
+def test_ground_support_accepts_walk_and_short_ballistic_jump():
+    check = MODULE["check_ground_support"]
+    foot = np.zeros(40)
+    com = np.full(40, 0.8)
+    flags, metrics = check(foot, com, support_rules())
+    assert flags == [] and metrics["longest_flight_duration"] == 0
+    time = np.arange(13) / 30
+    jump = 0.5 * 9.81 * time * (time[-1] - time)
+    foot[9:22] = jump
+    com[9:22] += jump
+    flags, metrics = check(foot, com, support_rules())
+    assert flags == []
+    assert 0 < metrics["longest_flight_duration"] < 0.6
+
+
+def test_ground_support_rejects_stairs_hover_and_truncated_flight():
+    check = MODULE["check_ground_support"]
+    foot = np.r_[np.zeros(30), np.full(240, 0.3), np.zeros(30)]
+    flags, metrics = check(foot, np.full(len(foot), 0.8), support_rules())
+    assert "prolonged_flight" in flags
+    assert metrics["longest_flight_duration"] == 8
+    foot = np.r_[np.zeros(5), np.full(12, 0.2), np.zeros(5)]
+    flags, _ = check(foot, np.full(len(foot), 0.8), support_rules())
+    assert "non_ballistic_flight" in flags
+    foot = np.r_[np.full(8, 0.2), np.zeros(5)]
+    flags, _ = check(foot, np.full(len(foot), 0.8), support_rules())
+    assert "unbounded_flight" in flags
+
+
+def test_ground_support_rejects_foot_penetration():
+    flags, _ = MODULE["check_ground_support"](np.full(30, -0.01), np.full(30, 0.8), support_rules())
+    assert "foot_ground_penetration" in flags
+
+
+def test_ground_checker_uses_collision_sole_and_detects_elevated_pose():
+    import mujoco
+    from readable_mimic.robot import get_robot
+
+    robot = get_robot("g1")
+    spec = mujoco.MjSpec.from_file(str(ROOT / "data/g1_description/g1_29dof.xml"))
+    spec.worldbody.add_geom(name="screen_ground", type=mujoco.mjtGeom.mjGEOM_PLANE, size=[0, 0, 0.1])
+    model = spec.compile()
+    checker = MODULE["GroundContactChecker"](
+        model, robot, ["left_ankle_roll_link", "right_ankle_roll_link"], support_rules()
+    )
+    values = np.zeros((30, 36))
+    values[:, 2] = 0.8
+    values[:, 6] = 1
+    values[:, 7:] = robot.default_joint_pos_list()
+    _, metrics = checker.check(values)
+    values[:, 2] -= metrics["min_foot_height"]
+    flags, _ = checker.check(values)
+    assert flags == []
+    values[:, 2] += 0.2
+    flags, metrics = checker.check(values)
+    assert "prolonged_flight" in flags
+    assert metrics["min_foot_height"] == pytest.approx(0.2)
+
+
+@pytest.mark.skipif(
+    not (ROOT / "data/amass/candidates/CMU__13__13_37_stageii.csv").exists(),
+    reason="Licensed local CMU regression clip not available",
+)
+def test_reported_cmu_stairs_cannot_pass_flat_ground_gate():
+    import mujoco
+    from readable_mimic.robot import get_robot
+
+    robot = get_robot("g1")
+    spec = mujoco.MjSpec.from_file(str(ROOT / "data/g1_description/g1_29dof.xml"))
+    spec.worldbody.add_geom(name="screen_ground", type=mujoco.mjtGeom.mjGEOM_PLANE, size=[0, 0, 0.1])
+    checker = MODULE["GroundContactChecker"](
+        spec.compile(), robot, ["left_ankle_roll_link", "right_ankle_roll_link"], support_rules()
+    )
+    values = np.loadtxt(ROOT / "data/amass/candidates/CMU__13__13_37_stageii.csv", delimiter=",")
+    flags, metrics = checker.check(values)
+    assert "prolonged_flight" in flags
+    assert metrics["longest_flight_duration"] > 8
+    assert metrics["max_foot_height"] > 0.5
