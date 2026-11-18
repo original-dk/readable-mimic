@@ -230,11 +230,27 @@ def main(argv=None):
         genesis_settings=config.genesis,
     )
     render_spec = mujoco.MjSpec.from_file(robot.mjcf_path)
+    render_spec.add_texture(
+        name="render_checker",
+        type=mujoco.mjtTexture.mjTEXTURE_2D,
+        builtin=mujoco.mjtBuiltin.mjBUILTIN_CHECKER,
+        rgb1=[0.2, 0.3, 0.4],
+        rgb2=[0.1, 0.2, 0.3],
+        width=300,
+        height=300,
+    )
+    ground_material = render_spec.add_material(
+        name="render_ground_material",
+        texuniform=True,
+        texrepeat=[4, 4],
+        reflectance=0.2,
+    )
+    ground_material.textures[mujoco.mjtTextureRole.mjTEXROLE_RGB] = "render_checker"
     render_spec.worldbody.add_geom(
         name="render_ground",
         type=mujoco.mjtGeom.mjGEOM_PLANE,
         size=[0, 0, 0.1],
-        rgba=[0.8, 0.8, 0.8, 1],
+        material="render_ground_material",
     )
     render_spec.worldbody.add_light(pos=[0, -3, 5], dir=[0, 0, -1])
     model = render_spec.compile()
