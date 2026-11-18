@@ -25,7 +25,7 @@ def play(motion_path, mjcf_path, fps=30.0, loop=False, headless=False):
     qpos[:, 3:7] /= quaternion_norm
 
     spec = mujoco.MjSpec.from_file(str(mjcf_path))
-    spec.worldbody.add_geom(type=mujoco.mjtGeom.mjGEOM_PLANE, size=[0, 0, 0.1], rgba=[0.3, 0.35, 0.4, 1])
+    spec.worldbody.add_geom(type=mujoco.mjtGeom.mjGEOM_PLANE, size=[0, 0, 0.1])
     spec.worldbody.add_light(pos=[0, -3, 5], dir=[0, 0, -1])
     model = spec.compile()
     if model.nq != 36 or model.jnt_type[0] != mujoco.mjtJoint.mjJNT_FREE:
@@ -67,7 +67,7 @@ def play(motion_path, mjcf_path, fps=30.0, loop=False, headless=False):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--motion", required=True, help="Path to one G1 motion CSV")
+    parser.add_argument("--motion",  default=ROOT / "data/100style_g1/WalkingStickLeft_SR.csv")
     parser.add_argument("--mjcf", type=Path, default=ROOT / "data/g1_description/g1_29dof.xml")
     parser.add_argument("--fps", type=float, default=30)
     parser.add_argument("--loop", action="store_true")
