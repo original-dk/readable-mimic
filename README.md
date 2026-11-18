@@ -202,7 +202,27 @@ UV_PROJECT_ENVIRONMENT=.venv-mujoco uv run --extra mujoco \
 视频生成不等待实时；此命令是可视化 rollout，不是完整动作的标准评测分数。
 Linux 无 DISPLAY 时使用离屏渲染；MuJoCo 可显式设置 `MUJOCO_GL=egl`，Genesis 原生相机使用其离屏后端。
 
-## 7. 验证
+## 7. 独立 ONNX sim2sim
+
+独立部署代码位于 `src/readable_mimic/deployment/`，详见该目录的 README。
+播放器只用 NumPy、ONNX Runtime 和原生 MuJoCo，不调用训练 Env，不导入 Torch。
+
+```bash
+UV_PROJECT_ENVIRONMENT=.venv-deploy uv sync --extra deploy --locked
+UV_PROJECT_ENVIRONMENT=.venv-deploy uv run --extra deploy \
+  python -m readable_mimic.deployment.export_onnx \
+  --checkpoint runs/main/last.pt --config runs/main/config.json --output exports/policy.onnx
+UV_PROJECT_ENVIRONMENT=.venv-deploy uv run --extra deploy \
+  python -m readable_mimic.deployment.play_mujoco \
+  --model exports/policy.onnx --motions "walk1_subject1|dance1_subject1" --duration 30 --ghost-base follow
+```
+
+导出 ONNX、JSON 控制配置和 NPZ 参考动作三个配套文件；默认使用 EMA，标准化与 reference skip 包含在 ONNX 中。
+MJCF/meshes 仍需保留，迁移后可用 --mjcf 指定资产路径。播放默认打开 viewer，服务器使用 --headless。
+可编辑导出的 JSON 中 friction、kp_scale、kd_scale 测试参数偏差；不把这些物理参数输入 Actor。
+这是独立部署测试，不替换已有 evaluate 的原生视频路径。
+
+## 8. 验证
 
 ```bash
 UV_PROJECT_ENVIRONMENT=.venv-genesis uv run --extra genesis pytest -q

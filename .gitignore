@@ -8,3 +8,5 @@ runs/
 .idea/
 .venv-*/
 videos/
+
+exports/

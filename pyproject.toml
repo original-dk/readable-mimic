@@ -12,6 +12,11 @@ dependencies = ["torch==2.9.0", "numpy", "mujoco==3.11.0", "imageio[ffmpeg]>=2.3
 [project.optional-dependencies]
 mujoco = ["mjlab==1.6.0", "mjviser==0.0.16", "warp-lang==1.16.0"]
 genesis = ["genesis-world==1.4.5"]
+deploy = [
+    "onnx>=1.17",
+    "onnxruntime>=1.20",
+    "onnxscript>=0.3",
+]
 
 [tool.uv]
 conflicts = [[{ extra = "mujoco" }, { extra = "genesis" }]]
