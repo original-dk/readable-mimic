@@ -138,7 +138,7 @@ UV_PROJECT_ENVIRONMENT=.venv-retarget uv run --extra retarget \
 ```
 
 **CMU 与其他 AMASS 子集只使用同一个 `convert_amass.py`。** `retarget_amass.json` 的 `datasets`
-限定处理范围，当前保留 CMU、SOMA、Transitions、SFU、PosePrior；其他已下载原始库仍可留存，
+限定处理范围，当前保留 CMU、CNRS、HDM05、SOMA、Transitions、SFU、PosePrior；其他已下载原始库仍可留存，
 不会因此自动参与转换。已放弃的 ACCAD、BMLmovi、BMLrub、DFaust、EKUT、HumanEva、
 Eyes_Japan_Dataset、KIT、MoSh 已删除并排除，勿用空列表重新导入。
 转换读取 `*_stageii.npz` 的身体形状与前 22 个关节，不计算手指、表情或软组织；按真实帧率插值为 30 Hz。
