@@ -89,3 +89,5 @@ NumPy obs/command 与训练实现有数值对照；测试包含 EMA、标准化�
 ghost 不修改物理模型，以及独立子进程不导入 Torch/训练 Env 的实际 MuJoCo 步进。
 另使用真实 G1 29DoF 模型完成过 headless 100 次控制/400 次物理步 smoke test。
 该 smoke test 使用生成的测试权重和参考姿态，不代表用户训练 checkpoint 的跟踪质量已经验证。
+
+播放耗时：每 250 个控制步及片段末尾输出 input_ms、onnx_ms、physics_ms、ghost_ms、display_ms 和 RTF，数值为窗口内平均每控制步毫秒数。RTF≈1 为实时，低于 1 为慢于实时；headless 不主动等待，因此可以大于 1。可用 --ghost-base off 对照 ghost 开销。Ghost 只运行 mj_kinematics，正常步进后也不额外求解完整动力学；控制周期的等待包含 history/reset 开销。

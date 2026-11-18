@@ -97,7 +97,7 @@ class Ghost:
         mujoco.mju_mat2Quat(quaternion, np.asarray(rotation, dtype=np.float64).reshape(9))
         self.data.qpos[self.base_qpos_indices] = np.concatenate((position, quaternion))
         self.data.qpos[self.joint_qpos_indices] = motion["joint_pos"][frame]
-        mujoco.mj_forward(self.model, self.data)
+        mujoco.mj_kinematics(self.model, self.data)
         mujoco.mjv_updateScene(
             self.model,
             self.data,
@@ -209,19 +209,26 @@ def play(
             start, end = int(motion["clip_start"][index]), int(motion["clip_end"][index])
             frame, history = reset(start, end)
             steps, resets = 0, 0
+            timing_start = time.perf_counter()
+            timing_steps = 0
+            costs = dict(input_ms=0.0, onnx_ms=0.0, physics_ms=0.0, ghost_ms=0.0, display_ms=0.0)
             for _ in range(math.ceil(duration / settings["control_dt"])):
                 wall_start = time.perf_counter()
                 inputs = {
                     "observation_history": history.astype(np.float32),
                     "command": command(motion, frame, end, settings["command_frames"]),
                 }
+                inference_start = time.perf_counter()
+                costs["input_ms"] += (inference_start - wall_start) * 1000
                 action = session.run(["action"], inputs)[0][0]
+                physics_start = time.perf_counter()
+                costs["onnx_ms"] += (physics_start - inference_start) * 1000
                 if not np.isfinite(action).all():
                     raise RuntimeError("ONNX Actor produced non-finite actions")
                 data.ctrl[:] = default_joint_pos + action_scale * action
                 for _ in range(settings["decimation"]):
                     mujoco.mj_step(model, data)
-                mujoco.mj_forward(model, data)
+                costs["physics_ms"] += (time.perf_counter() - physics_start) * 1000
                 if not np.isfinite(data.qpos).all() or not np.isfinite(data.qvel).all():
                     raise RuntimeError("MuJoCo produced a non-finite state")
                 frame += 1
@@ -239,17 +246,39 @@ def play(
                 if viewer is not None:
                     if not viewer.is_running():
                         return summaries
+                    display_start = time.perf_counter()
+                    mujoco.mj_kinematics(model, data)
                     with viewer.lock():
                         if ghost is not None:
+                            ghost_start = time.perf_counter()
                             ghost.update(viewer.user_scn, data.qpos, motion, frame, ghost_base == "follow")
+                            costs["ghost_ms"] += (time.perf_counter() - ghost_start) * 1000
                         viewer.cam.lookat[:] = base[:3]
                     viewer.sync()
-                    time.sleep(max(0, settings["control_dt"] - (time.perf_counter() - wall_start)))
+                    costs["display_ms"] += (time.perf_counter() - display_start) * 1000
                 if done:
                     frame, history = reset(start, end)
                     resets += 1
                 else:
                     history = np.concatenate((history[:, 1:], observe(frame)[None, None]), axis=1)
+                if viewer is not None:
+                    time.sleep(max(0, settings["control_dt"] - (time.perf_counter() - wall_start)))
+                timing_steps += 1
+                if timing_steps == 250 or steps == math.ceil(duration / settings["control_dt"]):
+                    elapsed = time.perf_counter() - timing_start
+                    # display includes ghost work; subtract it to keep stage costs disjoint.
+                    costs["display_ms"] -= costs["ghost_ms"]
+                    report = {key: round(value / timing_steps, 3) for key, value in costs.items()}
+                    report.update(
+                        motion=name,
+                        simulated_seconds=round(steps * settings["control_dt"], 3),
+                        rtf=round(timing_steps * settings["control_dt"] / max(elapsed, 1e-9), 3),
+                    )
+                    print(json.dumps(report), flush=True)
+                    costs = dict.fromkeys(costs, 0.0)
+                    timing_steps = 0
+                    timing_start = time.perf_counter()
+
             summary = {
                 "motion": name,
                 "policy_steps": steps,
