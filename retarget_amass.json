@@ -685,8 +685,6 @@
   "datasets": [
     "CMU",
     "CNRS",
-    "EyesJapanDataset",
-    "Eyes_Japan_Dataset",
     "GRAB",
     "HDM05",
     "KIT",
