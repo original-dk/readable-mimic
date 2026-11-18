@@ -84,137 +84,110 @@ data/lafan1_g1/*.csv
 
 数据不存入 Git。LAFAN1 与机器人资产分别遵循其原许可证，见第三方声明。
 
-### 100STYLE → G1 训练数据
+### 100STYLE / AMASS → G1 数据
 
-离线重定向使用独立 uv 环境，CPU 即可；训练/评估环境无需安装重定向依赖。
+两个数据集各用一个目录，训练输入与中间结果分开：
+
+```text
+data/
+  100style/
+    raw/                 # BVH、Frame_Cuts.csv、archives/100STYLE.zip
+    candidates/          # 30 Hz G1 CSV 与逐动作 JSON
+    cache/               # reports/、旧实验和落地修正备份
+    train/               # 通过统一筛选的 CSV，只有 CSV
+  amass/
+    raw/                 # 各子集 NPZ、archives/、download_manifest.json
+    candidates/          # 全部子集共用的 G1 候选输出
+    cache/               # reports/、中间缓存
+    train/               # 通过同一套筛选的 CSV，只有 CSV
+```
+
+`raw`、候选和许可证数据不提交 Git。机器人和授权 SMPL-X 模型仍作为共享资源保存在
+`data/g1_description/`、`data/body_models/smplx/`。旧试验集中在 `100style/cache/legacy/`；
+旧 AMASS 修复前候选已删除，不能作为训练输入。
+
+离线重定向使用独立 uv 环境，CPU 即可：
 
 ```bash
 UV_PROJECT_ENVIRONMENT=.venv-retarget uv sync --extra retarget --locked
+```
+
+100STYLE 的下载、官方帧裁剪、BVH 轴向与 IK 配置在 `retarget_100style.json`：
+
+```bash
 UV_PROJECT_ENVIRONMENT=.venv-retarget uv run --extra retarget python tools/download_100style.py
 UV_PROJECT_ENVIRONMENT=.venv-retarget uv run --extra retarget \
   python -m readable_mimic.retargeting.convert_100style --config retarget_100style.json
 ```
 
-下载器获取并校验官方原始 BVH 压缩包（约 1.5 GB）和 `Frame_Cuts.csv`，解压到 `data/100style_bvh`。
-已有数据可直接设置 `retarget_100style.json` 中的 `input_dir` 和 `frame_cuts`，跳过下载。
-机器人模型仍使用前面的 `data/g1_description/g1_29dof.xml`。
-完整数据包含 100 个风格、810 条片段；源数据和转换结果均不提交 Git。
+官方数据为 100 种风格、810 条片段。BVH 按每个关节声明的旋转顺序读取，厘米转米、Y-up 转 Z-up，
+按 `[START, STOP)` 裁剪并重采样为 30 Hz，不镜像、不改变播放速度。
+源脚趾高度和垂直速度用于识别支撑；支撑帧最低足底碰撞面校正到地面下 0.1 mm，
+腾空段插值补偿，保留跳跃。此修正不保证双脚锁定、防滑或动力学稳定。
+旧结果可运行 `tools/reground_100style.py --config retarget_100style.json`，备份保存在
+`100style/cache/before_grounding/`。
 
-重定向的路径、风格筛选、动作类型筛选、进程数、比例和 IK 权重统一在 `retarget_100style.json`。
-`styles: []`、`movements: []` 表示全部；例如 `styles: ["Aeroplane", "Angry"]`、
-`movements: ["FW", "FR"]`。`workers` 控制 CPU 并行数，默认 6。
-所有路径相对此配置文件解析。训练读取的 CSV 固定为 30 Hz。
-做子集实验时同时设置新的 `output_dir`；筛选只控制本次转换，不会删除目录中已有的其他 CSV。
-
-流程为：按官方标注裁剪首尾 → BVH FK/坐标转换 → 两阶段 Mink IK → 支撑阶段足底高度校正 → CSV。
-BVH 的通道旋转顺序逐关节读取；厘米转换为米，Y-up 转为 Z-up；不镜像、不人为改变播放速度。
-IK 的身体对应关系与初始权重参考 GMR，手臂坐标偏移和比例按本项目的 G1 模型调整；不需要安装完整 GMR。
-裁剪范围按零起点 `[START, STOP)` 解释，60 Hz 输入每隔一帧求解得到 30 Hz。
-根据源动作脚趾高度和垂直速度识别支撑阶段；支撑帧的最低足底碰撞面校正到地面下 0.1 mm，以形成接触。
-腾空段用 PCHIP 插值高度补偿，保留跳跃；阈值统一放在 grounding 配置中。接触识别为启发式，极端风格仍需检查。
-已有旧 CSV 可执行 `UV_PROJECT_ENVIRONMENT=.venv-retarget uv run --extra retarget python tools/reground_100style.py --config retarget_100style.json`，无需重跑 IK。
-原始 CSV 和元数据会备份到输出目录同级的 `100style_g1_before_grounding`；此命令只修改基座高度。
-已更新本地全部 810 条数据，原有格式、四元数、关节限位及训练 FK 检查通过。
-步行、展臂步行、双脚跳和左右单脚跳的代表片段，支撑帧均检测到足底—地面接触，跳跃保留无接触腾空帧。
-该修正保证支撑帧的最低足底贴地，不等价于双脚锁定、防滑或动力学稳定性验证。
-
-输出到 `data/100style_g1/*.csv`：每行 `base_pos_w[3], base_quat_xyzw[4], joint_pos[29]`，
-无表头，米/弧度，关节顺序复用 `G1_JOINT_NAMES`，与 LAFAN1 训练数据格式一致。
-每条轨迹旁的 JSON 保存来源、裁剪区间、帧数、关节顺序、最大关节速度和校验值。
-汇总及失败详情在 `conversion_report.json`；有失败时命令以非零状态退出。
-相同源数据、模型和转换设置会复用已经校验的输出；改变 IK 设置时请使用新的 `output_dir`。
-
-训练时将实验配置的 `motion_dir` 改为 `data/100style_g1`，并设置单独的 `log_dir`，
-然后使用前述 Genesis 或 MuJoCo 训练命令；训练代码会照常重采样到 50 Hz 并计算 FK。
-这里完成的是运动学重定向；极端风格可能触及关节限位或需要筛选，并不保证 PD 跟踪和动力学可行性。
-
-本地全量验证：100 个风格、810 条片段、2,028,184 帧（30 Hz），转换失败为 0。
-所有 CSV 通过 36 列格式、有限值、校验值、四元数和关节限位检查；
-飞机、举手、屈膝、普通步态和双脚跳共 5 类片段通过现有训练读取器与 FK。
-重复执行已验证 810 条全部复用。详情保存在输出目录的 `validation_report.json`。
-少数片段的关节速度较高（例如 `LimpLeft_BR` 约 53.5 rad/s），尚未进行动力学可行性筛选。
-
-数据遵循 [100STYLE 的 CC BY 4.0](https://www.ianxmason.com/100style/)，
-GMR 对应关系遵循 MIT，引用和许可证见 `THIRD_PARTY_NOTICES.md`。
-
-### 直接查看 CSV 动作（运动学播放）
+AMASS 需要本人获得各子集与 SMPL-X 模型授权。只使用 **SMPL-X N**，不混入 G、SMPL+H 或 Render。
+从官网下载的完整压缩包统一放入 `data/amass/raw/archives/`：
 
 ```bash
 UV_PROJECT_ENVIRONMENT=.venv-retarget uv run --extra retarget \
-  python tools/play_motion.py \
-  --motion data/100style_g1/Aeroplane_FW.csv --loop
-```
-
-直接把 CSV 姿态写入 MuJoCo `data.qpos`，调用 `mj_forward` 后显示；不运行策略、PD 或 `mj_step`。
-CSV 的基座四元数是 `xyzw`，赋值前转成 MuJoCo 的 `wxyz` 并归一化。
-关节列按项目 G1 MJCF 的顺序使用。默认 30 fps，也适用于现有 LAFAN1 CSV。
-`--loop` 循环播放，省略则播放一遍；`--fps` 指定源帧率，`--mjcf` 指定模型。
-`--headless` 不创建窗口、不等待墙钟时间，用于快速检查数据。关窗或 Ctrl+C 可退出。
-该工具只需要 NumPy 和原生 MuJoCo，也可在已有的 Genesis、MuJoCo 或 deploy uv 环境运行。
-
-### AMASS / SMPL-X neutral → G1 候选动作
-
-在 AMASS 官网下载 **SMPL-X N**，不要混入 SMPL-X G、SMPL+H 或 Render。
-下载需要本人已获得的账号和各子集授权；工具不保存账号、密码或浏览器凭据。
-身体模型使用授权下载的 `SMPLX_NEUTRAL.npz`，放在 `data/body_models/smplx/`。
-模型和数据均不随 Git 分发。
-
-```bash
-UV_PROJECT_ENVIRONMENT=.venv-retarget uv sync --extra retarget --locked
-UV_PROJECT_ENVIRONMENT=.venv-retarget uv run --extra retarget \
-  python tools/prepare_amass.py --config retarget_amass.json --archives /path/to/downloads
+  python tools/prepare_amass.py --config retarget_amass.json --archives data/amass/raw/archives
 UV_PROJECT_ENVIRONMENT=.venv-retarget uv run --extra retarget \
   python -m readable_mimic.retargeting.convert_amass --config retarget_amass.json
-UV_PROJECT_ENVIRONMENT=.venv-retarget uv run --extra retarget \
-  python tools/screen_amass.py --config retarget_amass.json
 ```
 
-Windows 的压缩包目录可以传 `--archives D:/Downloads`。只处理下载完整的 `.tar.bz2`，
-不会读取 `.crdownload`；解压检查路径边界，并把压缩包 SHA256 和状态记入 `data/amass/download_manifest.json`。
-原始压缩包留在下载目录，不额外复制一整份。已有文件按清单续跑，新完成的下载可再次执行上述命令。
+**CMU 与其他 AMASS 子集只使用同一个 `convert_amass.py`。** `retarget_amass.json` 的 `datasets`
+限定处理范围，当前保留 CMU、SOMA、Transitions、SFU、PosePrior；其他已下载原始库仍可留存，
+不会因此自动参与转换。已放弃的 ACCAD、BMLmovi、BMLrub、DFaust、EKUT、HumanEva、
+Eyes_Japan_Dataset、KIT、MoSh 已删除并排除，勿用空列表重新导入。
+转换读取 `*_stageii.npz` 的身体形状与前 22 个关节，不计算手指、表情或软组织；按真实帧率插值为 30 Hz。
+AMASS IK 对齐 GMR 的身高缩放、初始姿态、离线限位、足尖坐标系及迭代停止条件，
+仅在离线模型副本添加足尖任务帧，训练机器人 XML 和限位不变。
+CMU `01_01`、`05_06` 的完整轨迹在相同人体输入、落地修正前与原版 GMR 数值一致（误差约 1e-11 度）。
+人体 FK 与官方 SMPL-X 的位置误差实测约 1.74e-7 m；这些是运动学一致性证据，不是动态跟踪保证。
 
-配置统一放在 `retarget_amass.json`；`datasets` 同时限定解压和转换的子集（空列表表示全部）。
-当前已排除并删除 ACCAD、BMLmovi、BMLrub、DFaust、EKUT、HumanEva、Eyes_Japan_Dataset、KIT、MoSh，不再导入这些子集。
+### 统一筛选并导出 train
 
-AMASS 的 IK 按 GMR 原版设置运行：身高缩放、单位基座四元数/零关节初始姿态、离线收紧限位、足尖目标坐标系与迭代停止条件。训练机器人的 XML 和限位不变；足底支撑修正仍只作用于输出的 base z。
-修复前候选保存在 `data/amass_g1_candidates_before_gmr_fix`，不要用于训练。
-对 CMU `01_01`（688 帧）与 `05_06`（222 帧），相同人体输入下、落地修正前的关节结果与原版 GMR 对照，均方根误差分别为 3.93e-13 度与 1.17e-11 度。这验证了转换一致性，不代表动态跟踪可行性。
+两类候选均为无表头、36 列、米/弧度的 CSV：
+`base_pos_w[3], base_quat_xyzw[4], joint_pos[29]`，关节顺序为项目的 `G1_JOINT_NAMES`。
+逐动作 JSON 保存 30 Hz、帧数、来源、关节顺序、落地修正及 CSV SHA256；报告不放进 train。
+相同源与配置会复用校验过的结果；改变 IK 或模型时使用新的候选目录，避免混用版本。
 
-筛选子集时填写解压后的顶层目录名称（部分官方目录使用 MPI_HDM05、MPI_mosh 等别名）。
-默认匹配 `*_stageii.npz`，排除 `neutral_stagei` 等辅助文件。
-读取人体形状及前 22 个身体关节，进行 FK；平移线性插值、关节旋转 SLERP，按真实源帧率重采样到 30 Hz。
-不计算手指、表情和软组织变形，也不需要在运行端生成完整人体网格。
-G1 使用项目原模型和共用的 Mink IK、支撑阶段贴地；足尖任务换算到项目实际存在的 ankle_roll_link。
-
-三个阶段独立保存：
-
-| 目录 | 内容 |
-|---|---|
-| data/amass | 原始 AMASS 参数及下载清单 |
-| data/amass_g1_candidates | 重定向候选 CSV、转换报告和 screening_report.json |
-| data/amass_g1_train | 人工复核及仿真跟踪验证后选入的训练动作 |
-
-**转换成功不等于动作适合 G1。** 初筛报告检查格式、四元数、关节限位和速度、基座高度与倾斜，
-抽样检查非足部地面接触，并提示可能依赖道具/地面支撑的动作名称及数据集。
-它只标记风险，所有动作仍是 `needs_review`，不会自动复制到训练目录；无标记也不代表动力学可行。
-筛选阈值和训练目录统一放在 `screening` 中，实际训练只指向复核后的目录。
-
-运动学预览：
+筛选和训练导出只使用 **一个工具 `tools/prepare_training_data.py`**，两类数据共享
+**同一个 `motion_filter.json`**，不会为 AMASS 放宽要求：
 
 ```bash
 UV_PROJECT_ENVIRONMENT=.venv-retarget uv run --extra retarget \
-  python tools/play_motion.py \
-  --motion data/amass_g1_candidates/CNRS__283__-01_L_1_stageii.csv --loop
+  python tools/prepare_training_data.py --config retarget_100style.json --export
+UV_PROJECT_ENVIRONMENT=.venv-retarget uv run --extra retarget \
+  python tools/prepare_training_data.py --config retarget_amass.json --export
 ```
 
-输出仍为无表头的 36 列、30 Hz CSV：`base_pos_w[3], base_quat_xyzw[4], joint_pos[29]`。
-文件名前缀保留子集与受试者路径，避免不同受试者同名动作相互覆盖。
-来源、身体模型、配置、源码和 CSV 校验值记录在报告中；重复转换会校验后复用已有结果。
-修改 IK 或身体模型时使用新候选输出目录，避免混用不同版本。
+检查列数、有限值、四元数、30 Hz、帧数与校验值、关节顺序、限位和速度、基座高度和倾角，
+每 5 帧检查非足部地面穿透；可能依赖道具或其他支撑的名称也会被标记。
+只有全部检查通过的动作复制到 train，其他候选保留供复核，原因见各自
+`cache/reports/screening_report.json`。省略 `--export` 只生成报告。
+自动筛选不证明无抖动、无自碰撞或策略能稳定跟踪，实际训练前仍应预览并评估。
+手动测试后不满意的动作，把不带扩展名的完整文件名加入 `motion_filter.json` 的
+`excluded_motions`，再执行导出；同一规则会阻止它再次进入 train。
+`cache/reports/training_export.json` 记录导出校验值；后续筛选只清理此前工具导出的旧文件，
+遇到手工修改的训练文件会报错保留。导出临时文件放 cache，train 只有最终 CSV。
 
-历史初始验证使用 HumanEva 28 条、15,264 帧，14,396 个识别出的支撑帧均有足底—地面接触；该子集现已按实测结果删除，这些历史验证不代表动作可用于训练。
-人体 FK 与官方 SMPL-X 的实测最大关节位置差约 `1.74e-7 m`；训练读取和 G1 FK 已验证。
-这些结果只证明格式、运动学和接触检查通过，尚未证明策略能稳定跟踪。
+训练配置的 `motion_dir` 指向 `data/100style/train` 或 `data/amass/train`；加载器照常重采样至 50 Hz 并做 FK。
+不要把 raw、candidates 或 cache 指定为正式训练目录。
+
+### 直接查看 CSV 动作
+
+```bash
+UV_PROJECT_ENVIRONMENT=.venv-retarget uv run --extra retarget \
+  python tools/play_motion.py --motion data/100style/candidates/Aeroplane_FW.csv --loop
+```
+
+直接赋值 MuJoCo `data.qpos` 并调用 `mj_forward`；不运行策略、PD 或物理步进。
+CSV 四元数 `xyzw` 在播放时转换为 MuJoCo 的 `wxyz`。默认 30 fps，`--headless` 可快速检查加载，
+关窗或 Ctrl+C 退出；`--loop` 循环播放，`--fps` 和 `--mjcf` 可指定帧率和模型。
+100STYLE 遵循 CC BY 4.0，GMR 遵循 MIT，引用与许可见 `THIRD_PARTY_NOTICES.md`。
 
 ## 3. 训练配置与启动
 

@@ -11,7 +11,7 @@ ROOT = Path(__file__).parents[1]
 
 
 def test_screening_reports_speed_and_tilt_without_approving():
-    check = runpy.run_path(str(ROOT / "tools/screen_amass.py"))["check_values"]
+    check = runpy.run_path(str(ROOT / "tools/prepare_training_data.py"))["check_values"]
     settings = dict(
         quaternion_tolerance=1e-5,
         joint_limit_tolerance=1e-4,

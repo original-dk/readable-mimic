@@ -78,7 +78,7 @@ def play(motion_path, mjcf_path, fps=30.0, loop=False, headless=False):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--motion", default=ROOT / "data/100style_g1/WalkingStickLeft_SR.csv")
+    parser.add_argument("--motion", default=ROOT / "data/100style/candidates/WalkingStickLeft_SR.csv")
     parser.add_argument("--mjcf", type=Path, default=ROOT / "data/g1_description/g1_29dof.xml")
     parser.add_argument("--fps", type=float, default=30)
     parser.add_argument("--loop", action="store_true")

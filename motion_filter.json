@@ -1,0 +1,29 @@
+{
+  "sample_stride": 5,
+  "quaternion_tolerance": 1e-05,
+  "joint_limit_tolerance": 0.0001,
+  "velocity_limit_multiplier": 1,
+  "min_base_height": 0.4,
+  "max_base_tilt_degrees": 50,
+  "unsupported_contact_penetration": 0.003,
+  "review_keywords": [
+    "sit",
+    "sitting",
+    "chair",
+    "crawl",
+    "lie",
+    "lying",
+    "roll",
+    "cartwheel",
+    "climb",
+    "pickup",
+    "lift",
+    "carry",
+    "object"
+  ],
+  "context_review_datasets": [
+    "GRAB",
+    "MOYO"
+  ],
+  "excluded_motions": []
+}

@@ -36,7 +36,7 @@ def prepare_data(config_path):
     settings = json.loads(config_path.read_text(encoding="utf-8"))
     input_dir = (config_path.parent / settings["input_dir"]).resolve()
     cuts_path = (config_path.parent / settings["frame_cuts"]).resolve()
-    archive_path = cuts_path.parent / "100STYLE.zip"
+    archive_path = cuts_path.parent / "archives/100STYLE.zip"
     download(ARCHIVE_URL, archive_path)
     with archive_path.open("rb") as file:
         checksum = hashlib.file_digest(file, "md5").hexdigest()

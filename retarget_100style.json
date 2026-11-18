@@ -1,9 +1,9 @@
 {
   "robot": "g1",
   "mjcf_path": "data/g1_description/g1_29dof.xml",
-  "input_dir": "data/100style_bvh",
-  "output_dir": "data/100style_g1",
-  "frame_cuts": "data/100style_source/Frame_Cuts.csv",
+  "input_dir": "data/100style/raw/bvh",
+  "output_dir": "data/100style/candidates",
+  "frame_cuts": "data/100style/raw/Frame_Cuts.csv",
   "styles": [],
   "movements": [],
   "output_frame_rate": 30,

@@ -1,8 +1,8 @@
 {
   "robot": "g1",
   "mjcf_path": "data/g1_description/g1_29dof.xml",
-  "input_dir": "data/amass",
-  "output_dir": "data/amass_g1_candidates",
+  "input_dir": "data/amass/raw",
+  "output_dir": "data/amass/candidates",
   "output_frame_rate": 30,
   "workers": 8,
   "foot_bodies": [
@@ -683,40 +683,14 @@
   },
   "motion_glob": "*_stageii.npz",
   "datasets": [
-    "PosePrior",
-    "SFU"
+    "CMU",
+    "SOMA",
+    "Transitions",
+    "SFU",
+    "PosePrior"
   ],
   "body_model_type": "smplx",
   "body_models": {
     "neutral": "data/body_models/smplx/SMPLX_NEUTRAL.npz"
-  },
-  "screening": {
-    "training_dir": "data/amass_g1_train",
-    "sample_stride": 5,
-    "quaternion_tolerance": 1e-05,
-    "joint_limit_tolerance": 0.0001,
-    "velocity_limit_multiplier": 1.0,
-    "min_base_height": 0.4,
-    "max_base_tilt_degrees": 50,
-    "unsupported_contact_penetration": 0.003,
-    "review_keywords": [
-      "sit",
-      "sitting",
-      "chair",
-      "crawl",
-      "lie",
-      "lying",
-      "roll",
-      "cartwheel",
-      "climb",
-      "pickup",
-      "lift",
-      "carry",
-      "object"
-    ],
-    "context_review_datasets": [
-      "GRAB",
-      "MOYO"
-    ]
   }
 }

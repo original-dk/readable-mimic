@@ -26,8 +26,8 @@ for key in ["input_dir", "output_dir", "frame_cuts", "mjcf_path"]:
 source_files = {path.stem: path for path in Path(settings["input_dir"]).rglob("*.bvh")}
 model = mujoco.MjModel.from_xml_path(settings["mjcf_path"])
 directory = Path(settings["output_dir"])
-backup = directory.with_name(directory.name + "_before_grounding")
-backup.mkdir(exist_ok=True)
+backup = directory.parent / "cache/before_grounding"
+backup.mkdir(parents=True, exist_ok=True)
 files = sorted(directory.glob("*.csv"))
 if not files:
     raise ValueError("No CSV files found")
