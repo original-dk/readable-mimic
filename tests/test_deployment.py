@@ -111,7 +111,16 @@ def test_export_onnx_and_play_without_training_imports(tiny_trainer, tmp_path, m
     script = """
 import sys
 from readable_mimic.deployment.play_mujoco import play
+import numpy as np
+reads = {}
+original_getitem = np.lib.npyio.NpzFile.__getitem__
+def tracked_read(archive, name):
+    reads[name] = reads.get(name, 0) + 1
+    return original_getitem(archive, name)
+np.lib.npyio.NpzFile.__getitem__ = tracked_read
 summaries = play(sys.argv[1], duration=0.1, headless=True)
+assert reads and all(count == 1 for count in reads.values()), reads
+np.lib.npyio.NpzFile.__getitem__ = original_getitem
 assert summaries[0]['policy_steps'] == 5
 assert summaries[0]['physics_steps'] == 20
 assert summaries[0]['work_ms'] >= 0

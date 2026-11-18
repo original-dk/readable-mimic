@@ -65,8 +65,11 @@ def play(
     model_path, motions="all", duration=30.0, seed=0, headless=False, ghost_base="follow", mjcf_path=None
 ):
     path = Path(model_path).resolve()
+    print(f"Loading deployment bundle: {path}", flush=True)
     settings = json.loads(path.with_suffix(".json").read_text(encoding="utf-8"))
-    motion = np.load(path.parent / settings["motion_file"], allow_pickle=False)
+    print("Loading motion reference into memory...", flush=True)
+    with np.load(path.parent / settings["motion_file"], allow_pickle=False) as archive:
+        motion = {name: archive[name] for name in archive.files}
     names = motion["names"].tolist()
     requested = names if motions == "all" else [Path(name.strip()).stem for name in motions.split("|")]
     unknown = set(requested) - set(names)
@@ -76,10 +79,12 @@ def play(
         raise ValueError("duration must be finite and positive")
     if settings["format_version"] != 1:
         raise ValueError("Unsupported deployment bundle version")
+    print("Loading native MuJoCo model...", flush=True)
     model = create_model(settings, Path(mjcf_path) if mjcf_path else path.parent / settings["mjcf_path"])
     data = mujoco.MjData(model)
     options = ort.SessionOptions()
     options.intra_op_num_threads = 1
+    print("Loading ONNX Runtime session...", flush=True)
     session = ort.InferenceSession(str(path), sess_options=options, providers=["CPUExecutionProvider"])
     joint_qpos_indices = np.array([model.joint(name).qposadr[0] for name in settings["joint_names"]])
     joint_dof_indices = np.array([model.joint(name).dofadr[0] for name in settings["joint_names"]])
@@ -135,6 +140,10 @@ def play(
         from mujoco import viewer as mujoco_viewer
 
         viewer_context = mujoco_viewer.launch_passive(model, data)
+    print(
+        f"Ready: {len(names)} motions, physics_dt={model.opt.timestep}, control_dt={settings['control_dt']}",
+        flush=True,
+    )
     summaries = []
     with viewer_context as viewer:
         ghost = (
@@ -145,6 +154,7 @@ def play(
         for name in requested:
             index = names.index(name)
             start, end = (int(motion["clip_start"][index]), int(motion["clip_end"][index]))
+            print(f"Playing {name}: {duration:g}s", flush=True)
             frame, history = reset(start, end)
             steps, resets = (0, 0)
             playback_start = time.perf_counter()
@@ -215,7 +225,6 @@ def play(
             }
             summaries.append(summary)
             print(json.dumps(summary), flush=True)
-    motion.close()
     return summaries
 
 
