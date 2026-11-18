@@ -214,7 +214,7 @@ UV_PROJECT_ENVIRONMENT=.venv-deploy uv run --extra deploy \
   --checkpoint runs/main/last.pt --config runs/main/config.json --output exports/policy.onnx
 UV_PROJECT_ENVIRONMENT=.venv-deploy uv run --extra deploy \
   python -m readable_mimic.deployment.play_mujoco \
-  --model exports/policy.onnx --motions "walk1_subject1|dance1_subject1" --duration 30 --ghost-base follow
+  --model exports/policy.onnx --motions "walk1_subject1|dance1_subject1" --duration 30
 ```
 
 导出 ONNX、JSON 控制配置和 NPZ 参考动作三个配套文件；默认使用 EMA，标准化与 reference skip 包含在 ONNX 中。

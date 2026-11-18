@@ -10,7 +10,7 @@ def yaw_matrix(rotation):
     return np.array([[cosine, -sine, 0], [sine, cosine, 0], [0, 0, 1]], dtype=np.float32)
 
 
-def observation(
+def compute_observation(
     base_rot_mat_w, base_ang_vel, joint_pos, joint_vel, last_action, ref_base_rot_mat_w, default_joint_pos
 ):
     return np.concatenate(
@@ -25,7 +25,7 @@ def observation(
     ).astype(np.float32)
 
 
-def command(motion, frame, end_frame, command_frames):
+def compute_command(motion, frame, end_frame, command_frames):
     future = np.minimum(frame + np.arange(1, command_frames + 1), end_frame)
     world_to_heading = yaw_matrix(motion["base_rot_mat_w"][frame]).T
     return (

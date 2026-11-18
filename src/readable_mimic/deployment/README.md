@@ -49,13 +49,13 @@ UV_PROJECT_ENVIRONMENT=.venv-deploy uv run --extra deploy \
   python -m readable_mimic.deployment.play_mujoco \
   --model exports/policy.onnx \
   --motions "walk1_subject1|dance1_subject1" \
-  --duration 30 --ghost-base follow
+  --duration 30
 ```
 
 默认打开原生 MuJoCo passive viewer，尽量按 50 Hz 墙钟速度播放。
 `--duration` 是每条轨迹的模拟秒数；`--motions all` 使用所有导出的轨迹。
 随机起点由 `--seed` 控制；片段结束或达到高度/倾斜终止条件后，在同一片段重新起步，清空 last_action/history。
-`--ghost-base follow/reference/off` 控制参考 ghost；ghost 为 user scene 几何，不参与碰撞。
+播放器仅显示受控机器人，相机自动跟随。关闭窗口或按 Ctrl+C 可结束播放；退出时清零 ctrl 并关闭 viewer。
 此命令是交互播放，不导出 MP4；原生视频导出仍使用 readable_mimic.evaluate。
 
 无显示窗口或自动测试时：
@@ -86,12 +86,25 @@ headless 不创建 viewer 或 GL 场景，不等待墙钟时间，每条轨迹�
 ## 验证边界
 
 NumPy obs/command 与训练实现有数值对照；测试包含 EMA、标准化、ONNX 输出、PD/armature、
-ghost 不修改物理模型，以及独立子进程不导入 Torch/训练 Env 的实际 MuJoCo 步进。
+正常结束、关窗和 Ctrl+C 时释放 viewer，以及独立子进程不导入 Torch/训练 Env 的实际 MuJoCo 步进。
 另使用真实 G1 29DoF 模型完成过 headless 100 次控制/400 次物理步 smoke test。
 该 smoke test 使用生成的测试权重和参考姿态，不代表用户训练 checkpoint 的跟踪质量已经验证。
 
-主循环保留 ONNX、显式 PD、mj_step、history 和 viewer；不再包含分阶段计时。ghost 的几何更新独立放在 ghost.py。显式 PD 与训练中的隐式/近似隐式控制离散化不同，sim2sim 跟踪结果可能变化。
+主循环保留 ONNX、显式 PD、mj_step、history 和 viewer；不再包含分阶段计时。显式 PD 与训练中的隐式/近似隐式控制离散化不同，sim2sim 跟踪结果可能变化。
 
 播放等待按累计 deadline 对齐墙钟时间，减少逐步 sleep 的唤醒误差累积；物理步长不变。片段末尾仅打印一次 wall_seconds、work_ms（不含主动 sleep）和 rtf，方便区分计算超过 20 ms 的慢放与策略跟踪差异。
 
 播放器在启动时一次性解压 NPZ 为内存数组，控制循环不再读取压缩文件；启动会打印 reference、MuJoCo、ONNX session 的加载阶段。整套动作库首次载入需占用相应内存。
+
+控制主线：
+
+```text
+MuJoCo joint_pos/joint_vel/base_rot/base_ang_vel
+  → obs → observation_history
+参考轨迹 → command
+observation_history + command → policy (ONNX) → action
+action → target_joint_pos → tau (PD + 力矩裁剪) → data.ctrl → mj_step
+```
+
+`obs` 是当前帧观测，`observation_history` 按时间保存观测；`last_action` 是上一控制步动作。
+`action` 是策略输出，`target_joint_pos` 是关节目标角，`tau` 与 `data.ctrl` 均为关节力矩。

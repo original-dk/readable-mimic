@@ -1,7 +1,6 @@
 """Run an exported ONNX Actor in native single-robot MuJoCo, without training Env or Torch."""
 
 import argparse
-from contextlib import nullcontext
 import json
 import math
 from pathlib import Path
@@ -9,8 +8,7 @@ import time
 import mujoco
 import numpy as np
 import onnxruntime as ort
-from .inputs import command, observation, rotation_matrix
-from .ghost import Ghost
+from .inputs import compute_command, compute_observation, rotation_matrix
 
 
 def create_model(settings, model_path):
@@ -61,9 +59,7 @@ def create_model(settings, model_path):
     return model
 
 
-def play(
-    model_path, motions="all", duration=30.0, seed=0, headless=False, ghost_base="follow", mjcf_path=None
-):
+def play(model_path, motions="all", duration=30.0, seed=0, headless=False, mjcf_path=None):
     path = Path(model_path).resolve()
     print(f"Loading deployment bundle: {path}", flush=True)
     settings = json.loads(path.with_suffix(".json").read_text(encoding="utf-8"))
@@ -85,7 +81,7 @@ def play(
     options = ort.SessionOptions()
     options.intra_op_num_threads = 1
     print("Loading ONNX Runtime session...", flush=True)
-    session = ort.InferenceSession(str(path), sess_options=options, providers=["CPUExecutionProvider"])
+    policy = ort.InferenceSession(str(path), sess_options=options, providers=["CPUExecutionProvider"])
     joint_qpos_indices = np.array([model.joint(name).qposadr[0] for name in settings["joint_names"]])
     joint_dof_indices = np.array([model.joint(name).dofadr[0] for name in settings["joint_names"]])
     joint_ranges = np.array([model.joint(name).range for name in settings["joint_names"]])
@@ -105,9 +101,9 @@ def play(
     rng = np.random.default_rng(seed)
     last_action = np.zeros(len(joint_qpos_indices), dtype=np.float32)
 
-    def observe(frame):
+    def get_observation(frame):
         base = data.qpos[base_qpos_indices]
-        return observation(
+        return compute_observation(
             rotation_matrix(base[3:]),
             data.qvel[base_dof_start + 3 : base_dof_start + 6],
             data.qpos[joint_qpos_indices],
@@ -132,48 +128,52 @@ def play(
         data.ctrl[:] = 0
         last_action.fill(0)
         mujoco.mj_forward(model, data)
-        history = np.repeat(observe(frame)[None, None, :], settings["history_length"], axis=1)
-        return (frame, history)
+        observation_history = np.repeat(
+            get_observation(frame)[None, None, :], settings["history_length"], axis=1
+        )
+        return (frame, observation_history)
 
-    viewer_context = nullcontext(None)
-    if not headless:
-        from mujoco import viewer as mujoco_viewer
-
-        viewer_context = mujoco_viewer.launch_passive(model, data)
-    print(
-        f"Ready: {len(names)} motions, physics_dt={model.opt.timestep}, control_dt={settings['control_dt']}",
-        flush=True,
-    )
     summaries = []
-    with viewer_context as viewer:
-        ghost = (
-            Ghost(model, base_qpos_indices, joint_qpos_indices)
-            if viewer is not None and ghost_base != "off"
-            else None
+    viewer = None
+    try:
+        if not headless:
+            from mujoco import viewer as mujoco_viewer
+
+            viewer = mujoco_viewer.launch_passive(model, data)
+            with viewer.lock():
+                viewer.cam.type = mujoco.mjtCamera.mjCAMERA_TRACKING
+                viewer.cam.trackbodyid = int(model.jnt_bodyid[free_joint[0]])
+                viewer.cam.distance = 3.0
+                viewer.cam.azimuth = 135.0
+                viewer.cam.elevation = -15.0
+        print(
+            f"Ready: {len(names)} motions, physics_dt={model.opt.timestep}, control_dt={settings['control_dt']}",
+            flush=True,
         )
         for name in requested:
             index = names.index(name)
             start, end = (int(motion["clip_start"][index]), int(motion["clip_end"][index]))
             print(f"Playing {name}: {duration:g}s", flush=True)
-            frame, history = reset(start, end)
+            frame, observation_history = reset(start, end)
             steps, resets = (0, 0)
             playback_start = time.perf_counter()
             work_seconds = 0.0
             for _ in range(math.ceil(duration / settings["control_dt"])):
+                if viewer is not None and (not viewer.is_running()):
+                    return summaries
                 wall_start = time.perf_counter()
-                inputs = {
-                    "observation_history": history.astype(np.float32),
-                    "command": command(motion, frame, end, settings["command_frames"]),
+                policy_inputs = {
+                    "observation_history": observation_history.astype(np.float32),
+                    "command": compute_command(motion, frame, end, settings["command_frames"]),
                 }
-                action = session.run(["action"], inputs)[0][0]
+                action = policy.run(["action"], policy_inputs)[0][0]
                 if not np.isfinite(action).all():
                     raise RuntimeError("ONNX Actor produced non-finite actions")
                 target_joint_pos = default_joint_pos + action_scale * action
                 for _ in range(settings["decimation"]):
-                    tau = (
-                        kp * (target_joint_pos - data.qpos[joint_qpos_indices])
-                        - kd * data.qvel[joint_dof_indices]
-                    )
+                    joint_pos = data.qpos[joint_qpos_indices]
+                    joint_vel = data.qvel[joint_dof_indices]
+                    tau = kp * (target_joint_pos - joint_pos) - kd * joint_vel
                     tau = np.clip(tau, -force_limit, force_limit)
                     data.ctrl[:] = tau
                     mujoco.mj_step(model, data)
@@ -192,20 +192,15 @@ def play(
                     > settings["termination_tilt_threshold"]
                 )
                 if viewer is not None:
-                    if not viewer.is_running():
-                        return summaries
                     mujoco.mj_kinematics(model, data)
-                    with viewer.lock():
-                        if ghost is not None:
-                            ghost.update(viewer.user_scn, data.qpos, motion, frame, ghost_base == "follow")
-                        viewer.cam.lookat[:] = base[:3]
-                    viewer.sync()
+                    viewer.sync(state_only=True)
                 if done:
-                    frame, history = reset(start, end)
+                    frame, observation_history = reset(start, end)
                     resets += 1
                 else:
-                    history[:, :-1] = history[:, 1:]
-                    history[:, -1] = observe(frame)
+                    observation_history[:, :-1] = observation_history[:, 1:]
+                    obs = get_observation(frame)
+                    observation_history[:, -1] = obs
                 work_seconds += time.perf_counter() - wall_start
                 if viewer is not None:
                     deadline = playback_start + steps * settings["control_dt"]
@@ -221,10 +216,15 @@ def play(
                 "simulated_seconds": steps * settings["control_dt"],
                 "wall_seconds": round(wall_seconds, 3),
                 "work_ms": round(work_seconds * 1000 / max(steps, 1), 3),
-                "rtf": round(steps * settings["control_dt"] / max(wall_seconds, 1e-9), 3),
+                "rtf": round(steps * settings["control_dt"] / max(wall_seconds, 1e-09), 3),
             }
             summaries.append(summary)
             print(json.dumps(summary), flush=True)
+    finally:
+        data.ctrl[:] = 0
+        if viewer is not None:
+            viewer.close()
+        del policy
     return summaries
 
 
@@ -235,10 +235,14 @@ def main():
     parser.add_argument("--duration", type=float, default=30)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--headless", action="store_true")
-    parser.add_argument("--ghost-base", choices=("follow", "reference", "off"), default="follow")
     parser.add_argument("--mjcf", help="Override the bundle MJCF path after moving assets")
     args = parser.parse_args()
-    play(args.model, args.motions, args.duration, args.seed, args.headless, args.ghost_base, args.mjcf)
+    try:
+        play(args.model, args.motions, args.duration, args.seed, args.headless, args.mjcf)
+    except KeyboardInterrupt:
+        print("\nPlayback interrupted.", flush=True)
+    else:
+        print("Playback finished.", flush=True)
 
 
 if __name__ == "__main__":

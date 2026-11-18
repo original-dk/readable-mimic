@@ -28,7 +28,7 @@ def test_numpy_inputs_match_training(tiny_trainer):
             torch.tensor([frame]), trainer.command_frame_offsets, trainer.motion
         )
         np.testing.assert_allclose(
-            inputs.command(motion, frame, end, trainer.command_frames), expected.numpy(), atol=1e-6
+            inputs.compute_command(motion, frame, end, trainer.command_frames), expected.numpy(), atol=1e-6
         )
         state = list(trainer.motion.ref_state(torch.tensor([frame])))
         state[1] = so3_exp(torch.tensor([[0.2, -0.3, 0.6]]))
@@ -42,7 +42,7 @@ def test_numpy_inputs_match_training(tiny_trainer):
             trainer.default_joint_pos,
         )
         angular_velocity = (state[1].transpose(-1, -2) @ state[3][..., None])[0, :, 0].numpy()
-        actual = inputs.observation(
+        actual = inputs.compute_observation(
             state[1][0].numpy(),
             angular_velocity,
             state[4][0].numpy(),
@@ -57,7 +57,7 @@ def test_numpy_inputs_match_training(tiny_trainer):
 def test_export_onnx_and_play_without_training_imports(tiny_trainer, tmp_path, monkeypatch):
     import onnxruntime as ort
     from readable_mimic.deployment import export_onnx
-    from readable_mimic.deployment.play_mujoco import create_model, Ghost
+    from readable_mimic.deployment.play_mujoco import create_model
     import mujoco
 
     trainer = tiny_trainer
@@ -84,13 +84,6 @@ def test_export_onnx_and_play_without_training_imports(tiny_trainer, tmp_path, m
     settings = json.loads(model_path.with_suffix(".json").read_text())
     assert settings["actor_weights"] == "ema"
     model = create_model(settings, robot.mjcf_path)
-    ghost = Ghost(model, np.arange(7), np.arange(7, 9))
-    scene = mujoco.MjvScene(model, maxgeom=64)
-    qpos_before = model.qpos0.copy()
-    with np.load(model_path.with_suffix(".motion.npz")) as motion:
-        ghost.update(scene, model.qpos0, motion, 12, True)
-    assert scene.ngeom > 0
-    np.testing.assert_array_equal(model.qpos0, qpos_before)
     np.testing.assert_allclose(model.dof_armature[6:], 0.01)
     np.testing.assert_allclose(model.actuator_gainprm[:, 0], 1)
     np.testing.assert_allclose(model.actuator_biasprm, 0)
@@ -143,10 +136,22 @@ class Viewer:
     def __exit__(self, *args): pass
     def is_running(self): return True
     def lock(self): return nullcontext()
-    def sync(self): clock.now += workload
-viewer.launch_passive = lambda model, data: Viewer()
+    def close(self):
+        self.closed = True
+        assert not self.data.ctrl.any()
+    def sync(self, state_only=False):
+        assert state_only
+        clock.now += workload
+instances = []
+def launch(model, data):
+    instance = Viewer()
+    instance.data = data
+    instance.closed = False
+    instances.append(instance)
+    return instance
+viewer.launch_passive = launch
 playback.time = clock
-paced = play(sys.argv[1], duration=0.1, ghost_base='off')
+paced = play(sys.argv[1], duration=0.1)
 assert abs(paced[0]['wall_seconds'] - 0.103) < 1e-6, paced
 assert paced[0]['work_ms'] == 7.0
 clock = Clock()
@@ -155,15 +160,34 @@ def unexpected_sleep(seconds):
     raise AssertionError('Do not sleep when the control loop is behind schedule')
 clock.sleep = unexpected_sleep
 playback.time = clock
-busy = play(sys.argv[1], duration=0.1, ghost_base='off')
+busy = play(sys.argv[1], duration=0.1)
 assert abs(busy[0]['wall_seconds'] - 0.175) < 1e-6, busy
 assert busy[0]['work_ms'] == 35.0
+assert all(instance.closed for instance in instances)
+Viewer.is_running = lambda self: False
+assert play(sys.argv[1], duration=0.1) == []
+assert instances[-1].closed
+Viewer.is_running = lambda self: True
+def interrupt(self, state_only=False):
+    raise KeyboardInterrupt
+Viewer.sync = interrupt
+try:
+    play(sys.argv[1], duration=0.1)
+except KeyboardInterrupt:
+    pass
+else:
+    raise AssertionError('Expected interruption')
+assert instances[-1].closed
+playback.play = lambda *args: (_ for _ in ()).throw(KeyboardInterrupt())
+sys.argv = ['play_mujoco']
+playback.main()
 assert 'torch' not in sys.modules
 assert not any(name.startswith(('readable_mimic.env', 'mjlab', 'genesis')) for name in sys.modules)
 print('Pure ONNX Runtime + native MuJoCo passed')
 """
     result = subprocess.run(
         [sys.executable, "-c", script, str(model_path)],
+        timeout=60,
         capture_output=True,
         text=True,
         cwd=Path(__file__).parents[1],
