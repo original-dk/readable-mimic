@@ -7,10 +7,10 @@ import json
 from pathlib import Path
 import time
 
-import mujoco
 import numpy as np
 from .smpl import load_amass
-from .ik import MotionRetargeter, detect_support_frames, ground_motion
+from .ik import detect_support_frames, ground_motion
+from .amass_ik import AmassRetargeter, load_retarget_model
 from ..robot import get_robot
 
 
@@ -30,13 +30,12 @@ def convert_clip(source, settings):
         raise ValueError(f"Existing output differs; use a new output_dir: {output}")
     human = load_amass(source, settings)
     robot = get_robot(settings["robot"])
-    model = mujoco.MjModel.from_xml_path(settings["mjcf_path"])
-    retargeter = MotionRetargeter(model, robot, settings["ik"], human.body_names)
+    model = load_retarget_model(settings["mjcf_path"], settings["ik"])
+    with np.load(source, allow_pickle=False) as source_data:
+        human_height = 1.66 + 0.1 * source_data["betas"].reshape(-1)[0]
+    retargeter = AmassRetargeter(model, robot, settings["ik"], human.body_names, human_height)
     qpos = np.array(
-        [
-            retargeter.retarget(pos, rot, initialize=index == 0)
-            for index, (pos, rot) in enumerate(zip(human.body_pos_w, human.body_rot_mat_w))
-        ]
+        [retargeter.retarget(pos, rot) for pos, rot in zip(human.body_pos_w, human.body_rot_mat_w)]
     )
     support = detect_support_frames(human, settings["grounding"])
     correction = ground_motion(model, qpos, settings["foot_bodies"], settings["ground_clearance"], support)
@@ -81,7 +80,8 @@ def convert_dataset(config_path):
         raise ValueError("G1 CSV requires 30 Hz and workers must be positive")
     settings["code_sha256"] = hashlib.sha256(
         b"".join(
-            Path(__file__).with_name(name).read_bytes() for name in ["smpl.py", "ik.py", "convert_amass.py"]
+            Path(__file__).with_name(name).read_bytes()
+            for name in ["smpl.py", "ik.py", "amass_ik.py", "convert_amass.py"]
         )
     ).hexdigest()
     for path in [settings["mjcf_path"], *settings["body_models"].values()]:

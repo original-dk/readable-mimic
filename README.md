@@ -175,6 +175,11 @@ Windows 的压缩包目录可以传 `--archives D:/Downloads`。只处理下载�
 
 配置统一放在 `retarget_amass.json`；`datasets` 同时限定解压和转换的子集（空列表表示全部）。
 当前已排除并删除 ACCAD、BMLmovi、BMLrub、DFaust、EKUT、HumanEva，不再导入这些子集。
+
+AMASS 的 IK 按 GMR 原版设置运行：身高缩放、单位基座四元数/零关节初始姿态、离线收紧限位、足尖目标坐标系与迭代停止条件。训练机器人的 XML 和限位不变；足底支撑修正仍只作用于输出的 base z。
+修复前候选保存在 `data/amass_g1_candidates_before_gmr_fix`，不要用于训练。
+对 CMU `01_01`（688 帧）与 `05_06`（222 帧），相同人体输入下、落地修正前的关节结果与原版 GMR 对照，均方根误差分别为 3.93e-13 度与 1.17e-11 度。这验证了转换一致性，不代表动态跟踪可行性。
+
 筛选子集时填写解压后的顶层目录名称（部分官方目录使用 MPI_HDM05、MPI_mosh 等别名）。
 默认匹配 `*_stageii.npz`，排除 `neutral_stagei` 等辅助文件。
 读取人体形状及前 22 个身体关节，进行 FK；平移线性插值、关节旋转 SLERP，按真实源帧率重采样到 30 Hz。
