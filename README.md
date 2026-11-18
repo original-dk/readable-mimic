@@ -104,6 +104,7 @@ UV_PROJECT_ENVIRONMENT=.venv-retarget uv run --extra retarget \
 `styles: []`、`movements: []` 表示全部；例如 `styles: ["Aeroplane", "Angry"]`、
 `movements: ["FW", "FR"]`。`workers` 控制 CPU 并行数，默认 6。
 所有路径相对此配置文件解析。训练读取的 CSV 固定为 30 Hz。
+做子集实验时同时设置新的 `output_dir`；筛选只控制本次转换，不会删除目录中已有的其他 CSV。
 
 流程为：按官方标注裁剪首尾 → BVH FK/坐标转换 → 两阶段 Mink IK → 整段足底高度校正 → CSV。
 BVH 的通道旋转顺序逐关节读取；厘米转换为米，Y-up 转为 Z-up；不镜像、不人为改变播放速度。
@@ -120,6 +121,12 @@ IK 的身体对应关系与初始权重参考 GMR，手臂坐标偏移和比例�
 训练时将实验配置的 `motion_dir` 改为 `data/100style_g1`，并设置单独的 `log_dir`，
 然后使用前述 Genesis 或 MuJoCo 训练命令；训练代码会照常重采样到 50 Hz 并计算 FK。
 这里完成的是运动学重定向；极端风格可能触及关节限位或需要筛选，并不保证 PD 跟踪和动力学可行性。
+
+本地全量验证：100 个风格、810 条片段、2,028,184 帧（30 Hz），转换失败为 0。
+所有 CSV 通过 36 列格式、有限值、校验值、四元数和关节限位检查；
+飞机、举手、屈膝、普通步态和双脚跳共 5 类片段通过现有训练读取器与 FK。
+重复执行已验证 810 条全部复用。详情保存在输出目录的 `validation_report.json`。
+少数片段的关节速度较高（例如 `LimpLeft_BR` 约 53.5 rad/s），尚未进行动力学可行性筛选。
 
 数据遵循 [100STYLE 的 CC BY 4.0](https://www.ianxmason.com/100style/)，
 GMR 对应关系遵循 MIT，引用和许可证见 `THIRD_PARTY_NOTICES.md`。
