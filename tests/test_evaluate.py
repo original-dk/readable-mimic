@@ -72,7 +72,8 @@ def test_ghost_pose_and_scene_without_physics_changes(tiny_trainer):
         assert int(trainer.motion.clip_start[0]) <= int(frame) < int(trainer.motion.clip_end[0])
 
 
-def test_video_frame_count_and_clip_restart(tiny_trainer, monkeypatch, tmp_path):
+@pytest.mark.parametrize("native_rendering", [False, True])
+def test_video_frame_count_and_clip_restart(tiny_trainer, monkeypatch, tmp_path, native_rendering):
     from types import SimpleNamespace
     from readable_mimic.evaluate import render_motion
 
@@ -133,6 +134,19 @@ def test_video_frame_count_and_clip_restart(tiny_trainer, monkeypatch, tmp_path)
         def append_data(self, frame):
             self.frame_count += 1
 
+    class NativeRenderer:
+        frames = 0
+
+        def video_writer(self, output_path, fps):
+            assert fps == 50
+            return writer
+
+        def render(self, robot_state, ghost_pose):
+            self.frames += 1
+            assert robot_state[0].shape == ghost_pose[0].shape
+            return np.zeros((32, 32, 3), dtype=np.uint8)
+
+    native_renderer = NativeRenderer() if native_rendering else None
     writer = Writer()
     monkeypatch.setattr("readable_mimic.evaluate.imageio.get_writer", lambda *args, **kwargs: writer)
     env = PlaybackEnv()
@@ -145,13 +159,16 @@ def test_video_frame_count_and_clip_restart(tiny_trainer, monkeypatch, tmp_path)
         trainer.config.hist,
         trainer.config.goal_frames,
         0.06,
-        Renderer(),
-        mujoco.MjData(model),
-        ghost,
+        None if native_rendering else Renderer(),
+        None if native_rendering else mujoco.MjData(model),
+        None if native_rendering else ghost,
         True,
         tmp_path / "test.mp4",
+        native_renderer=native_renderer,
     )
     assert writer.frame_count == 3
+    if native_renderer is not None:
+        assert native_renderer.frames == 3
     assert env.resets == 4
 
 

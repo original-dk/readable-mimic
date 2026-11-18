@@ -32,7 +32,7 @@ mujoco 与 mujoco-core 共享 Python 包文件，卸载后者可能移除前者�
 Genesis 从同一个 MJCF 加载机器人，按名字映射 joint_pos/joint_vel/action；复用 G1 原 PD、armature 和力矩限制。
 xi 的 friction 和 center_of_mass_offset 会写入物理引擎，joint_pos_offset 仍在 reset 后采样并用于动作目标和 obs。
 FK、motion、Actor、Critic、WM、奖励、Buffer、编译开关和全部速度字段共用。物理引擎不同不等于 MuJoCo 数值复现。
-视频命令同样使用所选后端推进物理，再把统一 state 写入独立 MuJoCo 模型进行离屏渲染；MuJoCo 此时只负责画面。
+视频按 simulator 自动选择原生渲染：MuJoCo 使用 MuJoCo Renderer，Genesis 使用 Genesis 相机和默认地面/光照。Genesis 的独立显示场景只写入机器人与无碰撞 ghost 的姿态，不参与 rollout 物理；使用 PyAV 进程内编码 H.264。轨迹列表、时长、随机起点、ghost follow/reference 和 50 FPS 保持一致。
 Genesis 1.4.5 的安装、批量仿真及控制 API 以该版本源码为准，参考 https://genesis-world.readthedocs.io/。
 
 ## 模块
@@ -250,3 +250,5 @@ compile_actor 和 allow_tf32 都以当前配置为准，支持旧 checkpoint 续
 训练指标仅在日志输出轮次转为 Python 数值，RunningNorm 用设备端掩码保持 max_count 冻结规则，减少主机等待 GPU；不改变采样、奖励和更新次数。
 
 MuJoCo 后端固定 mjviser==0.0.16：0.0.17 引入 mujoco-core>=4.0.1，与本项目 mujoco==3.11.0 的包文件冲突。更新代码后对已有环境执行一次 UV_PROJECT_ENVIRONMENT=.venv-mujoco uv sync --extra mujoco --reinstall-package mujoco；后续可正常使用 uv run --extra mujoco，无需 --no-sync。
+
+Genesis 原生视频无需额外命令开关；使用 UV_PROJECT_ENVIRONMENT=.venv-genesis uv run --extra genesis python -m readable_mimic.evaluate ...，并在配置中选择 simulator=genesis。

@@ -148,6 +148,7 @@ def render_motion(
     ghost,
     follow_base,
     output_path,
+    native_renderer=None,
 ):
     command_frame_offsets = torch.arange(1, command_frames + 1, device=env.device)
     env_indices = torch.tensor([0], device=env.device)
@@ -158,28 +159,36 @@ def render_motion(
     camera.azimuth = 135.0
     camera.elevation = -15.0
     steps = math.ceil(duration / CONTROL_DT)
-    with imageio.get_writer(
-        str(output_path),
-        fps=round(1 / CONTROL_DT),
-        codec="libx264",
-        macro_block_size=1,
-        pixelformat="yuv420p",
-    ) as writer:
+    writer_context = (
+        imageio.get_writer(
+            str(output_path),
+            fps=round(1 / CONTROL_DT),
+            codec="libx264",
+            macro_block_size=1,
+            pixelformat="yuv420p",
+        )
+        if native_renderer is None
+        else native_renderer.video_writer(output_path, round(1 / CONTROL_DT))
+    )
+    with writer_context as writer:
         for step_index in range(steps):
             command = transforms.compute_command(env.motion_frame_index, command_frame_offsets, motion)
             transition = env.step(actor(history, command))
             robot_state = env.state()
             ref_state = motion.ref_state(env.motion_frame_index)
             ghost_pose = transforms.compute_ghost_pose(ref_state, robot_state, follow_base)
-            render_data.qpos[ghost.base_qpos_indices] = (
-                torch.cat((robot_state[0], mat_to_quat(robot_state[1])), -1)[0].cpu().numpy()
-            )
-            render_data.qpos[ghost.joint_qpos_indices] = robot_state[4][0].cpu().numpy()
-            mujoco.mj_forward(ghost.model, render_data)
-            camera.lookat[:] = robot_state[0][0].cpu().numpy()
-            renderer.update_scene(render_data, camera=camera)
-            ghost.update(renderer.scene, render_data.qpos, ghost_pose, append=True)
-            writer.append_data(renderer.render())
+            if native_renderer is not None:
+                writer.append_data(native_renderer.render(robot_state, ghost_pose))
+            else:
+                render_data.qpos[ghost.base_qpos_indices] = (
+                    torch.cat((robot_state[0], mat_to_quat(robot_state[1])), -1)[0].cpu().numpy()
+                )
+                render_data.qpos[ghost.joint_qpos_indices] = robot_state[4][0].cpu().numpy()
+                mujoco.mj_forward(ghost.model, render_data)
+                camera.lookat[:] = robot_state[0][0].cpu().numpy()
+                renderer.update_scene(render_data, camera=camera)
+                ghost.update(renderer.scene, render_data.qpos, ghost_pose, append=True)
+                writer.append_data(renderer.render())
             if bool(transition["done"][0]):
                 env.reset(env_indices, sample_start_frame(motion, clip_index))
                 history = transforms.compute_observation_history(env.observe(), history_length)
@@ -229,6 +238,36 @@ def main(argv=None):
         backend=config.simulator,
         genesis_settings=config.genesis,
     )
+    output_directory = Path(arguments.output_dir)
+    output_directory.mkdir(parents=True, exist_ok=True)
+
+    def export(renderer=None, render_data=None, ghost=None, native_renderer=None):
+        for clip_index in selected_indices:
+            output_path = output_directory / (motion.names[clip_index] + ".mp4")
+            render_motion(
+                env,
+                actor,
+                motion,
+                clip_index,
+                history_length,
+                command_frames,
+                arguments.duration,
+                renderer,
+                render_data,
+                ghost,
+                arguments.ghost_base == "follow",
+                output_path,
+                native_renderer=native_renderer,
+            )
+            print(f"Saved {output_path.resolve()}", flush=True)
+
+    if config.simulator == "genesis":
+        from .render_genesis import GenesisRenderer
+
+        with GenesisRenderer(robot) as native_renderer:
+            export(native_renderer=native_renderer)
+        return
+
     render_spec = mujoco.MjSpec.from_file(robot.mjcf_path)
     render_spec.add_texture(
         name="render_checker",
@@ -270,26 +309,8 @@ def main(argv=None):
         [model.joint(name).qposadr[0] for name in robot.joint_names],
         np.flatnonzero(np.isin(model.geom_bodyid, list(robot_body_indices))),
     )
-    output_directory = Path(arguments.output_dir)
-    output_directory.mkdir(parents=True, exist_ok=True)
     with mujoco.Renderer(model, height=720, width=960) as renderer:
-        for clip_index in selected_indices:
-            output_path = output_directory / (motion.names[clip_index] + ".mp4")
-            render_motion(
-                env,
-                actor,
-                motion,
-                clip_index,
-                history_length,
-                command_frames,
-                arguments.duration,
-                renderer,
-                render_data,
-                ghost,
-                arguments.ghost_base == "follow",
-                output_path,
-            )
-            print(f"Saved {output_path.resolve()}", flush=True)
+        export(renderer, render_data, ghost)
 
 
 if __name__ == "__main__":
