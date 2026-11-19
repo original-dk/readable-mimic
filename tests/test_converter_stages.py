@@ -42,7 +42,13 @@ def test_converter_does_not_change_ik_height(tmp_path, monkeypatch, kind):
             self.base_qpos_start = 0
             self.joint_qpos_indices = [int(model.joint(n).qposadr[0]) for n in robot.joint_names]
 
+        def initialize_base_pose(self, positions, rotations):
+            np.testing.assert_allclose(positions[0, 2], heights[0])
+            self.initialized = True
+
         def retarget(self, positions, rotations, initialize=False):
+            if kind == "amass":
+                assert self.initialized
             result = self.model.qpos0.copy()
             result[:3] = positions[0]
             result[self.joint_qpos_indices] = robot.default_joint_pos_list()

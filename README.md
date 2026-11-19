@@ -146,9 +146,12 @@ UV_PROJECT_ENVIRONMENT=.venv-retarget uv run --extra retarget \
 不会因此自动参与转换。已放弃的 ACCAD、BMLmovi、BMLrub、DFaust、EKUT、HumanEva、
 Eyes_Japan_Dataset、KIT、MoSh 已删除并排除，勿用空列表重新导入。
 转换读取 `*_stageii.npz` 的身体形状与前 22 个关节，不计算手指、表情或软组织；按真实帧率插值为 30 Hz。
-AMASS IK 对齐 GMR 的身高缩放、初始姿态、离线限位、足尖坐标系及迭代停止条件，
+AMASS IK 对齐 GMR 的身高缩放、关节零位种子、离线限位、足尖坐标系及迭代停止条件。
+**处理第一帧前，基座位置和朝向对齐到该帧的机器人目标，包含 SMPL→G1 旋转偏移**；
+固定世界零朝向在初始方向差较大时可能把肩肘 IK 推到反折局部解。
 仅在离线模型副本添加足尖任务帧，训练机器人 XML 和限位不变。
-CMU `01_01`、`05_06` 的完整轨迹在相同人体输入、落地修正前与原版 GMR 数值一致（误差约 1e-11 度）。
+过去 CMU `01_01`、`05_06` 与 GMR 默认固定初始化的数值一致性属于旧版本验证；
+当前比较原版算法时也需要使用同样的首帧初始化，不能要求与错误分支的旧轨迹逐值相同。
 人体 FK 与官方 SMPL-X 的位置误差实测约 1.74e-7 m；这些是运动学一致性证据，不是动态跟踪保证。
 
 ### 第一阶段统一 CSV 结果
@@ -175,6 +178,19 @@ LAFAN1 原有 `data/lafan1_g1` 的 40 条 CSV 已是同一布局，保持上游�
 100STYLE 利用经源文件、配置、模型指纹验证的早期备份，去除其精确记录的常量高度偏移恢复 IK 输出；
 与新转换器重新求解的三个样本最大差异为 1e-8（CSV 舍入精度）。AMASS 由新转换器完整重新求解。
 所有已放弃子集维持排除；尚未导入的 GRAB 等下载包不属于本批结果。
+
+### HDM05 首帧初始化修复复测
+
+回归样例为 `HDM05__tr__HDM_tr_01-01_01_120_stageii` 和
+`HDM05__mm__HDM_mm_08-01_01_120_stageii`。前者旧结果的左肩俯仰约 99.8% 帧贴限位，
+后者右肩/肘也进入反折分支。修正首帧基座初始化后，两条完整轨迹的肩部限位饱和比例均为零。
+测试增加了相同任务旋转至 0、145、−85 度世界朝向时关节解不变的检查，防止同类回归。
+
+HDM05 全部 215 条修复版原始候选在 `data/amass/cache/hdm05_fixed/candidates/`，
+再次经过 CSV 后处理的全部候选在 `data/amass/cache/hdm05_fixed/processed/candidates/`，
+筛选通过的测试 CSV 在 `processed/train/`。原候选和旧处理输出保留，路径不会自动指向修复版。
+`arm_tracking_comparison.json`、`initialization_regression.json` 保留完整对照数值。
+该修复在统一 AMASS 转换器中生效；旧 CSV 不会自动改变，其他库重转时应使用新的候选目录。
 
 ### 统一筛选并导出 train
 

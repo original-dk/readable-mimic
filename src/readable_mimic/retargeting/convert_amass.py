@@ -33,6 +33,7 @@ def convert_clip(source, settings):
     with np.load(source, allow_pickle=False) as source_data:
         human_height = 1.66 + 0.1 * source_data["betas"].reshape(-1)[0]
     retargeter = AmassRetargeter(model, robot, settings["ik"], human.body_names, human_height)
+    retargeter.initialize_base_pose(human.body_pos_w[0], human.body_rot_mat_w[0])
     qpos = np.array(
         [retargeter.retarget(pos, rot) for pos, rot in zip(human.body_pos_w, human.body_rot_mat_w)]
     )
@@ -57,6 +58,7 @@ def convert_clip(source, settings):
         joint_names=list(robot.joint_names),
         grounding_applied=False,
         processing_stage="retargeted",
+        initialization="first_frame_target_base_pose",
         max_joint_vel=float(np.abs(np.diff(joint_pos, axis=0)).max() * human.frame_rate),
         fingerprint=fingerprint,
         csv_sha256=hashlib.sha256(output.read_bytes()).hexdigest(),

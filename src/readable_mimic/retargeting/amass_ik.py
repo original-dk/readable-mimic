@@ -8,6 +8,7 @@ from copy import deepcopy
 import mink
 import mujoco
 import numpy as np
+from scipy.spatial.transform import Rotation
 
 from .ik import MotionRetargeter
 
@@ -41,6 +42,24 @@ class AmassRetargeter(MotionRetargeter):
         initial_qpos[:3] = settings["initial_base_pos_w"]
         initial_qpos[3:7] = [1, 0, 0, 0]
         self.configuration.update(initial_qpos)
+
+    def initialize_base_pose(self, body_pos_w, body_rot_mat_w):
+        """Align the initial floating base with the first frame's ROBOT target.
+
+        A fixed world heading can put the shoulder IK on a folded branch before
+        the base turns toward the motion. Include the SMPL-to-robot rotation offset.
+        """
+        _, index, entry, rotation_offset = next(
+            target for target in self.stages[0] if target[1] == self.human_root_index
+        )
+        rotation = body_rot_mat_w[index] @ rotation_offset
+        position = body_pos_w[index] * self.settings["base_position_scale"]
+        position += rotation @ np.asarray(entry["position_offset"])
+        qpos = self.configuration.data.qpos.copy()
+        start = self.base_qpos_start
+        qpos[start : start + 3] = position
+        qpos[start + 3 : start + 7] = Rotation.from_matrix(rotation).as_quat(scalar_first=True)
+        self.configuration.update(qpos)
 
     def retarget(self, body_pos_w, body_rot_mat_w):
         human_base_pos_w = body_pos_w[self.human_root_index]
