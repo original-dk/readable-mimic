@@ -497,3 +497,21 @@ CSV 筛选中的 `unsupported_support` 只针对近静止坐姿，不再直接�
 重跑原命令后，先前导出且未被手工修改的不合格 CSV 会从输出的 `train/` 移除；原始候选保留。
 基座倾角与短时腾空的抛物线拟合偏差只作为报告指标，不作为拒绝条件。
 仍拒绝超过允许时长的连续悬空、首尾无法核验的较长腾空、穿地、外部支撑依赖以及数据格式/关节限位等错误。
+
+### BONES-SEED G1
+
+从项目根目录运行。输入是解包后的 G1 CSV 目录，支持递归查找。
+
+```bash
+uv run --extra retarget python tools/prepare_boneseed.py --input-dir /path/to/g1/csv --output-dir data/boneseed
+```
+
+先试跑时加 `--pattern '*walk*.csv' --limit 5`，并使用单独的输出目录。只做格式转换时加
+`--convert-only`。`converted/` 是 30 Hz、无表头的 36 列 G1 CSV，`processed/train/`
+是通过共用平地筛选的训练 CSV。训练时把运动目录指向 `processed/train/`。
+`boneseed_conversion.csv` 记录名称拒绝原因，`processed/cache/reports/screening_report.json`
+记录几何筛选结果。仅转换或全部被名称拦截时只生成转换阶段输出。
+
+名称规则参考 [Uni-SuperMimic BONES-SEED 筛选](https://github.com/Motphys/Uni-SuperMimic/blob/main/src/unisupermimic/data/boneseed.py)，
+仅选用楼梯、外物支撑等相关词，配置在 `motion_filter.json` 的 `boneseed` 段。
+几何检查沿用本项目的持续悬空、落地和坐姿支撑规则。无标签楼梯的识别取决于这些几何条件。

@@ -57,5 +57,21 @@
       "right_hip_pitch_link",
       "right_knee_link"
     ]
-  ]
+  ],
+  "boneseed": {
+    "source_fps": 120,
+    "terrain_keywords": [
+      "stair",
+      "ladder",
+      "step_on",
+      "stepdown",
+      "step_down",
+      "on_box",
+      "box_jump",
+      "jump_off_50cm",
+      "chair",
+      "sitting",
+      "seat"
+    ]
+  }
 }
