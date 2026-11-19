@@ -484,3 +484,12 @@ WM/Critic 输入处归一化；Actor 使用 history 与 command。
 参考 BlinkMimic commit `d264658d6c9ce61fb52f9f0f8985a369f3ccc409`，保留 LICENSE 和第三方声明。
 未实现失败优先/probe reset、AMP、手工 CUDA Graph、fused Adam 或异步 checkpoint。
 更多超参数及算法边界见 `CONFIG_PARITY.md`。
+
+
+CSV 筛选同时检查脚底支撑区域：整机质心水平投影连续超出着地脚底投影的凸包超过
+`motion_filter.json` 的 `max_com_support_distance`（默认 0.05 米），且连续时间超过
+`max_com_support_duration`（默认 0.5 秒），标记 `unsupported_support`，不导出到 `train/`。
+腾空帧中断计时，继续使用原有腾空筛选；这属于几何启发式，会排除部分持续动态失衡的动作，
+不代表完整动力学验证。报告记录最大出界距离、最长连续时间和出界区间。
+规则在 `process_motion_csv.py` 的共用筛选阶段执行，已有平滑缓存也会重新筛选。
+重跑原处理命令后，先前导出且未被手工修改的不合格 CSV 会从输出的 `train/` 移除；原始候选保留。

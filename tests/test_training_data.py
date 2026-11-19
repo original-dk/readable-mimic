@@ -199,3 +199,43 @@ def test_metadata_flags_large_smoothing_changes_for_review(tmp_path):
     metadata["changes"]["max_joint_change_degrees"] = 29
     path.with_suffix(".json").write_text(json.dumps(metadata))
     assert MODULE["check_metadata"](path, values, ["joint"], 30) == []
+
+
+def test_support_distance_and_persistent_external_support():
+    square = np.array([[-0.1, -0.1], [0.1, -0.1], [0.1, 0.1], [-0.1, 0.1]])
+    distance = MODULE["support_distance"]
+    assert distance(square, np.array([0.0, 0.0])) == 0
+    assert distance(square, np.array([0.2, 0.1])) == pytest.approx(0.1)
+    assert distance(square, np.array([0.2, 0.2])) == pytest.approx(np.sqrt(0.02))
+    check = MODULE["check_support_distance"]
+    rules = support_rules()
+    # Brief excursions and flight must not be combined into a persistent interval.
+    for values in [
+        np.zeros(60),
+        np.r_[np.full(10, 0.1), np.zeros(10)],
+        np.r_[np.full(10, 0.1), np.nan, np.full(10, 0.1)],
+        np.full(60, np.nan),
+    ]:
+        assert check(values, rules)[0] == []
+    flags, metrics = check(np.full(60, 0.1), rules)
+    assert flags == ["unsupported_support"]
+    assert metrics["longest_com_outside_support_duration"] == 2
+
+
+@pytest.mark.skipif(
+    not (ROOT / "data/amass/train/train/CMU__111__111_11_stageii.csv").exists(),
+    reason="Licensed local seated motion unavailable",
+)
+def test_reported_seated_cmu_requires_external_support():
+    import mujoco
+    from readable_mimic.robot import get_robot
+
+    spec = mujoco.MjSpec.from_file(str(ROOT / "data/g1_description/g1_29dof.xml"))
+    spec.worldbody.add_geom(name="screen_ground", type=mujoco.mjtGeom.mjGEOM_PLANE, size=[0, 0, 0.1])
+    checker = MODULE["GroundContactChecker"](
+        spec.compile(), get_robot("g1"), ["left_ankle_roll_link", "right_ankle_roll_link"], support_rules()
+    )
+    values = np.loadtxt(ROOT / "data/amass/train/train/CMU__111__111_11_stageii.csv", delimiter=",")
+    flags, metrics = checker.check(values)
+    assert "unsupported_support" in flags
+    assert metrics["longest_com_outside_support_duration"] > 1

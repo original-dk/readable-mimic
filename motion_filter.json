@@ -41,5 +41,7 @@
     "clearance": -0.0001,
     "floor_quantile": 0.02,
     "max_floor_alignment": 0.05
-  }
+  },
+  "max_com_support_distance": 0.05,
+  "max_com_support_duration": 0.5
 }

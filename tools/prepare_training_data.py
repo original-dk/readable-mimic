@@ -4,12 +4,14 @@ import argparse
 from collections import Counter
 import hashlib
 import json
+import itertools
 from pathlib import Path
 import re
 import shutil
 
 import mujoco
 import numpy as np
+from scipy.spatial import ConvexHull
 from scipy.spatial.transform import Rotation
 from readable_mimic.robot import get_robot
 from readable_mimic.g1.g1_constants import motor_of
@@ -86,6 +88,41 @@ def check_ground_support(foot_height, com_height, settings, frame_rate=30):
     )
 
 
+def support_distance(points, center_of_mass):
+    """Horizontal distance to a conservative convex foot footprint (metres)."""
+    polygon = points[ConvexHull(points).vertices]
+    start = polygon
+    edge = np.roll(polygon, -1, axis=0) - start
+    offset = center_of_mass - start
+    cross = edge[:, 0] * offset[:, 1] - edge[:, 1] * offset[:, 0]
+    if np.all(cross >= -1e-12):
+        return 0.0
+    fraction = np.clip(np.einsum("ij,ij->i", offset, edge) / (edge**2).sum(axis=1), 0, 1)
+    return float(np.linalg.norm(offset - fraction[:, None] * edge, axis=1).min())
+
+
+def check_support_distance(distance, settings, frame_rate=30):
+    # Airborne frames are NaN: they interrupt support intervals and use the flight checks.
+    outside = distance > settings["max_com_support_distance"]
+    edges = np.diff(np.r_[False, outside, False].astype(int))
+    intervals = [
+        dict(
+            start_time=float(start / frame_rate),
+            end_time=float(stop / frame_rate),
+            duration=float((stop - start) / frame_rate),
+        )
+        for start, stop in zip(np.flatnonzero(edges == 1), np.flatnonzero(edges == -1))
+    ]
+    longest = max((item["duration"] for item in intervals), default=0.0)
+    finite = distance[np.isfinite(distance)]
+    flags = ["unsupported_support"] if longest > settings["max_com_support_duration"] else []
+    return flags, dict(
+        max_com_support_distance=float(finite.max()) if len(finite) else None,
+        longest_com_outside_support_duration=longest,
+        com_outside_support_intervals=intervals,
+    )
+
+
 class GroundContactChecker:
     """Cache robot geometry once; measure actual collision soles at every frame."""
 
@@ -113,10 +150,14 @@ class GroundContactChecker:
         if not np.all(self.sphere_mask | (types == mujoco.mjtGeom.mjGEOM_BOX)):
             raise ValueError("Expected sphere or box foot collision geometry")
         self.foot_sizes = model.geom_size[self.foot_indices]
+        self.box_corners = np.array(list(itertools.product([-1, 1], repeat=3)))
+        angles = np.arange(16) * (2 * np.pi / 16)
+        self.sphere_directions = np.column_stack([np.cos(angles), np.sin(angles)])
 
     def check(self, values):
         foot_height = np.empty(len(values))
         com_height = np.empty(len(values))
+        com_support_distance = np.full(len(values), np.nan)
         nonfoot_contact = False
         for index, frame in enumerate(values):
             self.data.qpos[:3] = frame[:3]
@@ -127,7 +168,22 @@ class GroundContactChecker:
             rotations = self.data.geom_xmat[self.foot_indices].reshape(-1, 3, 3)
             box_radius = np.einsum("ij,ij->i", np.abs(rotations[:, 2]), self.foot_sizes)
             radius = np.where(self.sphere_mask, self.foot_sizes[:, 0], box_radius)
-            foot_height[index] = np.min(self.data.geom_xpos[self.foot_indices, 2] - radius)
+            sole_height = self.data.geom_xpos[self.foot_indices, 2] - radius
+            foot_height[index] = np.min(sole_height)
+            support_points = []
+            for foot in np.flatnonzero(sole_height <= self.settings["foot_contact_height"]):
+                center = self.data.geom_xpos[self.foot_indices[foot]]
+                if self.sphere_mask[foot]:
+                    # Full projected sphere is deliberately larger than the actual contact patch.
+                    points = center[:2] + self.foot_sizes[foot, 0] * self.sphere_directions
+                else:
+                    corners = self.box_corners * self.foot_sizes[foot]
+                    points = (corners @ rotations[foot].T + center)[:, :2]
+                support_points.extend(points)
+            if support_points:
+                com_support_distance[index] = support_distance(
+                    np.asarray(support_points), self.data.subtree_com[self.base_body_id, :2]
+                )
             com_height[index] = self.data.subtree_com[self.base_body_id, 2]
             if not nonfoot_contact and index % self.settings["sample_stride"] == 0:
                 mujoco.mj_collision(self.model, self.data)
@@ -138,6 +194,9 @@ class GroundContactChecker:
                     for contact in self.data.contact
                 )
         flags, metrics = check_ground_support(foot_height, com_height, self.settings)
+        support_flags, support_metrics = check_support_distance(com_support_distance, self.settings)
+        flags += support_flags
+        metrics.update(support_metrics)
         if nonfoot_contact:
             flags.append("nonfoot_ground_contact")
         return flags, metrics
