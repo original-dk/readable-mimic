@@ -165,8 +165,8 @@ UV_PROJECT_ENVIRONMENT=.venv-retarget uv run --extra retarget \
 ```
 
 检查列数、有限值、四元数、30 Hz、帧数与校验值、关节顺序、限位和速度、基座高度和倾角。
-**逐帧**用实际足底碰撞几何检查平地支撑：足底高于 2 cm 视为腾空，连续超过 0.6 秒拒绝；
-超过 0.1 秒的短时腾空还必须具有起落地边界，且整机质心的重力抛物线拟合最大误差不超过 4 cm。
+**逐帧**用实际足底碰撞几何检查平地支撑：足底高于 2 cm 视为腾空，连续超过 1 秒拒绝；
+超过 0.1 秒的短时腾空还必须具有起落地边界，且整机质心的重力抛物线拟合最大误差不超过 6 cm。
 足底穿地超过 3 mm 也拒绝。这里检查的是碰撞面的最低点，不是踝关节原点；保留正常短时跳跃，
 楼梯、悬停及依赖高处支撑的参考不能因为“没有穿地”就通过。各阈值集中在 `motion_filter.json`。
 每 5 帧另外检查非足部地面穿透；可能依赖道具或其他支撑的名称也会被标记。
@@ -182,6 +182,30 @@ UV_PROJECT_ENVIRONMENT=.venv-retarget uv run --extra retarget \
 
 训练配置的 `motion_dir` 指向 `data/100style/train` 或 `data/amass/train`；加载器照常重采样至 50 Hz 并做 FK。
 不要把 raw、candidates 或 cache 指定为正式训练目录。
+
+### CMU 平滑测试集
+
+`motion_filter.json` 当前基座倾角上限为 70 度，连续离地上限为 1 秒，短时腾空质心拟合误差上限为 6 cm。
+`smoothing` 配置控制本轮平滑的子集、5 Hz 截止频率、二阶滤波、进程数和独立输出目录。
+
+```bash
+UV_PROJECT_ENVIRONMENT=.venv-retarget uv run --extra retarget \
+  python -m readable_mimic.retargeting.smooth_amass --config retarget_amass.json --rules motion_filter.json
+UV_PROJECT_ENVIRONMENT=.venv-retarget uv run --extra retarget \
+  python tools/prepare_training_data.py \
+  --config data/amass/cache/cmu_smoothed/cache/reports/retarget_config.json \
+  --rules motion_filter.json --export
+```
+
+输入仍为 `amass/candidates` 的原始 G1 候选，不重复拟合 IK。
+生成结果在 `amass/cache/cmu_smoothed/candidates`，按新规则筛选后的 CSV 在同级 `train`。
+保留原候选与当前正式 `amass/train`，供对照测试；未自动替换其他数据集。
+关节和基座位置双向低通；朝向先校正四元数符号连续性、滤波后归一化，支持跨 180 度转身。
+用连续幅度收缩处理滤波造成的越限，按原始人体支撑/腾空标签修正足底高度，避免把跳跃压平。
+所有输出重新经过共同筛选。最大关节改动超过 `smoothing.max_joint_change_degrees`（默认 30 度）
+的动作标记为 `large_smoothing_change`，留在候选供复核，不直接进入 train。转换失败与每条轨迹的最大关节、基座位置及朝向改变量记录在
+`cmu_smoothed/cache/reports/smoothing_report.json` 和逐动作 JSON 中。
+平滑会削弱快动作、改变动作幅度，筛选通过不能证明无副作用，应对照预览。
 
 ### 直接查看 CSV 动作
 

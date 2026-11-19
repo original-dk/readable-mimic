@@ -148,7 +148,7 @@ def test_ground_checker_uses_collision_sole_and_detects_elevated_pose():
     checker = MODULE["GroundContactChecker"](
         model, robot, ["left_ankle_roll_link", "right_ankle_roll_link"], support_rules()
     )
-    values = np.zeros((30, 36))
+    values = np.zeros((int(support_rules()["max_flight_duration"] * 30) + 5, 36))
     values[:, 2] = 0.8
     values[:, 6] = 1
     values[:, 7:] = robot.default_joint_pos_list()
@@ -181,3 +181,21 @@ def test_reported_cmu_stairs_cannot_pass_flat_ground_gate():
     assert "prolonged_flight" in flags
     assert metrics["longest_flight_duration"] > 8
     assert metrics["max_foot_height"] > 0.5
+
+
+def test_metadata_flags_large_smoothing_changes_for_review(tmp_path):
+    path = tmp_path / "motion.csv"
+    values = np.zeros((2, 36))
+    np.savetxt(path, values, delimiter=",")
+    metadata = dict(
+        frame_rate=30,
+        num_frames=2,
+        joint_names=["joint"],
+        csv_sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
+        changes=dict(max_joint_change_degrees=31),
+    )
+    path.with_suffix(".json").write_text(json.dumps(metadata))
+    assert MODULE["check_metadata"](path, values, ["joint"], 30) == ["large_smoothing_change"]
+    metadata["changes"]["max_joint_change_degrees"] = 29
+    path.with_suffix(".json").write_text(json.dumps(metadata))
+    assert MODULE["check_metadata"](path, values, ["joint"], 30) == []

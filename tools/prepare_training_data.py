@@ -143,7 +143,7 @@ class GroundContactChecker:
         return flags, metrics
 
 
-def check_metadata(path, values, joint_names):
+def check_metadata(path, values, joint_names, max_smoothing_change_degrees=None):
     metadata = json.loads(path.with_suffix(".json").read_text(encoding="utf-8"))
     valid = (
         metadata["frame_rate"] == 30
@@ -151,7 +151,13 @@ def check_metadata(path, values, joint_names):
         and metadata["joint_names"] == list(joint_names)
         and metadata["csv_sha256"] == hashlib.sha256(path.read_bytes()).hexdigest()
     )
-    return [] if valid else ["invalid_metadata"]
+    flags = [] if valid else ["invalid_metadata"]
+    if (
+        max_smoothing_change_degrees is not None
+        and metadata.get("changes", {}).get("max_joint_change_degrees", 0) > max_smoothing_change_degrees
+    ):
+        flags.append("large_smoothing_change")
+    return flags
 
 
 def export_training_data(directory, training_dir, results):
@@ -208,7 +214,9 @@ def screen(config_path, rules_path=None, export=False):
         try:
             values = np.loadtxt(path, delimiter=",", ndmin=2)
             flags, metrics = check_values(values, limits, velocity_limits, settings)
-            flags += check_metadata(path, values, robot.joint_names)
+            flags += check_metadata(
+                path, values, robot.joint_names, settings.get("smoothing", {}).get("max_joint_change_degrees")
+            )
         except (ValueError, OSError, KeyError) as error:
             results.append(
                 dict(name=path.stem, status="rejected", flags=["invalid_candidate"], error=str(error))
