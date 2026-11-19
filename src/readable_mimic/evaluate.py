@@ -30,6 +30,7 @@ def parse_args(argv=None):
     parser.add_argument("--checkpoint", "--ckpt", required=True)
     parser.add_argument("--output-dir", default="videos", help="One MP4 per selected trajectory.")
     parser.add_argument("--config", default="config.json")
+    parser.add_argument("--motion-dir", help="Override the reference motion directory in the config.")
     parser.add_argument("--motions", default="all", help="Exact clip names separated by | (quote the list).")
     parser.add_argument("--duration", type=float, default=30.0, help="Playback seconds per selected clip.")
     parser.add_argument(
@@ -211,7 +212,8 @@ def main(argv=None):
         get_robot(config.robot), domain_randomization=DomainRandomizationConfig(**config.domain_randomization)
     )
     kinematics = Kinematics(robot, config.device)
-    motion = ReferenceMotion.from_dir(config.motion_dir, robot, kinematics, config.device)
+    motion_dir = arguments.motion_dir if arguments.motion_dir is not None else config.motion_dir
+    motion = ReferenceMotion.from_dir(motion_dir, robot, kinematics, config.device)
     selected_indices = select_motion_indices(motion.names, arguments.motions)
     history_length, command_frames = (actor_config["hist"], actor_config["goal_frames"])
     actor = Actor(
