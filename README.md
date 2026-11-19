@@ -425,6 +425,21 @@ UV_PROJECT_ENVIRONMENT=.venv-mujoco uv run --extra mujoco \
 `--duration` 是每条视频的模拟秒数；`--motions all` 导出全部，列表中的 `|` 必须加引号。
 每条轨迹随机起点，摔倒或片段结束后在同一轨迹重新随机起步。
 `--ghost-base follow` 对齐机器人 xy/yaw，`reference` 保留原始世界轨迹。
+
+评估时可用 `--motion-dir` 覆盖配置里的动作目录。省略该参数时沿用配置中的 `motion_dir`。
+覆盖仅对本次评估生效，训练配置文件不会被改写。`--motions` 从评估使用的目录中按动作名匹配。
+
+例如，用 BONES-SEED 训练的 checkpoint 评估 LAFAN1 动作：
+
+```bash
+UV_PROJECT_ENVIRONMENT=.venv-genesis uv run --extra genesis \
+  python -m readable_mimic.evaluate \
+  --config runs/boneseed/config.json \
+  --checkpoint runs/boneseed/last.pt \
+  --motion-dir data/lafan1_g1 \
+  --motions "walk1_subject1|dance1_subject1" \
+  --duration 60 --ghost-base follow --output-dir videos/genesis/boneseed
+```
 评估关闭训练噪声和随机化：摩擦为 1.0，关节偏移和质心偏移为零。
 视频生成不等待实时；此命令是可视化 rollout，不是完整动作的标准评测分数。
 Linux 无 DISPLAY 时使用离屏渲染；MuJoCo 可显式设置 `MUJOCO_GL=egl`，Genesis 原生相机使用其离屏后端。
