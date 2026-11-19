@@ -183,29 +183,65 @@ UV_PROJECT_ENVIRONMENT=.venv-retarget uv run --extra retarget \
 训练配置的 `motion_dir` 指向 `data/100style/train` 或 `data/amass/train`；加载器照常重采样至 50 Hz 并做 FK。
 不要把 raw、candidates 或 cache 指定为正式训练目录。
 
-### CMU 平滑测试集
+### CSV → CSV 批量平滑与筛选（推荐入口）
 
-`motion_filter.json` 当前基座倾角上限为 70 度，连续离地上限为 1 秒，短时腾空质心拟合误差上限为 6 cm。
-`smoothing` 配置控制本轮平滑的子集、5 Hz 截止频率、二阶滤波、进程数和独立输出目录。
+只用原 CSV 即可，不要求输入同名 JSON、AMASS NPZ 或 SMPL-X 模型。
+输入固定为项目的 **30 Hz、36 列 G1 CSV**：`base_pos_w[3], base_quat_xyzw[4], joint_pos[29]`。
+仍需要项目的 G1 MJCF 来计算足底碰撞面、关节限位和质心。
+
+Linux：
 
 ```bash
-UV_PROJECT_ENVIRONMENT=.venv-retarget uv run --extra retarget \
-  python -m readable_mimic.retargeting.smooth_amass --config retarget_amass.json --rules motion_filter.json
-UV_PROJECT_ENVIRONMENT=.venv-retarget uv run --extra retarget \
-  python tools/prepare_training_data.py \
-  --config data/amass/cache/cmu_smoothed/cache/reports/retarget_config.json \
-  --rules motion_filter.json --export
+UV_PROJECT_ENVIRONMENT=.venv-retarget uv run --extra retarget python tools/process_motion_csv.py \
+  --input-dir data/amass/candidates \
+  --output-dir data/amass/cache/csv_processed \
+  --pattern "CMU__*.csv"
 ```
 
-输入仍为 `amass/candidates` 的原始 G1 候选，不重复拟合 IK。
-生成结果在 `amass/cache/cmu_smoothed/candidates`，按新规则筛选后的 CSV 在同级 `train`。
-保留原候选与当前正式 `amass/train`，供对照测试；未自动替换其他数据集。
-关节和基座位置双向低通；朝向先校正四元数符号连续性、滤波后归一化，支持跨 180 度转身。
-用连续幅度收缩处理滤波造成的越限，按原始人体支撑/腾空标签修正足底高度，避免把跳跃压平。
-所有输出重新经过共同筛选。最大关节改动超过 `smoothing.max_joint_change_degrees`（默认 30 度）
-的动作标记为 `large_smoothing_change`，留在候选供复核，不直接进入 train。转换失败与每条轨迹的最大关节、基座位置及朝向改变量记录在
-`cmu_smoothed/cache/reports/smoothing_report.json` 和逐动作 JSON 中。
-平滑会削弱快动作、改变动作幅度，筛选通过不能证明无副作用，应对照预览。
+Windows PowerShell：
+
+```powershell
+$env:UV_PROJECT_ENVIRONMENT=".venv-retarget"
+uv run --extra retarget python tools/process_motion_csv.py --input-dir data/amass/candidates --output-dir data/amass/cache/csv_processed --pattern "CMU__*.csv"
+```
+
+`--pattern "CMU__*.csv"` 只处理 CMU；省略 `--pattern` 处理输入目录中全部 CSV。
+也可将输入换成 `data/amass/train` 或 `data/100style/candidates`，并使用新的输出目录。
+选择范围和路径以命令参数为准；此入口不使用 `smoothing.datasets`、`smoothing.output_dir`。
+默认 `--config retarget_amass.json` 提供 G1 模型、足部名称和落地高度，
+`--rules motion_filter.json` 提供平滑参数和全部筛选阈值。
+
+流程：**原 CSV → 平滑 → 按原 CSV 的接地分段修正足底高度 → 共同筛选 → 新 CSV**。
+关节和基座位置采用二阶 5 Hz 双向零相位滤波；朝向先校正四元数符号连续性，滤波后归一化。
+滤波越限用连续幅度收缩处理。支撑帧由原 CSV 中实际足底碰撞面位于
+`[-max_foot_penetration, foot_contact_height]` 的区间确定；无支撑时保留轨迹交给筛选，
+不会把持续悬空或深度穿地的动作整体搬到地面。
+**此 CSV-only 分段不读取人体标签，与旧 NPZ 辅助平滑的输出不保证逐值一致。**
+
+当前共同限制是：基座倾角 70 度、连续离地 1 秒、质心重力轨迹拟合误差 6 cm；
+原有格式、四元数、限位、速度、最低基座高度和接地检查继续生效。
+最大关节改动超过 `smoothing.max_joint_change_degrees`（30 度）的平滑结果标记为
+`large_smoothing_change`，留在候选供复核，不直接进入 train。所有参数在 `motion_filter.json`。
+
+输出结构：
+
+```text
+data/amass/cache/csv_processed/
+  candidates/             # 全部处理成功的新 CSV 与元数据
+  train/                  # 筛选通过的新 CSV，只有 CSV
+  cache/reports/
+    processing_report.json # 来源、参数、处理失败、改变量
+    screening_report.json  # 每条通过/拒绝原因与异常时段
+    training_export.json   # train 文件校验值
+```
+
+脚本不改输入文件，拒绝输入与输出目录相同或相互嵌套；递归输入会把相对路径用 `__` 合成唯一文件名。
+相同输入和处理参数校验后复用缓存，并重新执行筛选。改变平滑参数或输入内容时使用新的输出目录；
+只调整筛选限制时可以复用原输出目录。处理失败时会记录错误、以非零状态退出，不更新 train。
+快动作仍可能被平滑削弱，请预览新 CSV；筛选通过不代表动力学可行。
+
+旧的 `data/amass/cache/cmu_smoothed` 是使用原始人体支撑标签生成的历史测试集，保留用于对照。
+新的 CSV-only 批处理使用独立输出目录，避免混用不同接地分段版本。
 
 ### 直接查看 CSV 动作
 
