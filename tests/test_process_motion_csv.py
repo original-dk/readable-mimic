@@ -38,6 +38,9 @@ def csv_fixture(tmp_path):
     wrist = robot.joint_names.index("left_wrist_yaw_joint")
     values[:, 7 + wrist] = 0.01 * np.sin(2 * np.pi * 10 * np.arange(len(values)) / 30)
     np.savetxt(source / "CMU__test__stand.csv", values, delimiter=",")
+    offset = values.copy()
+    offset[:, 2] += 0.03
+    np.savetxt(source / "CMU__test__offset.csv", offset, delimiter=",")
     hover = values.copy()
     hover[:, 2] += 0.3
     np.savetxt(source / "CMU__test__hover.csv", hover, delimiter=",")
@@ -48,7 +51,6 @@ def csv_fixture(tmp_path):
         robot="g1",
         mjcf_path=str(ROOT / "data/g1_description/g1_29dof.xml"),
         foot_bodies=["left_ankle_roll_link", "right_ankle_roll_link"],
-        ground_clearance=-0.0001,
         input_dir="does_not_exist",
         body_models={"neutral": "NO_SMPL_MODEL.npz"},
     )
@@ -87,8 +89,14 @@ def test_csv_only_pipeline_smooths_filters_preserves_original_and_reuses_cache(t
     output = tmp_path / "output"
     result = run_cli(source, output, config, rules)
     assert result.returncode == 0, result.stdout + result.stderr
-    assert sorted(p.name for p in (output / "train").iterdir()) == ["CMU__test__stand.csv"]
+    assert sorted(p.name for p in (output / "train").iterdir()) == [
+        "CMU__test__offset.csv",
+        "CMU__test__stand.csv",
+    ]
     report = json.loads((output / "cache/reports/screening_report.json").read_text())
+    offset_metadata = json.loads((output / "candidates/CMU__test__offset.json").read_text())
+    assert offset_metadata["grounding_applied"] is True
+    assert -0.031 < offset_metadata["ground_correction"]["floor_offset"] < -0.029
     hover = next(m for m in report["motions"] if "hover" in m["name"])
     assert "prolonged_flight" in hover["flags"]
     assert hover["metrics"]["min_foot_height"] > 0.2  # Not silently forced to the ground.

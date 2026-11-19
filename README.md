@@ -122,10 +122,20 @@ UV_PROJECT_ENVIRONMENT=.venv-retarget uv run --extra retarget \
 
 官方数据为 100 种风格、810 条片段。BVH 按每个关节声明的旋转顺序读取，厘米转米、Y-up 转 Z-up，
 按 `[START, STOP)` 裁剪并重采样为 30 Hz，不镜像、不改变播放速度。
-源脚趾高度和垂直速度用于识别支撑；支撑帧最低足底碰撞面校正到地面下 0.1 mm，
-腾空段插值补偿，保留跳跃。此修正不保证双脚锁定、防滑或动力学稳定。
-旧结果可运行 `tools/reground_100style.py --config retarget_100style.json`，备份保存在
-`100style/cache/before_grounding/`。
+转换器只执行重采样和 IK，保持 IK 的基座高度，不做足底修正或平滑。
+AMASS 转换器遵守同样的阶段划分；统一由 `tools/process_motion_csv.py` 做后处理。
+新转换元数据包含 `grounding_applied: false`、`processing_stage: retargeted`。
+**已有 `data/100style/candidates` 和 `data/amass/candidates` 是旧版已做接地修正的数据，
+本次代码迁移不会撤销它们的高度改动。** 若需要完全未修正的候选，请重新转换到新目录：
+
+```bash
+UV_PROJECT_ENVIRONMENT=.venv-retarget uv run --extra retarget \
+  python -m readable_mimic.retargeting.convert_amass --config retarget_amass.json \
+  --output-dir data/amass/cache/retarget_only/candidates
+```
+
+100STYLE 同理，使用 `convert_100style --output-dir data/100style/cache/retarget_only/candidates`。
+新旧版本指纹不同，不会把旧的已接地缓存误当成未修正候选；不自动覆盖旧数据。
 
 AMASS 需要本人获得各子集与 SMPL-X 模型授权。只使用 **SMPL-X N**，不混入 G、SMPL+H 或 Render。
 从官网下载的完整压缩包统一放入 `data/amass/raw/archives/`：
@@ -154,14 +164,16 @@ CMU `01_01`、`05_06` 的完整轨迹在相同人体输入、落地修正前与�
 逐动作 JSON 保存 30 Hz、帧数、来源、关节顺序、落地修正及 CSV SHA256；报告不放进 train。
 相同源与配置会复用校验过的结果；改变 IK 或模型时使用新的候选目录，避免混用版本。
 
-筛选和训练导出只使用 **一个工具 `tools/prepare_training_data.py`**，两类数据共享
+统一处理入口是 **`tools/process_motion_csv.py`**，内部复用 `tools/prepare_training_data.py` 的筛选与导出实现。两类数据共享
 **同一个 `motion_filter.json`**，不会为 AMASS 放宽要求：
 
 ```bash
 UV_PROJECT_ENVIRONMENT=.venv-retarget uv run --extra retarget \
-  python tools/prepare_training_data.py --config retarget_100style.json --export
+  python tools/process_motion_csv.py --input-dir data/100style/cache/retarget_only/candidates \
+  --output-dir data/100style/cache/csv_processed_v2 --config retarget_100style.json
 UV_PROJECT_ENVIRONMENT=.venv-retarget uv run --extra retarget \
-  python tools/prepare_training_data.py --config retarget_amass.json --export
+  python tools/process_motion_csv.py --input-dir data/amass/cache/retarget_only/candidates \
+  --output-dir data/amass/cache/csv_processed_v2 --config retarget_amass.json
 ```
 
 检查列数、有限值、四元数、30 Hz、帧数与校验值、关节顺序、限位和速度、基座高度和倾角。
@@ -173,14 +185,17 @@ UV_PROJECT_ENVIRONMENT=.venv-retarget uv run --extra retarget \
 报告记录悬空比例、最长悬空时长、足底高度、各腾空区间与拟合误差，以及筛选源码 SHA256。
 `CMU__13__13_37` 是本地回归样例：连续悬空约 8.77 秒，必须被拒绝，不通过名字黑名单绕过检测。
 只有全部检查通过的动作复制到 train，其他候选保留供复核，原因见各自
-`cache/reports/screening_report.json`。省略 `--export` 只生成报告。
+`cache/reports/screening_report.json`。单独复核已经后处理的候选时，可运行
+`tools/prepare_training_data.py --config <输出根目录>/cache/reports/filter_config.json --rules motion_filter.json`；
+加 `--export` 才更新 train。这个独立筛选命令不做平滑和接地，不能替代统一后处理入口。
 自动筛选不证明无抖动、无自碰撞或策略能稳定跟踪，实际训练前仍应预览并评估。
 手动测试后不满意的动作，把不带扩展名的完整文件名加入 `motion_filter.json` 的
 `excluded_motions`，再执行导出；同一规则会阻止它再次进入 train。
 `cache/reports/training_export.json` 记录导出校验值；后续筛选只清理此前工具导出的旧文件，
 遇到手工修改的训练文件会报错保留。导出临时文件放 cache，train 只有最终 CSV。
 
-训练配置的 `motion_dir` 指向 `data/100style/train` 或 `data/amass/train`；加载器照常重采样至 50 Hz 并做 FK。
+训练配置的 `motion_dir` 指向本次输出目录的 `train`，例如 `data/amass/cache/csv_processed_v2/train`；
+加载器照常重采样至 50 Hz 并做 FK。原有正式 train 目录保留，不自动替换。
 不要把 raw、candidates 或 cache 指定为正式训练目录。
 
 ### CSV → CSV 批量平滑与筛选（推荐入口）
@@ -193,8 +208,8 @@ Linux：
 
 ```bash
 UV_PROJECT_ENVIRONMENT=.venv-retarget uv run --extra retarget python tools/process_motion_csv.py \
-  --input-dir data/amass/candidates \
-  --output-dir data/amass/cache/csv_processed \
+  --input-dir data/amass/cache/retarget_only/candidates \
+  --output-dir data/amass/cache/csv_processed_v2 \
   --pattern "CMU__*.csv"
 ```
 
@@ -202,18 +217,20 @@ Windows PowerShell：
 
 ```powershell
 $env:UV_PROJECT_ENVIRONMENT=".venv-retarget"
-uv run --extra retarget python tools/process_motion_csv.py --input-dir data/amass/candidates --output-dir data/amass/cache/csv_processed --pattern "CMU__*.csv"
+uv run --extra retarget python tools/process_motion_csv.py --input-dir data/amass/cache/retarget_only/candidates --output-dir data/amass/cache/csv_processed_v2 --pattern "CMU__*.csv"
 ```
 
 `--pattern "CMU__*.csv"` 只处理 CMU；省略 `--pattern` 处理输入目录中全部 CSV。
 也可将输入换成 `data/amass/train` 或 `data/100style/candidates`，并使用新的输出目录。
-选择范围和路径以命令参数为准；此入口不使用 `smoothing.datasets`、`smoothing.output_dir`。
-默认 `--config retarget_amass.json` 提供 G1 模型、足部名称和落地高度，
-`--rules motion_filter.json` 提供平滑参数和全部筛选阈值。
+选择范围和路径以命令参数为准。
+默认 `--config retarget_amass.json` 提供 G1 模型和足部名称，
+`--rules motion_filter.json` 提供平滑、接地修正参数和全部筛选阈值。
 
 流程：**原 CSV → 平滑 → 按原 CSV 的接地分段修正足底高度 → 共同筛选 → 新 CSV**。
 关节和基座位置采用二阶 5 Hz 双向零相位滤波；朝向先校正四元数符号连续性，滤波后归一化。
-滤波越限用连续幅度收缩处理。支撑帧由原 CSV 中实际足底碰撞面位于
+滤波越限用连续幅度收缩处理。`grounding` 配置集中管理接地：先以足底高度的 2% 分位估计整体
+偏差，只允许 5 cm 内的基准对齐（超出则不做整体搬移），再识别支撑分段。
+支撑帧由对齐后原 CSV 中实际足底碰撞面位于
 `[-max_foot_penetration, foot_contact_height]` 的区间确定；无支撑时保留轨迹交给筛选，
 不会把持续悬空或深度穿地的动作整体搬到地面。
 **此 CSV-only 分段不读取人体标签，与旧 NPZ 辅助平滑的输出不保证逐值一致。**
@@ -226,7 +243,7 @@ uv run --extra retarget python tools/process_motion_csv.py --input-dir data/amas
 输出结构：
 
 ```text
-data/amass/cache/csv_processed/
+data/amass/cache/csv_processed_v2/
   candidates/             # 全部处理成功的新 CSV 与元数据
   train/                  # 筛选通过的新 CSV，只有 CSV
   cache/reports/

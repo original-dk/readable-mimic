@@ -35,10 +35,11 @@
     "cutoff_hz": 5,
     "filter_order": 2,
     "workers": 8,
-    "datasets": [
-      "CMU"
-    ],
-    "output_dir": "data/amass/cache/cmu_smoothed/candidates",
     "max_joint_change_degrees": 30
+  },
+  "grounding": {
+    "clearance": -0.0001,
+    "floor_quantile": 0.02,
+    "max_floor_alignment": 0.05
   }
 }

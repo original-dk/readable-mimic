@@ -1,6 +1,8 @@
 """BVH conventions, IK limits and grounding, independent of external motion assets."""
 
 from types import SimpleNamespace
+from pathlib import Path
+import runpy
 
 import mujoco
 import numpy as np
@@ -8,7 +10,10 @@ import pytest
 
 pytest.importorskip("mink")
 from readable_mimic.retargeting.bvh import load_bvh
-from readable_mimic.retargeting.ik import MotionRetargeter, ground_motion
+from readable_mimic.retargeting.ik import MotionRetargeter
+
+CSV_PROCESSOR = runpy.run_path(str(Path(__file__).parents[1] / "tools/process_motion_csv.py"))
+ground_motion = CSV_PROCESSOR["ground_motion"]
 
 
 def test_bvh_declared_rotation_order_and_frame_cuts(tmp_path):
@@ -127,19 +132,12 @@ def test_support_grounding_keeps_flight_height():
     np.testing.assert_array_equal(qpos[:, 3:], original_rotation)
 
 
-def test_support_detection_does_not_ground_a_raised_foot():
-    from readable_mimic.retargeting.ik import detect_support_frames
-
-    positions = np.zeros((7, 2, 3))
-    positions[:, 0, 2] = [0, 0, 0.1, 0.1, 0.1, 0, 0]
-    positions[:, 1, 2] = 0.2
-    human = SimpleNamespace(body_names=["LeftToe", "RightToe"], body_pos_w=positions, frame_rate=30)
-    settings = dict(
-        human_foot_bodies=human.body_names,
-        floor_quantile=0.02,
-        height_threshold=0.04,
-        vertical_velocity_threshold=100,
+def test_collision_floor_is_shared_without_grounding_a_raised_foot():
+    model = mujoco.MjModel.from_xml_string(
+        '<mujoco><worldbody><body name="left"><freejoint/><geom type="sphere" size=".1"/><body name="right" pos="0 0 .2"><geom type="sphere" size=".1"/></body></body></worldbody></mujoco>'
     )
-    np.testing.assert_array_equal(
-        detect_support_frames(human, settings), [True, True, False, False, False, True, True]
-    )
+    qpos = np.tile(model.qpos0, (3, 1))
+    qpos[:, 2] = 0.1
+    ground_motion(model, qpos, ["left", "right"], -0.0001, np.ones(3, dtype=bool))
+    np.testing.assert_allclose(CSV_PROCESSOR["foot_heights"](model, qpos, ["left"]), -0.0001)
+    np.testing.assert_allclose(CSV_PROCESSOR["foot_heights"](model, qpos, ["right"]), 0.1999)

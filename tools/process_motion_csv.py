@@ -13,39 +13,80 @@ import numpy as np
 from scipy.spatial.transform import Rotation
 
 from readable_mimic.robot import get_robot
-from readable_mimic.retargeting.ik import ground_motion
-from readable_mimic.retargeting.smooth_amass import smooth_values, smoothing_model
+from readable_mimic.retargeting.smoothing import smooth_values, smoothing_model
+
+
+def foot_heights(model, qpos, foot_body_names):
+    """Height of the lowest actual collision sole, not the ankle origin."""
+    data = mujoco.MjData(model)
+    foot_ids = {model.body(name).id for name in foot_body_names}
+    geom_indices = [
+        index
+        for index in range(model.ngeom)
+        if model.geom_bodyid[index] in foot_ids
+        and (model.geom_contype[index] or model.geom_conaffinity[index])
+    ]
+    if not geom_indices:
+        raise ValueError("No collision geoms on the G1 feet")
+    geom_indices = np.asarray(geom_indices)
+    geom_types = model.geom_type[geom_indices]
+    sphere_mask = geom_types == mujoco.mjtGeom.mjGEOM_SPHERE
+    if not np.all(sphere_mask | (geom_types == mujoco.mjtGeom.mjGEOM_BOX)):
+        raise ValueError("Expected sphere or box collision geoms on the G1 feet")
+    sizes = model.geom_size[geom_indices]
+    heights = []
+    for frame in qpos:
+        data.qpos[:] = frame
+        mujoco.mj_kinematics(model, data)
+        rotations = data.geom_xmat[geom_indices].reshape(-1, 3, 3)
+        box_radius = np.einsum("ij,ij->i", np.abs(rotations[:, 2]), sizes)
+        vertical_radius = np.where(sphere_mask, sizes[:, 0], box_radius)
+        heights.append(np.min(data.geom_xpos[geom_indices, 2] - vertical_radius))
+    return np.asarray(heights)
+
+
+def ground_motion(model, qpos, foot_body_names, clearance, support_mask=None):
+    """Align support poses and interpolate correction through flight."""
+    heights = foot_heights(model, qpos, foot_body_names)
+    if support_mask is None:
+        offset = clearance - heights.min()
+        qpos[:, 2] += offset
+        return float(offset)
+    support_frames = np.flatnonzero(support_mask)
+    if len(support_frames) < 2:
+        raise ValueError("Fewer than two support frames detected; check source grounding thresholds")
+    from scipy.interpolate import PchipInterpolator
+
+    offsets = clearance - heights
+    frame_indices = np.arange(len(qpos))
+    # Interpolate the correction through flight; do not flatten the jump trajectory.
+    correction = PchipInterpolator(support_frames, offsets[support_frames], extrapolate=False)(
+        np.clip(frame_indices, support_frames[0], support_frames[-1])
+    )
+    correction = np.maximum(correction, offsets)  # prevent any foot penetrating below clearance
+    qpos[:, 2] += correction
+    return {
+        "support_frames": int(support_mask.sum()),
+        "flight_frames": int((~support_mask).sum()),
+        "min_offset": float(correction.min()),
+        "max_offset": float(correction.max()),
+    }
 
 
 def csv_support_mask(values, model, joint_indices, foot_bodies, rules):
     """Recover flat-floor support from collision soles in the original CSV."""
-    foot_indices = np.array(
-        [
-            i
-            for i in range(model.ngeom)
-            if model.body(model.geom_bodyid[i]).name in foot_bodies
-            and (model.geom_contype[i] or model.geom_conaffinity[i])
-        ]
-    )
-    if not len(foot_indices):
-        raise ValueError("No foot collision geometry")
-    types = model.geom_type[foot_indices]
-    sphere_mask = types == mujoco.mjtGeom.mjGEOM_SPHERE
-    if not np.all(sphere_mask | (types == mujoco.mjtGeom.mjGEOM_BOX)):
-        raise ValueError("Expected sphere or box collision soles")
-    sizes = model.geom_size[foot_indices]
-    data = mujoco.MjData(model)
-    heights = np.empty(len(values))
-    for index, frame in enumerate(values):
-        data.qpos[:3] = frame[:3]
-        data.qpos[3:7] = frame[[6, 3, 4, 5]]
-        data.qpos[joint_indices] = frame[7:]
-        mujoco.mj_kinematics(model, data)
-        rotations = data.geom_xmat[foot_indices].reshape(-1, 3, 3)
-        radius = np.where(sphere_mask, sizes[:, 0], np.einsum("ij,ij->i", np.abs(rotations[:, 2]), sizes))
-        heights[index] = np.min(data.geom_xpos[foot_indices, 2] - radius)
-    # Deep penetration is not support: do not sanitize it by lifting the whole clip.
-    return (heights >= -rules["max_foot_penetration"]) & (heights <= rules["foot_contact_height"])
+    qpos = np.zeros((len(values), model.nq))
+    qpos[:, :3] = values[:, :3]
+    qpos[:, 3:7] = values[:, [6, 3, 4, 5]]
+    qpos[:, joint_indices] = values[:, 7:]
+    heights = foot_heights(model, qpos, foot_bodies)
+    grounding = rules["grounding"]
+    floor_offset = grounding["clearance"] - float(np.quantile(heights, grounding["floor_quantile"]))
+    if abs(floor_offset) > grounding["max_floor_alignment"]:
+        floor_offset = 0.0
+    heights = heights + floor_offset
+    support = (heights >= -rules["max_foot_penetration"]) & (heights <= rules["foot_contact_height"])
+    return support, floor_offset
 
 
 def process_csv(source, output, config, rules, pipeline_sha256):
@@ -60,7 +101,7 @@ def process_csv(source, output, config, rules, pipeline_sha256):
         filter_order=settings["filter_order"],
         foot_contact_height=rules["foot_contact_height"],
         max_foot_penetration=rules["max_foot_penetration"],
-        ground_clearance=config["ground_clearance"],
+        grounding=rules["grounding"],
         frame_rate=30,
     )
     fingerprint = hashlib.sha256(
@@ -88,14 +129,18 @@ def process_csv(source, output, config, rules, pipeline_sha256):
     result = smooth_values(values, settings, limits)
     if np.max(np.abs(np.linalg.norm(values[:, 3:7], axis=1) - 1)) > rules["quaternion_tolerance"]:
         raise ValueError("Input quaternion is not unit length")
-    support = csv_support_mask(values, model, joint_indices, config["foot_bodies"], rules)
+    support, floor_offset = csv_support_mask(values, model, joint_indices, config["foot_bodies"], rules)
     correction = None
     if support.sum() >= 2:
+        result[:, 2] += floor_offset
         qpos = np.zeros((len(result), model.nq))
         qpos[:, :3] = result[:, :3]
         qpos[:, 3:7] = result[:, [6, 3, 4, 5]]
         qpos[:, joint_indices] = result[:, 7:]
-        correction = ground_motion(model, qpos, config["foot_bodies"], config["ground_clearance"], support)
+        correction = ground_motion(
+            model, qpos, config["foot_bodies"], rules["grounding"]["clearance"], support
+        )
+        correction["floor_offset"] = floor_offset
         result[:, 2] = qpos[:, 2]
     # No support anchors: retain the trajectory and let the quality gate reject hovering.
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -118,6 +163,8 @@ def process_csv(source, output, config, rules, pipeline_sha256):
         fingerprint=fingerprint,
         csv_sha256=hashlib.sha256(output.read_bytes()).hexdigest(),
         ground_correction=correction,
+        grounding_applied=correction is not None,
+        processing_stage="processed",
         postprocessing=dict(
             **parameters, support_source="original_csv_collision_soles", support_frames=int(support.sum())
         ),
@@ -137,8 +184,7 @@ def process_csv(source, output, config, rules, pipeline_sha256):
 def process_directory(input_dir, output_dir, config_path, rules_path, pattern="*.csv"):
     # Same filtering implementation and rules as the existing data preparation command.
     from prepare_training_data import screen
-    import readable_mimic.retargeting.ik as ik_module
-    import readable_mimic.retargeting.smooth_amass as smoothing_module
+    import readable_mimic.retargeting.smoothing as smoothing_module
 
     input_dir, output_dir = Path(input_dir).resolve(), Path(output_dir).resolve()
     if (
@@ -167,7 +213,7 @@ def process_directory(input_dir, output_dir, config_path, rules_path, pattern="*
     if set(p.name for p in candidates.glob("*.csv")) - set(names):
         raise ValueError("Output contains other selections; use a new output directory")
     pipeline_sha256 = hashlib.sha256(
-        b"".join(Path(p).read_bytes() for p in [__file__, ik_module.__file__, smoothing_module.__file__])
+        b"".join(Path(p).read_bytes() for p in [__file__, smoothing_module.__file__])
     ).hexdigest()
     results, failures = [], []
     print(

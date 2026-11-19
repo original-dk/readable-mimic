@@ -2,7 +2,7 @@
 
 import numpy as np
 from scipy.spatial.transform import Rotation
-from readable_mimic.retargeting.smooth_amass import smooth_values
+from readable_mimic.retargeting.smoothing import smooth_values
 
 
 def sample_motion():

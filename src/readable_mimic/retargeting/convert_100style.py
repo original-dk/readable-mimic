@@ -1,4 +1,4 @@
-"""Convert trimmed 100STYLE BVH clips into the project's 30 Hz G1 training CSV."""
+"""Convert trimmed 100STYLE BVH clips into the project's 30 Hz ungrounded G1 candidate CSV."""
 
 import argparse
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -12,7 +12,7 @@ import time
 import mujoco
 import numpy as np
 from .bvh import load_bvh
-from .ik import MotionRetargeter, ground_motion, detect_support_frames
+from .ik import MotionRetargeter
 from ..robot import get_robot
 
 
@@ -67,13 +67,6 @@ def convert_clip(source, output_dir, settings, cuts):
             for index, (pos, rotation) in enumerate(zip(human.body_pos_w, human.body_rot_mat_w))
         ]
     )
-    ground_offset = ground_motion(
-        model,
-        qpos,
-        settings["foot_bodies"],
-        settings["ground_clearance"],
-        detect_support_frames(human, settings["grounding"]),
-    )
     base_start = retargeter.base_qpos_start
     base_pos_w = qpos[:, base_start : base_start + 3]
     base_pos_w[:, :2] -= base_pos_w[0, :2].copy()
@@ -102,7 +95,8 @@ def convert_clip(source, output_dir, settings, cuts):
         "num_frames": len(raw),
         "duration": (len(raw) - 1) / human.frame_rate,
         "joint_names": list(robot.joint_names),
-        "ground_offset": ground_offset,
+        "grounding_applied": False,
+        "processing_stage": "retargeted",
         "max_joint_speed": float(np.abs(np.diff(joint_pos, axis=0)).max() * human.frame_rate),
         "wall_seconds": round(time.perf_counter() - begin, 3),
     }
@@ -110,7 +104,7 @@ def convert_clip(source, output_dir, settings, cuts):
     return metadata
 
 
-def convert_dataset(config_path):
+def convert_dataset(config_path, output_dir=None):
     config_path = Path(config_path).resolve()
     settings = json.loads(config_path.read_text(encoding="utf-8"))
     settings["converter_sha256"] = hashlib.sha256(
@@ -120,6 +114,8 @@ def convert_dataset(config_path):
     ).hexdigest()
     for key in ("input_dir", "output_dir", "frame_cuts", "mjcf_path"):
         settings[key] = str((config_path.parent / settings[key]).resolve())
+    if output_dir is not None:
+        settings["output_dir"] = str(Path(output_dir).resolve())
     if settings["output_frame_rate"] != 30:
         raise ValueError("The project's CSV loader requires 30 Hz output")
     if not isinstance(settings["workers"], int) or settings["workers"] < 1:
@@ -179,8 +175,11 @@ def convert_dataset(config_path):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", default="retarget_100style.json")
+    parser.add_argument(
+        "--output-dir", help="Write to a fresh candidate directory without replacing legacy outputs"
+    )
     args = parser.parse_args()
-    convert_dataset(args.config)
+    convert_dataset(args.config, args.output_dir)
 
 
 if __name__ == "__main__":

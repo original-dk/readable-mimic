@@ -1,4 +1,4 @@
-"""AMASS / SMPL-family NPZ → G1 CSV, sharing IK and support grounding with 100STYLE."""
+"""AMASS / SMPL-family NPZ → G1 CSV, with GMR-aligned IK; grounding belongs to process_motion_csv.py."""
 
 import argparse
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -9,7 +9,6 @@ import time
 
 import numpy as np
 from .smpl import load_amass
-from .ik import detect_support_frames, ground_motion
 from .amass_ik import AmassRetargeter, load_retarget_model
 from ..robot import get_robot
 
@@ -37,8 +36,6 @@ def convert_clip(source, settings):
     qpos = np.array(
         [retargeter.retarget(pos, rot) for pos, rot in zip(human.body_pos_w, human.body_rot_mat_w)]
     )
-    support = detect_support_frames(human, settings["grounding"])
-    correction = ground_motion(model, qpos, settings["foot_bodies"], settings["ground_clearance"], support)
     base_pos_w = qpos[:, :3].copy()
     base_pos_w[:, :2] -= base_pos_w[0, :2].copy()
     joint_pos = qpos[:, retargeter.joint_qpos_indices]
@@ -58,7 +55,8 @@ def convert_clip(source, settings):
         frame_rate=human.frame_rate,
         num_frames=len(values),
         joint_names=list(robot.joint_names),
-        ground_correction=correction,
+        grounding_applied=False,
+        processing_stage="retargeted",
         max_joint_vel=float(np.abs(np.diff(joint_pos, axis=0)).max() * human.frame_rate),
         fingerprint=fingerprint,
         csv_sha256=hashlib.sha256(output.read_bytes()).hexdigest(),
@@ -68,7 +66,7 @@ def convert_clip(source, settings):
     return metadata
 
 
-def convert_dataset(config_path):
+def convert_dataset(config_path, output_dir=None):
     config_path = Path(config_path).resolve()
     settings = json.loads(config_path.read_text(encoding="utf-8"))
     for key in ("input_dir", "output_dir", "mjcf_path"):
@@ -76,6 +74,8 @@ def convert_dataset(config_path):
     settings["body_models"] = {
         gender: str((config_path.parent / path).resolve()) for gender, path in settings["body_models"].items()
     }
+    if output_dir is not None:
+        settings["output_dir"] = str(Path(output_dir).resolve())
     if settings["output_frame_rate"] != 30 or settings["workers"] < 1:
         raise ValueError("G1 CSV requires 30 Hz and workers must be positive")
     settings["code_sha256"] = hashlib.sha256(
@@ -137,4 +137,6 @@ def convert_dataset(config_path):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", default="retarget_amass.json")
-    convert_dataset(parser.parse_args().config)
+    parser.add_argument("--output-dir", help="Fresh directory for ungrounded candidate CSVs")
+    args = parser.parse_args()
+    convert_dataset(args.config, args.output_dir)
