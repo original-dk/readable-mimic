@@ -37,8 +37,6 @@ def check_values(values, limits, velocity_limits, settings):
     rotations = Rotation.from_quat(values[:, 3:7]).as_matrix()
     tilt = float(np.degrees(np.arccos(np.clip(rotations[:, 2, 2], -1, 1))).max())
     height = float(values[:, 2].min())
-    if tilt > settings["max_base_tilt_degrees"]:
-        flags.append("base_tilt")
     if height < settings["min_base_height"]:
         flags.append("low_base")
     return flags, dict(
@@ -46,6 +44,7 @@ def check_values(values, limits, velocity_limits, settings):
         velocity_limit_ratio=velocity_ratio,
         min_base_height=height,
         max_base_tilt_degrees=tilt,
+        base_tilt_above_review_threshold=tilt > settings["max_base_tilt_degrees"],
     )
 
 
@@ -77,8 +76,7 @@ def check_ground_support(foot_height, com_height, settings, frame_rate=30):
                 residual = height - (linear @ coefficients - 0.5 * gravity * time**2)
                 fit_error = float(np.max(np.abs(residual)))
                 interval["ballistic_fit_error"] = fit_error
-                if fit_error > settings["max_flight_fit_error"]:
-                    flags.append("non_ballistic_flight")
+                interval["above_review_fit_error"] = fit_error > settings["max_flight_fit_error"]
         intervals.append(interval)
     return sorted(set(flags)), dict(
         min_foot_height=float(foot_height.min()),

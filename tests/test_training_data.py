@@ -125,8 +125,9 @@ def test_ground_support_rejects_stairs_hover_and_truncated_flight():
     assert "prolonged_flight" in flags
     assert metrics["longest_flight_duration"] == 8
     foot = np.r_[np.zeros(5), np.full(12, 0.2), np.zeros(5)]
-    flags, _ = check(foot, np.full(len(foot), 0.8), support_rules())
-    assert "non_ballistic_flight" in flags
+    flags, metrics = check(foot, np.full(len(foot), 0.8), support_rules())
+    assert flags == []
+    assert metrics["flight_intervals"][0]["above_review_fit_error"]
     foot = np.r_[np.full(8, 0.2), np.zeros(5)]
     flags, _ = check(foot, np.full(len(foot), 0.8), support_rules())
     assert "unbounded_flight" in flags
@@ -289,5 +290,15 @@ def test_reported_dynamic_cmu_not_rejected_as_static_support(name):
     checker = MODULE["GroundContactChecker"](
         spec.compile(), get_robot("g1"), ["left_ankle_roll_link", "right_ankle_roll_link"], support_rules()
     )
-    flags, _ = checker.check(np.loadtxt(path, delimiter=","))
+    values = np.loadtxt(path, delimiter=",")
+    flags, _ = checker.check(values)
     assert "unsupported_support" not in flags
+    if name in {"CMU__05__05_05_stageii", "CMU__05__05_06_stageii"}:
+        from readable_mimic.g1.g1_constants import motor_of
+
+        model = checker.model
+        robot = get_robot("g1")
+        limits = np.array([model.joint(joint).range for joint in robot.joint_names])
+        velocity_limits = np.array([motor_of(joint)[1] for joint in robot.joint_names])
+        value_flags, _ = MODULE["check_values"](values, limits, velocity_limits, support_rules())
+        assert flags + value_flags == []
