@@ -235,7 +235,7 @@ def process_directory(input_dir, output_dir, config_path, rules_path, pattern="*
                 print(f"FAILED {futures[future].name}: {error}", flush=True)
             count = len(results) + len(failures)
             if count % 50 == 0 or count == len(files):
-                print(f"[{count}/{len(files)}]", flush=True)
+                print(f"[Smooth/contact {count}/{len(files)}] {futures[future].name}", flush=True)
     (reports / "processing_report.json").write_text(
         json.dumps(
             dict(

@@ -8,6 +8,7 @@ import itertools
 from pathlib import Path
 import re
 import shutil
+import time
 
 import mujoco
 import numpy as np
@@ -154,12 +155,24 @@ class GroundContactChecker:
         angles = np.arange(16) * (2 * np.pi / 16)
         self.sphere_directions = np.column_stack([np.cos(angles), np.sin(angles)])
 
-    def check(self, values):
+    def check(self, values, progress_label=None):
         foot_height = np.empty(len(values))
         com_height = np.empty(len(values))
         com_support_distance = np.full(len(values), np.nan)
         nonfoot_contact = False
+        started = time.perf_counter()
+        last_progress = started
         for index, frame in enumerate(values):
+            now = time.perf_counter()
+            if progress_label and now - last_progress >= 5:
+                elapsed = now - started
+                remaining = elapsed * (len(values) - index) / max(index, 1)
+                print(
+                    f"{progress_label} | frame {index}/{len(values)}"
+                    f" | elapsed {elapsed:.1f}s | clip ETA {remaining:.1f}s",
+                    flush=True,
+                )
+                last_progress = now
             self.data.qpos[:3] = frame[:3]
             self.data.qpos[3:7] = frame[[6, 3, 4, 5]]
             self.data.qpos[self.joint_indices] = frame[7:]
@@ -269,7 +282,14 @@ def screen(config_path, rules_path=None, export=False):
     if not files:
         raise ValueError(f"No candidates in {directory}")
     results = []
-    for path in files:
+    started = time.perf_counter()
+    print(f"[Filter] {len(files)} motions: ground contact + COM support checks", flush=True)
+    for index, path in enumerate(files, 1):
+        elapsed = time.perf_counter() - started
+        remaining = elapsed * (len(files) - index + 1) / max(index - 1, 1)
+        label = f"[Filter {index}/{len(files)}] {path.name}"
+        eta = f" | ETA {remaining:.0f}s" if index > 1 else ""
+        print(f"{label} | elapsed {elapsed:.0f}s{eta}", flush=True)
         try:
             values = np.loadtxt(path, delimiter=",", ndmin=2)
             flags, metrics = check_values(values, limits, velocity_limits, settings)
@@ -291,7 +311,7 @@ def screen(config_path, rules_path=None, export=False):
         if path.stem.split("__")[0] in settings["context_review_datasets"]:
             flags.append("dataset_context_review")
         if metrics:
-            ground_flags, ground_metrics = ground_checker.check(values)
+            ground_flags, ground_metrics = ground_checker.check(values, progress_label=label)
             flags += ground_flags
             metrics.update(ground_metrics)
         results.append(
@@ -300,7 +320,11 @@ def screen(config_path, rules_path=None, export=False):
             )
         )
     training_dir = dataset_root / "train"
+    print(f"[Filter] finished in {time.perf_counter() - started:.1f}s", flush=True)
+    if export:
+        print(f"[Export] synchronizing CSVs to {training_dir}", flush=True)
     count = export_training_data(directory, training_dir, results) if export else None
+    print("[Report] writing screening report", flush=True)
     report = dict(
         candidate_count=len(results),
         without_detected_flags=sum(not item["flags"] for item in results),
