@@ -125,17 +125,11 @@ UV_PROJECT_ENVIRONMENT=.venv-retarget uv run --extra retarget \
 转换器只执行重采样和 IK，保持 IK 的基座高度，不做足底修正或平滑。
 AMASS 转换器遵守同样的阶段划分；统一由 `tools/process_motion_csv.py` 做后处理。
 新转换元数据包含 `grounding_applied: false`、`processing_stage: retargeted`。
-**已有 `data/100style/candidates` 和 `data/amass/candidates` 是旧版已做接地修正的数据，
-本次代码迁移不会撤销它们的高度改动。** 若需要完全未修正的候选，请重新转换到新目录：
-
-```bash
-UV_PROJECT_ENVIRONMENT=.venv-retarget uv run --extra retarget \
-  python -m readable_mimic.retargeting.convert_amass --config retarget_amass.json \
-  --output-dir data/amass/cache/retarget_only/candidates
-```
-
-100STYLE 同理，使用 `convert_100style --output-dir data/100style/cache/retarget_only/candidates`。
-新旧版本指纹不同，不会把旧的已接地缓存误当成未修正候选；不自动覆盖旧数据。
+本地统一第一阶段结果位于 `data/100style/candidates` 和 `data/amass/candidates`，
+各家输入格式由各自转换器处理，输出都遵守同一个 30 Hz G1 CSV 格式。
+旧版已做接地修正的候选保存在各数据集的 `cache/legacy/grounded_candidates_previous/`，
+不会与新候选混用。本次只更新第一阶段结果，未重新生成或覆盖正式 train。
+如需变更 IK 并保留本批候选，转换器支持 `--output-dir <新候选目录>`。
 
 AMASS 需要本人获得各子集与 SMPL-X 模型授权。只使用 **SMPL-X N**，不混入 G、SMPL+H 或 Render。
 从官网下载的完整压缩包统一放入 `data/amass/raw/archives/`：
@@ -157,6 +151,31 @@ AMASS IK 对齐 GMR 的身高缩放、初始姿态、离线限位、足尖坐标
 CMU `01_01`、`05_06` 的完整轨迹在相同人体输入、落地修正前与原版 GMR 数值一致（误差约 1e-11 度）。
 人体 FK 与官方 SMPL-X 的位置误差实测约 1.74e-7 m；这些是运动学一致性证据，不是动态跟踪保证。
 
+### 第一阶段统一 CSV 结果
+
+第一阶段只做源格式读取、必要的官方片段裁剪、重采样和 G1 重定向，不做动作质量剔除、平滑或足底修正。
+CSV 无表头，每行 36 列，30 Hz，位置单位米、关节单位弧度：
+`base_pos_w[3], base_quat_xyzw[4], joint_pos[29]`。四元数为 xyzw，关节顺序为项目 G1 的 `joint_names`。
+不同来源的 CSV 可直接交给同一个 `tools/process_motion_csv.py`。
+LAFAN1 原有 `data/lafan1_g1` 的 40 条 CSV 已是同一布局，保持上游文件不变；不对其上游处理历史作新的判定。
+
+| 目录/前缀 | 原格式 | CSV 数量 |
+|---|---|---:|
+| `data/100style/candidates/` | BVH | 810 |
+| `data/amass/candidates/CMU__*` | SMPL-X NPZ | 1,983 |
+| `data/amass/candidates/CNRS__*` | SMPL-X NPZ | 79 |
+| `data/amass/candidates/HDM05__*` | SMPL-X NPZ | 215 |
+| `data/amass/candidates/SOMA__*` | SMPL-X NPZ | 69 |
+| `data/amass/candidates/Transitions__*` | SMPL-X NPZ | 110 |
+| `data/amass/candidates/SFU__*` | SMPL-X NPZ | 44 |
+| `data/amass/candidates/PosePrior__*` | SMPL-X NPZ | 35 |
+
+逐动作 JSON 保留来源和格式信息，并明确 `processing_stage: retargeted`、`grounding_applied: false`。
+各自的 `cache/reports/unified_csv_validation.json` 记录全量文件、来源覆盖和校验值验证结果。
+100STYLE 利用经源文件、配置、模型指纹验证的早期备份，去除其精确记录的常量高度偏移恢复 IK 输出；
+与新转换器重新求解的三个样本最大差异为 1e-8（CSV 舍入精度）。AMASS 由新转换器完整重新求解。
+所有已放弃子集维持排除；尚未导入的 GRAB 等下载包不属于本批结果。
+
 ### 统一筛选并导出 train
 
 两类候选均为无表头、36 列、米/弧度的 CSV：
@@ -169,10 +188,10 @@ CMU `01_01`、`05_06` 的完整轨迹在相同人体输入、落地修正前与�
 
 ```bash
 UV_PROJECT_ENVIRONMENT=.venv-retarget uv run --extra retarget \
-  python tools/process_motion_csv.py --input-dir data/100style/cache/retarget_only/candidates \
+  python tools/process_motion_csv.py --input-dir data/100style/candidates \
   --output-dir data/100style/cache/csv_processed_v2 --config retarget_100style.json
 UV_PROJECT_ENVIRONMENT=.venv-retarget uv run --extra retarget \
-  python tools/process_motion_csv.py --input-dir data/amass/cache/retarget_only/candidates \
+  python tools/process_motion_csv.py --input-dir data/amass/candidates \
   --output-dir data/amass/cache/csv_processed_v2 --config retarget_amass.json
 ```
 
@@ -208,7 +227,7 @@ Linux：
 
 ```bash
 UV_PROJECT_ENVIRONMENT=.venv-retarget uv run --extra retarget python tools/process_motion_csv.py \
-  --input-dir data/amass/cache/retarget_only/candidates \
+  --input-dir data/amass/candidates \
   --output-dir data/amass/cache/csv_processed_v2 \
   --pattern "CMU__*.csv"
 ```
@@ -217,7 +236,7 @@ Windows PowerShell：
 
 ```powershell
 $env:UV_PROJECT_ENVIRONMENT=".venv-retarget"
-uv run --extra retarget python tools/process_motion_csv.py --input-dir data/amass/cache/retarget_only/candidates --output-dir data/amass/cache/csv_processed_v2 --pattern "CMU__*.csv"
+uv run --extra retarget python tools/process_motion_csv.py --input-dir data/amass/candidates --output-dir data/amass/cache/csv_processed_v2 --pattern "CMU__*.csv"
 ```
 
 `--pattern "CMU__*.csv"` 只处理 CMU；省略 `--pattern` 处理输入目录中全部 CSV。
