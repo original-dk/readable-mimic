@@ -5,6 +5,7 @@ import sys
 import imageio.v2 as imageio
 import argparse
 from dataclasses import replace
+import json
 import math
 from pathlib import Path
 import mujoco
@@ -18,7 +19,7 @@ from .env import TrackingEnv
 from .kinematics import Kinematics
 from .motion import ReferenceMotion
 from .robot import get_robot
-from .task import RewardConfig, TrackingTask
+from .task import MAX_STEP_REWARD, RewardConfig, TrackingTask
 from .rotations import mat_to_quat
 
 if sys.platform.startswith("linux") and (not os.environ.get("DISPLAY")):
@@ -171,11 +172,35 @@ def render_motion(
         if native_renderer is None
         else native_renderer.video_writer(output_path, round(1 / CONTROL_DT))
     )
+    reward_sum = torch.zeros((), device=env.device)
+    completed_returns = []
+    failures = []
+    clip_start = int(motion.clip_start[clip_index])
     with writer_context as writer:
         for step_index in range(steps):
             command = transforms.compute_command(env.motion_frame_index, command_frame_offsets, motion)
             transition = env.step(actor(history, command))
+            reward_sum += transition["reward"].sum()
             robot_state = env.state()
+            if bool(transition["termination"][0]):
+                height_error, tilt_error = env.task.termination_errors(robot_state, env.motion_frame_index)
+                ref_frame = int(env.motion_frame_index[0]) - clip_start
+                errors = dict(base_height_error=float(height_error[0]), base_tilt_error=float(tilt_error[0]))
+                thresholds = dict(
+                    base_height_error=env.task.config.termination_height_threshold,
+                    base_tilt_error=env.task.config.termination_tilt_threshold,
+                )
+                failure = dict(
+                    video_frame=step_index,
+                    video_time_s=step_index * CONTROL_DT,
+                    ref_frame=ref_frame,
+                    ref_time_s=ref_frame * CONTROL_DT,
+                    reasons=[name for name, value in errors.items() if value > thresholds[name]],
+                    errors=errors,
+                    thresholds=thresholds,
+                )
+                failures.append(failure)
+                print(f"{motion.names[clip_index]} failure: {json.dumps(failure)}", flush=True)
             ref_state = motion.ref_state(env.motion_frame_index)
             ghost_pose = transforms.compute_ghost_pose(ref_state, robot_state, follow_base)
             if native_renderer is not None:
@@ -191,12 +216,26 @@ def render_motion(
                 ghost.update(renderer.scene, render_data.qpos, ghost_pose, append=True)
                 writer.append_data(renderer.render())
             if bool(transition["done"][0]):
+                completed_returns.append(float(transition["normalized_episode_return"][0]))
                 env.reset(env_indices, sample_start_frame(motion, clip_index))
                 history = transforms.compute_observation_history(env.observe(), history_length)
             else:
                 history = transforms.update_observation_history(history, env.observe())
             if (step_index + 1) % 250 == 0 or step_index + 1 == steps:
                 print(f"{motion.names[clip_index]}: {step_index + 1}/{steps} video frames", flush=True)
+
+    summary = dict(
+        motion=motion.names[clip_index],
+        video_frames=steps,
+        sim_r=float(reward_sum) / (steps * MAX_STEP_REWARD),
+        episode_return=sum(completed_returns) / len(completed_returns) if completed_returns else None,
+        completed_episodes=len(completed_returns),
+        failure_count=len(failures),
+        first_failure=failures[0] if failures else None,
+        failures=failures,
+    )
+    output_path.with_suffix(".json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    print(json.dumps({key: value for key, value in summary.items() if key != "failures"}), flush=True)
 
 
 def main(argv=None):

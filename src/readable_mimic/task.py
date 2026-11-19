@@ -138,7 +138,7 @@ class TrackingTask:
             )
         return reward
 
-    def termination(self, state, motion_frame_index) -> torch.Tensor:
+    def termination_errors(self, state, motion_frame_index):
         base_pos_w, base_rot_mat_w = (state[0], state[1])
         ref_base_pos_w, ref_base_rot_mat_w = (
             self.motion.base_pos_w[motion_frame_index],
@@ -146,6 +146,10 @@ class TrackingTask:
         )
         base_height_error = (ref_base_pos_w[..., 2] - base_pos_w[..., 2]).abs()
         base_tilt_error = (ref_base_rot_mat_w[..., 2, 2] - base_rot_mat_w[..., 2, 2]).abs()
+        return base_height_error, base_tilt_error
+
+    def termination(self, state, motion_frame_index) -> torch.Tensor:
+        base_height_error, base_tilt_error = self.termination_errors(state, motion_frame_index)
         return (base_height_error > self.config.termination_height_threshold) | (
             base_tilt_error > self.config.termination_tilt_threshold
         )
@@ -158,13 +162,7 @@ class TrackingTask:
         tilt_transition_width: float = 0.04,
     ) -> torch.Tensor:
         """Differentiable termination probability for imagined rollouts."""
-        base_pos_w, base_rot_mat_w = (state[0], state[1])
-        ref_base_pos_w, ref_base_rot_mat_w = (
-            self.motion.base_pos_w[motion_frame_index],
-            self.motion.base_rotation(motion_frame_index),
-        )
-        base_height_error = (ref_base_pos_w[..., 2] - base_pos_w[..., 2]).abs()
-        base_tilt_error = (ref_base_rot_mat_w[..., 2, 2] - base_rot_mat_w[..., 2, 2]).abs()
+        base_height_error, base_tilt_error = self.termination_errors(state, motion_frame_index)
         survival_probability = (
             1
             - torch.sigmoid(

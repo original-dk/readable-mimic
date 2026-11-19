@@ -75,7 +75,9 @@ def test_ghost_pose_and_scene_without_physics_changes(tiny_trainer):
 @pytest.mark.parametrize("native_rendering", [False, True])
 def test_video_frame_count_and_clip_restart(tiny_trainer, monkeypatch, tmp_path, native_rendering):
     from types import SimpleNamespace
+    import json
     from readable_mimic.evaluate import render_motion
+    from readable_mimic.task import MAX_STEP_REWARD
 
     trainer = tiny_trainer
     model = mujoco.MjModel.from_xml_path(trainer.robot.mjcf_path)
@@ -87,6 +89,10 @@ def test_video_frame_count_and_clip_restart(tiny_trainer, monkeypatch, tmp_path,
     class PlaybackEnv:
         device = "cpu"
         resets = 0
+        task = SimpleNamespace(
+            config=trainer.task.config,
+            termination_errors=lambda state, index: (torch.tensor([1.0]), torch.tensor([0.0])),
+        )
 
         def __init__(self):
             self.motion_frame_index = torch.tensor([clip_end - 1])
@@ -111,7 +117,12 @@ def test_video_frame_count_and_clip_restart(tiny_trainer, monkeypatch, tmp_path,
             from readable_mimic.rotations import mat_to_quat
 
             self.simulation.data.qpos[0] = torch.cat((state[0], mat_to_quat(state[1]), state[4]), -1)[0]
-            return {"done": torch.tensor([True])}
+            return {
+                "done": torch.tensor([True]),
+                "termination": torch.tensor([self.resets == 1]),
+                "reward": torch.tensor([MAX_STEP_REWARD * 0.75]),
+                "normalized_episode_return": torch.tensor([0.75]),
+            }
 
     class Renderer:
         scene = mujoco.MjvScene(model, maxgeom=32)
@@ -170,6 +181,15 @@ def test_video_frame_count_and_clip_restart(tiny_trainer, monkeypatch, tmp_path,
     if native_renderer is not None:
         assert native_renderer.frames == 3
     assert env.resets == 4
+    summary = json.loads((tmp_path / "test.json").read_text())
+    assert summary["sim_r"] == pytest.approx(0.75)
+    assert summary["episode_return"] == 0.75
+    assert summary["completed_episodes"] == 3
+    assert summary["failure_count"] == 1
+    failure = summary["first_failure"]
+    assert failure["video_frame"] == 0
+    assert failure["ref_frame"] == clip_end - int(trainer.motion.clip_start[0])
+    assert failure["reasons"] == ["base_height_error"]
 
 
 def test_ghost_excludes_ground_on_separate_body():
