@@ -130,7 +130,7 @@ class TrackingEnv:
         self.timer.record("collect_physics")
         reward = self.task.reward(next_state, next_motion_frame_index, action, last_action)
         termination = self.task.termination(next_state, next_motion_frame_index)
-        clip_end_frame = self.motion.clip_end[self.motion.clip_id[motion_frame_index]]
+        clip_end_frame = self.motion.end_frame(motion_frame_index)
         timeout = (next_motion_frame_index >= clip_end_frame) | (episode_step + 1 >= self.max_episode_steps)
         done = termination | timeout
         self.timer.record("collect_reward")

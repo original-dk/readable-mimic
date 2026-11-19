@@ -529,7 +529,7 @@ def test_shared_command_and_history_transforms(tiny_trainer):
     torch.testing.assert_close(future_frames, torch.tensor([[13, 14], [last_frame, last_frame]]))
     command = transforms.compute_command(frames, trainer.command_frame_offsets, trainer.motion)
     assert command.shape == (2, transforms.compute_command_dim(2, 2))
-    torch.testing.assert_close(command[:, :19][:, 15:17], trainer.motion.joint_pos[future_frames[:, 0]])
+    torch.testing.assert_close(command[:, :19][:, 15:17], trainer.motion.joint_position(future_frames[:, 0]))
     observation = torch.tensor([[1.0, 2.0], [3.0, 4.0]])
     history = transforms.compute_observation_history(observation, 3)
     next_observation = observation + 10

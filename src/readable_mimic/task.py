@@ -59,26 +59,27 @@ class TrackingTask:
         body_pos_w, body_rot_mat_w, body_lin_vel_w, body_ang_vel_w = self.kinematics.forward(
             base_pos_w, base_rot_mat_w, base_lin_vel_w, base_ang_vel_w, joint_pos, joint_vel
         )
-        ref_base_pos_w, ref_base_rot_mat_w = (
-            motion.base_pos_w[motion_frame_index],
-            motion.base_rot_mat_w[motion_frame_index],
+        ref_state = motion.ref_state(motion_frame_index)
+        ref_base_pos_w, ref_base_rot_mat_w = ref_state[:2]
+        ref_body_pos_w, ref_body_rot_mat_w, ref_body_lin_vel_w, ref_body_ang_vel_w = (
+            self.kinematics.forward(*ref_state)
         )
         ref_alignment_rot_mat_w = yaw_mat(mm3(base_rot_mat_w, ref_base_rot_mat_w.transpose(-1, -2)))
         ref_anchor_pos_w = torch.cat((base_pos_w[..., :2], ref_base_pos_w[..., 2:3]), -1)
         ref_body_pos_w_aligned = ref_anchor_pos_w.unsqueeze(-2) + mv3(
             ref_alignment_rot_mat_w.unsqueeze(-3),
-            motion.body_pos_w[motion_frame_index] - ref_base_pos_w.unsqueeze(-2),
+            ref_body_pos_w - ref_base_pos_w.unsqueeze(-2),
         )
         ref_body_rot_mat_w_aligned = mm3(
-            ref_alignment_rot_mat_w.unsqueeze(-3), motion.body_rot_mat_w[motion_frame_index]
+            ref_alignment_rot_mat_w.unsqueeze(-3), ref_body_rot_mat_w
         )
         body_pos_error = ((ref_body_pos_w_aligned - body_pos_w) ** 2).sum(-1).mean(-1)
         body_rot_error = rot_angle_sq(ref_body_rot_mat_w_aligned, body_rot_mat_w).mean(-1)
         body_lin_vel_error = (
-            ((motion.body_lin_vel_w[motion_frame_index] - body_lin_vel_w) ** 2).sum(-1).mean(-1)
+            ((ref_body_lin_vel_w - body_lin_vel_w) ** 2).sum(-1).mean(-1)
         )
         body_ang_vel_error = (
-            ((motion.body_ang_vel_w[motion_frame_index] - body_ang_vel_w) ** 2).sum(-1).mean(-1)
+            ((ref_body_ang_vel_w - body_ang_vel_w) ** 2).sum(-1).mean(-1)
         )
         base_pos_error = ((ref_base_pos_w - base_pos_w) ** 2).sum(-1)
         base_rot_error = rot_angle_sq(ref_base_rot_mat_w, base_rot_mat_w)
@@ -103,12 +104,12 @@ class TrackingTask:
         if foot_contact_reward_weight > 0:
             foot_height, ref_foot_height = (
                 body_pos_w[..., self.feet, 2],
-                motion.body_pos_w[motion_frame_index][..., self.feet, 2],
+                ref_body_pos_w[..., self.feet, 2],
             )
             foot_contact_probability = torch.sigmoid((CONTACT_Z - foot_height) / 0.005)
             ref_foot_contact_labels = getattr(motion, "ref_foot_contact", None)
             ref_foot_contact = (
-                ref_foot_contact_labels[motion_frame_index]
+                ref_foot_contact_labels[motion_frame_index].float()
                 if ref_foot_contact_labels is not None
                 else (ref_foot_height < CONTACT_Z).float()
             )
@@ -141,7 +142,7 @@ class TrackingTask:
         base_pos_w, base_rot_mat_w = (state[0], state[1])
         ref_base_pos_w, ref_base_rot_mat_w = (
             self.motion.base_pos_w[motion_frame_index],
-            self.motion.base_rot_mat_w[motion_frame_index],
+            self.motion.base_rotation(motion_frame_index),
         )
         base_height_error = (ref_base_pos_w[..., 2] - base_pos_w[..., 2]).abs()
         base_tilt_error = (ref_base_rot_mat_w[..., 2, 2] - base_rot_mat_w[..., 2, 2]).abs()
@@ -160,7 +161,7 @@ class TrackingTask:
         base_pos_w, base_rot_mat_w = (state[0], state[1])
         ref_base_pos_w, ref_base_rot_mat_w = (
             self.motion.base_pos_w[motion_frame_index],
-            self.motion.base_rot_mat_w[motion_frame_index],
+            self.motion.base_rotation(motion_frame_index),
         )
         base_height_error = (ref_base_pos_w[..., 2] - base_pos_w[..., 2]).abs()
         base_tilt_error = (ref_base_rot_mat_w[..., 2, 2] - base_rot_mat_w[..., 2, 2]).abs()

@@ -76,7 +76,7 @@ def compute_observation(state, last_action, xi, motion_frame_index, motion, defa
     joint_pos_relative = joint_pos - default_joint_pos - joint_pos_offset
     base_ang_vel = (world_to_base @ base_ang_vel_w.unsqueeze(-1)).squeeze(-1)
     projected_gravity = -base_rot_mat_w[..., 2, :]
-    ref_base_rot_6d_relative = mat_to_6d(world_to_base @ motion.base_rot_mat_w[motion_frame_index])
+    ref_base_rot_6d_relative = mat_to_6d(world_to_base @ motion.base_rotation(motion_frame_index))
     return torch.cat(
         (
             joint_pos_relative,
@@ -99,7 +99,7 @@ def compute_command_dim(num_joints, command_frames) -> int:
 
 
 def compute_future_motion_frames(motion_frame_index, command_frame_offsets, motion) -> torch.Tensor:
-    clip_end_frames = motion.clip_end[motion.clip_id[motion_frame_index]]
+    clip_end_frames = motion.end_frame(motion_frame_index)
     future_frames = motion_frame_index[..., None] + command_frame_offsets
     return torch.minimum(future_frames, clip_end_frames[..., None])
 
@@ -107,21 +107,23 @@ def compute_future_motion_frames(motion_frame_index, command_frame_offsets, moti
 def compute_command(motion_frame_index: torch.Tensor, command_frame_offsets, motion) -> torch.Tensor:
     """Future ref motion frames expressed relative to the current ref heading."""
     future_frames = compute_future_motion_frames(motion_frame_index, command_frame_offsets, motion)
-    base_heading_rot_mat_w = yaw_mat(motion.base_rot_mat_w[motion_frame_index])
+    base_heading_rot_mat_w = yaw_mat(motion.base_rotation(motion_frame_index))
     world_to_heading = base_heading_rot_mat_w.transpose(-1, -2).unsqueeze(1)
+    ref_pos, ref_rot, ref_lin_vel, ref_ang_vel, ref_joint_pos, ref_joint_vel = motion.ref_state(future_frames)
+    ref_world_to_base = ref_rot.transpose(-1, -2)
     ref_base_pos_offset_heading = mv3(
         world_to_heading,
-        motion.base_pos_w[future_frames] - motion.base_pos_w[motion_frame_index].unsqueeze(1),
+        ref_pos - motion.base_pos_w[motion_frame_index].unsqueeze(1),
     )
-    ref_base_rot_6d_heading = mat_to_6d(mm3(world_to_heading, motion.base_rot_mat_w[future_frames]))
+    ref_base_rot_6d_heading = mat_to_6d(mm3(world_to_heading, ref_rot))
     command_features = torch.cat(
         (
             ref_base_pos_offset_heading,
             ref_base_rot_6d_heading,
-            motion.base_lin_vel[future_frames],
-            motion.base_ang_vel[future_frames],
-            motion.joint_pos[future_frames],
-            motion.joint_vel[future_frames] * 0.1,
+            mv3(ref_world_to_base, ref_lin_vel),
+            mv3(ref_world_to_base, ref_ang_vel),
+            ref_joint_pos,
+            ref_joint_vel * 0.1,
         ),
         -1,
     )
@@ -136,7 +138,7 @@ def compute_critic_state_features(
     world_to_heading = base_heading_rot_mat_w.transpose(-1, -2)
     ref_base_pos_w, ref_base_rot_mat_w = (
         motion.base_pos_w[motion_frame_index],
-        motion.base_rot_mat_w[motion_frame_index],
+        motion.base_rotation(motion_frame_index),
     )
     body_pos_w = kinematics.forward(
         base_pos_w, base_rot_mat_w, base_lin_vel_w, base_ang_vel_w, joint_pos, joint_vel
@@ -145,7 +147,7 @@ def compute_critic_state_features(
     ref_anchor_pos_w = torch.cat((base_pos_w[..., :2], ref_base_pos_w[..., 2:3]), -1)
     ref_body_pos_w_aligned = ref_anchor_pos_w.unsqueeze(-2) + mv3(
         ref_alignment_rot_mat_w.unsqueeze(-3),
-        motion.body_pos_w[motion_frame_index] - ref_base_pos_w.unsqueeze(-2),
+        motion.ref_body_state(motion_frame_index)[0] - ref_base_pos_w.unsqueeze(-2),
     )
     body_pos_error_heading = mv3(world_to_heading.unsqueeze(-3), ref_body_pos_w_aligned - body_pos_w).flatten(
         -2
@@ -155,7 +157,7 @@ def compute_critic_state_features(
     return torch.cat(
         (
             compute_invariant_features(state),
-            motion.joint_pos[motion_frame_index] - joint_pos,
+            motion.joint_position(motion_frame_index) - joint_pos,
             body_pos_error_heading,
             base_pos_error_heading,
             ref_base_rot_6d_relative,

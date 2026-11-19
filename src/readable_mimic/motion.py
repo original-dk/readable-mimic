@@ -27,13 +27,15 @@ class ReferenceMotion:
         self.names = [
             os.path.splitext(os.path.basename(motion_frame_index))[0] for motion_frame_index in files
         ]
-        base_pos_clips, base_quat_clips, joint_pos_clips = ([], [], [])
-        clip_lengths = []
-        for motion_frame_index in files:
-            base_pos_w, base_quat_w, joint_pos, source_frame_rate = load_motion(motion_frame_index)
+        self.kinematics = kinematics
+        base_pos_clips, compact_clips, clip_lengths = [], [], []
+        for path in files:
+            base_pos_w, base_quat_w, joint_pos, source_frame_rate = load_motion(path)
             base_pos_w, base_quat_w, joint_pos = (
-                torch.tensor(values, dtype=torch.float32) for values in (base_pos_w, base_quat_w, joint_pos)
+                torch.as_tensor(values, dtype=torch.float32) for values in (base_pos_w, base_quat_w, joint_pos)
             )
+            if len(base_pos_w) < 2 or not np.isfinite(source_frame_rate) or source_frame_rate <= 0:
+                raise ValueError(f"Invalid reference clip: {path}")
             source_frame_count = base_pos_w.shape[0]
             clip_duration = (source_frame_count - 1) / source_frame_rate
             num_frames = int(np.floor(clip_duration / CONTROL_DT)) + 1
@@ -53,109 +55,67 @@ class ReferenceMotion:
                 base_quat_w[previous_frame_indices + 1],
                 interpolation_weight,
             )
-            (
-                base_pos_clips.append(base_pos_w),
-                base_quat_clips.append(base_quat_w),
-                joint_pos_clips.append(joint_pos),
-            )
-            clip_lengths.append(num_frames)
-        self.clip_len = torch.tensor(clip_lengths, device=device)
-        self.clip_start = torch.cumsum(
-            torch.cat((torch.zeros(1, dtype=torch.long), torch.tensor(clip_lengths[:-1], dtype=torch.long))),
-            0,
-        ).to(device)
-        self.clip_end = self.clip_start + self.clip_len - 1
-        self.num_frames = int(sum(clip_lengths))
-        self.clip_id = torch.cat(
-            [
-                torch.full((num_frames,), clip_index, dtype=torch.long)
-                for clip_index, num_frames in enumerate(clip_lengths)
-            ]
-        ).to(device)
-        (
-            base_pos_w_clips,
-            base_rot_mat_w_clips,
-            base_lin_vel_w_clips,
-            base_ang_vel_w_clips,
-            joint_position_clips,
-            joint_velocity_clips,
-        ) = ([], [], [], [], [], [])
-        for base_pos_w, base_quat_w, joint_pos in zip(base_pos_clips, base_quat_clips, joint_pos_clips):
+            if num_frames < 2:
+                raise ValueError(f"Reference clip has fewer than two frames at 50 Hz: {path}")
             base_rot_mat_w = quat_to_mat(base_quat_w)
             base_lin_vel_w = _gradient(base_pos_w, CONTROL_DT)
-            joint_vel = _gradient(joint_pos, CONTROL_DT)
-            base_ang_vel_w = torch.zeros_like(base_pos_w)
-            base_ang_vel_w[1:-1] = so3_log(base_rot_mat_w[2:] @ base_rot_mat_w[:-2].transpose(-1, -2)) / (
-                2 * CONTROL_DT
-            )
+            base_ang_vel_w = torch.empty_like(base_pos_w)
+            base_ang_vel_w[1:-1] = so3_log(
+                base_rot_mat_w[2:] @ base_rot_mat_w[:-2].transpose(-1, -2)
+            ) / (2 * CONTROL_DT)
             base_ang_vel_w[0] = so3_log(base_rot_mat_w[1] @ base_rot_mat_w[0].T) / CONTROL_DT
             base_ang_vel_w[-1] = so3_log(base_rot_mat_w[-1] @ base_rot_mat_w[-2].T) / CONTROL_DT
-            (
-                base_pos_w_clips.append(base_pos_w),
-                base_rot_mat_w_clips.append(base_rot_mat_w),
-                base_lin_vel_w_clips.append(base_lin_vel_w),
-                base_ang_vel_w_clips.append(base_ang_vel_w),
-                joint_position_clips.append(joint_pos),
-                joint_velocity_clips.append(joint_vel),
-            )
-        concatenate_clips = lambda clips: torch.cat(clips).to(device)
-        self.base_pos_w, self.base_rot_mat_w, self.base_lin_vel_w, self.base_ang_vel_w = (
-            concatenate_clips(base_pos_w_clips),
-            concatenate_clips(base_rot_mat_w_clips),
-            concatenate_clips(base_lin_vel_w_clips),
-            concatenate_clips(base_ang_vel_w_clips),
+            compact = torch.cat(
+                (base_quat_w, base_lin_vel_w, base_ang_vel_w, joint_pos, _gradient(joint_pos, CONTROL_DT)), -1
+            ).half()
+            if not torch.isfinite(compact).all():
+                raise ValueError(f"Reference state exceeds FP16 range or is non-finite: {path}")
+            base_pos_clips.append(base_pos_w)
+            compact_clips.append(compact)
+            clip_lengths.append(num_frames)
+
+        self.num_frames = sum(clip_lengths)
+        self.num_joints = (compact_clips[0].shape[-1] - 10) // 2
+        self.base_pos_w = torch.empty((self.num_frames, 3), device=device, dtype=torch.float32)
+        self.compact_state = torch.empty(
+            (self.num_frames, compact_clips[0].shape[-1]), device=device, dtype=torch.float16
         )
-        self.joint_pos, self.joint_vel = (
-            concatenate_clips(joint_position_clips),
-            concatenate_clips(joint_velocity_clips),
-        )
-        with torch.no_grad():
-            (
-                body_position_clips,
-                body_rotation_clips,
-                body_linear_velocity_clips,
-                body_angular_velocity_clips,
-            ) = ([], [], [], [])
-            for start_frame in range(0, self.num_frames, 65536):
-                end_frame = min(start_frame + 65536, self.num_frames)
-                body_states = kinematics.forward(
-                    self.base_pos_w[start_frame:end_frame],
-                    self.base_rot_mat_w[start_frame:end_frame],
-                    self.base_lin_vel_w[start_frame:end_frame],
-                    self.base_ang_vel_w[start_frame:end_frame],
-                    self.joint_pos[start_frame:end_frame],
-                    self.joint_vel[start_frame:end_frame],
-                )
-                (
-                    body_position_clips.append(body_states[0]),
-                    body_rotation_clips.append(body_states[1]),
-                    body_linear_velocity_clips.append(body_states[2]),
-                    body_angular_velocity_clips.append(body_states[3]),
-                )
-            self.body_pos_w, self.body_rot_mat_w, self.body_lin_vel_w, self.body_ang_vel_w = (
-                torch.cat(body_position_clips),
-                torch.cat(body_rotation_clips),
-                torch.cat(body_linear_velocity_clips),
-                torch.cat(body_angular_velocity_clips),
-            )
-        world_to_base = self.base_rot_mat_w.transpose(-1, -2)
-        self.base_lin_vel = (world_to_base @ self.base_lin_vel_w.unsqueeze(-1)).squeeze(-1)
-        self.base_ang_vel = (world_to_base @ self.base_ang_vel_w.unsqueeze(-1)).squeeze(-1)
-        bin_clip, bin_start = ([], [])
-        for clip_index in range(len(clip_lengths)):
-            num_clip_bins = int(np.ceil(clip_lengths[clip_index] / BIN_FRAMES))
-            for bin_index in range(num_clip_bins):
-                bin_clip.append(clip_index)
-                bin_start.append(int(self.clip_start[clip_index]) + bin_index * BIN_FRAMES)
+        clip_starts, clip_ends, bin_clip, bin_start = [], [], [], []
+        start = 0
+        # Upload contiguous groups without allocating a second full-size library.
+        for first in range(0, len(files), 512):
+            last = min(first + 512, len(files))
+            stop = start + sum(clip_lengths[first:last])
+            self.base_pos_w[start:stop].copy_(torch.cat(base_pos_clips[first:last]))
+            self.compact_state[start:stop].copy_(torch.cat(compact_clips[first:last]))
+            for clip_index in range(first, last):
+                length = clip_lengths[clip_index]
+                clip_starts.append(start)
+                clip_ends.append(start + length - 1)
+                starts = range(start, start + length, BIN_FRAMES)
+                bin_start.extend(starts)
+                bin_clip.extend([clip_index] * len(starts))
+                start += length
+        self._clip_bounds = list(zip(clip_starts, clip_ends))
+        self.clip_len = torch.tensor(clip_lengths, device=device)
+        self.clip_start = torch.tensor(clip_starts, device=device)
+        self.clip_end = torch.tensor(clip_ends, device=device)
         self.bin_clip = torch.tensor(bin_clip, device=device)
         self.bin_start = torch.tensor(bin_start, device=device)
         self.num_bins = len(bin_start)
-        self.frame_bin = torch.zeros(self.num_frames, dtype=torch.long, device=device)
-        for bin_index in range(self.num_bins):
-            clip_index = bin_clip[bin_index]
-            start_frame = bin_start[bin_index]
-            end_frame = min(start_frame + BIN_FRAMES, int(self.clip_end[clip_index]) + 1)
-            self.frame_bin[start_frame:end_frame] = bin_index
+
+    def end_frame(self, motion_frame_index):
+        return self.clip_end[torch.searchsorted(self.clip_end, motion_frame_index.contiguous())]
+
+    def base_rotation(self, motion_frame_index):
+        quat = self.compact_state[motion_frame_index][..., :4].float()
+        return quat_to_mat(torch.nn.functional.normalize(quat, dim=-1))
+
+    def joint_position(self, motion_frame_index):
+        return self.compact_state[motion_frame_index][..., 10 : 10 + self.num_joints].float()
+
+    def ref_body_state(self, motion_frame_index):
+        return self.kinematics.forward(*self.ref_state(motion_frame_index))
 
     @staticmethod
     def from_dir(path: str, robot: RobotSpec, kinematics: Kinematics, device: str) -> ReferenceMotion:
@@ -171,24 +131,29 @@ class ReferenceMotion:
         q-quantile of that foot's height in the clip) + margin, and horizontal speed below vmax. A fixed 4.5 cm
         threshold misses most stance frames of clips whose retargeted feet sit ~1 cm higher (LAFAN1 subject1:
         floor ~4.5 cm against ~3.5 cm for the others)."""
-        foot_heights, foot_horizontal_speed = (
-            self.body_pos_w[:, feet, 2],
-            self.body_lin_vel_w[:, feet, :2].norm(dim=-1),
-        )
-        floor = torch.zeros_like(foot_heights)
-        for clip_index in range(len(self.names)):
-            start_frame = self.clip_id == clip_index
-            floor[start_frame] = foot_heights[start_frame].quantile(floor_quantile, dim=0)
-        self.ref_foot_contact = ((foot_heights < floor + margin) & (foot_horizontal_speed < vmax)).float()
+        self.ref_foot_contact = torch.empty((self.num_frames, len(feet)), dtype=torch.bool, device=self.device)
+        with torch.no_grad():
+            for start, end in self._clip_bounds:
+                heights, speeds = [], []
+                for first in range(start, end + 1, 65536):
+                    indices = torch.arange(first, min(first + 65536, end + 1), device=self.device)
+                    body_pos_w, _, body_lin_vel_w, _ = self.ref_body_state(indices)
+                    heights.append(body_pos_w[:, feet, 2])
+                    speeds.append(body_lin_vel_w[:, feet, :2].norm(dim=-1))
+                foot_height, foot_speed = torch.cat(heights), torch.cat(speeds)
+                floor = foot_height.quantile(floor_quantile, dim=0)
+                self.ref_foot_contact[start : end + 1] = (foot_height < floor + margin) & (foot_speed < vmax)
 
     def ref_state(self, motion_frame_index: torch.Tensor):
+        state = self.compact_state[motion_frame_index].float()
+        rotation = quat_to_mat(torch.nn.functional.normalize(state[..., :4], dim=-1))
         return (
             self.base_pos_w[motion_frame_index],
-            self.base_rot_mat_w[motion_frame_index],
-            self.base_lin_vel_w[motion_frame_index],
-            self.base_ang_vel_w[motion_frame_index],
-            self.joint_pos[motion_frame_index],
-            self.joint_vel[motion_frame_index],
+            rotation,
+            state[..., 4:7],
+            state[..., 7:10],
+            state[..., 10 : 10 + self.num_joints],
+            state[..., 10 + self.num_joints :],
         )
 
 

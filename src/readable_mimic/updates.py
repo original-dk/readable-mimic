@@ -220,7 +220,7 @@ class TrainingUpdates:
             motion_frame_index = start["motion_frame_index"]
             valid_starts = (
                 motion_frame_index + self.horizon
-                <= self.motion.clip_end[self.motion.clip_id[motion_frame_index]]
+                <= self.motion.end_frame(motion_frame_index)
             )
             selected_indices = valid_starts.nonzero(as_tuple=False).squeeze(-1)[: batch_size - num_samples]
             (
