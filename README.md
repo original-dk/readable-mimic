@@ -530,3 +530,16 @@ uv run --extra retarget python tools/prepare_boneseed.py --input-dir /path/to/g1
 名称规则参考 [Uni-SuperMimic BONES-SEED 筛选](https://github.com/Motphys/Uni-SuperMimic/blob/main/src/unisupermimic/data/boneseed.py)，
 仅选用楼梯、外物支撑等相关词，配置在 `motion_filter.json` 的 `boneseed` 段。
 几何检查沿用本项目的持续悬空、落地和坐姿支撑规则。无标签楼梯的识别取决于这些几何条件。
+
+
+### DKWBC 前馈实验
+
+在 Genesis G1 训练配置设置 `"dkwbc_feedforward": true`，使用新的 `log_dir` 并从头训练。
+Actor 输出相对于参考关节姿态的残差。加载运动时，按轨迹预计算名义模型在参考状态的
+逆动力学力矩（惯性、重力和速度偏置），再除以关节刚度，叠加到 Genesis 位置目标。
+最终力矩仍由 Genesis 的执行器上限限制。World Model 使用与仿真实际位置目标等价的动作，
+历史观测和动作变化惩罚仍使用 Actor 残差。评估从 checkpoint 读取控制开关。
+
+这是参考轨迹前馈的 PD target 实验，和论文在执行时用当前状态计算逆动力学的完整版本有区别。
+前馈在初始化时逐帧预计算，首次对照宜选小动作集。前馈缓存约增加 58 字节/帧。
+可用同一动作集和训练设置分别运行 `false` 和 `true`，比较跟踪误差、失败阶段和残差。

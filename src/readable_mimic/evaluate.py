@@ -252,7 +252,12 @@ def main(argv=None):
     )
     kinematics = Kinematics(robot, config.device)
     motion_dir = arguments.motion_dir if arguments.motion_dir is not None else config.motion_dir
-    motion = ReferenceMotion.from_dir(motion_dir, robot, kinematics, config.device)
+    dkwbc_feedforward = actor_config.get("dkwbc_feedforward", False)
+    if dkwbc_feedforward and config.simulator != "genesis":
+        raise ValueError("DKWBC checkpoint evaluation requires Genesis")
+    motion = ReferenceMotion.from_dir(
+        motion_dir, robot, kinematics, config.device, dkwbc_feedforward=dkwbc_feedforward
+    )
     selected_indices = select_motion_indices(motion.names, arguments.motions)
     history_length, command_frames = (actor_config["hist"], actor_config["goal_frames"])
     actor = Actor(

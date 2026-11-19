@@ -45,7 +45,13 @@ class Trainer:
             observation_noise=ObservationNoiseConfig(**config.observation_noise),
         )
         self.kinematics = Kinematics(self.robot, self.device)
-        self.motion = ReferenceMotion.from_dir(config.motion_dir, self.robot, self.kinematics, self.device)
+        self.motion = ReferenceMotion.from_dir(
+            config.motion_dir,
+            self.robot,
+            self.kinematics,
+            self.device,
+            dkwbc_feedforward=getattr(config, "dkwbc_feedforward", False),
+        )
         self.xi_dim = compute_xi_dim(self.robot)
         self.joint_pos_offset_limits = joint_pos_offset_limits(self.robot, self.device)
         self.xi_center, self.xi_scale = transforms.compute_xi_normalization(

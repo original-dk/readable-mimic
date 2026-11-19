@@ -22,6 +22,8 @@ def export_policy(checkpoint_path, config_path, output_path):
     config = load_config(config_path, restore_training_config=False)
     checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
     actor_config = checkpoint["config"]
+    if actor_config.get("dkwbc_feedforward", False):
+        raise ValueError("DKWBC feedforward is not supported by ONNX deployment")
     robot = get_robot(actor_config["robot"])
     num_joints = robot.num_joints
     observation_dim = compute_observation_dim(num_joints)

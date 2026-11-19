@@ -72,6 +72,7 @@ class ReplayBuffer:
                 "last_action",
                 "xi",
                 "transition_cut",
+                "motion_frame_index",
             )
         }
         cut_mask = windows["transition_cut"].float()

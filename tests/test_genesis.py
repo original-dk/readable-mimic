@@ -7,7 +7,8 @@ from test_pipeline import tiny_trainer as tiny_trainer
 from readable_mimic.rotations import so3_exp
 
 
-def test_real_genesis_state_reset_xi_and_training(tiny_trainer, tmp_path):
+@pytest.mark.parametrize("dkwbc_feedforward", [False, True])
+def test_real_genesis_state_reset_xi_and_training(tiny_trainer, tmp_path, dkwbc_feedforward):
     trainer = tiny_trainer
     joint_names = trainer.robot.joint_names
     trainer.robot = replace(
@@ -18,6 +19,16 @@ def test_real_genesis_state_reset_xi_and_training(tiny_trainer, tmp_path):
         joint_armature={name: 0.01 for name in joint_names},
     )
     trainer.config.simulator = "genesis"
+    trainer.config.dkwbc_feedforward = dkwbc_feedforward
+    if dkwbc_feedforward:
+        from readable_mimic.motion import ReferenceMotion
+
+        motion = ReferenceMotion.from_dir(
+            trainer.config.motion_dir, trainer.robot, trainer.kinematics, "cpu", dkwbc_feedforward=True
+        )
+        trainer.motion = trainer.task.motion = trainer.updates.motion = motion
+        assert motion.feedforward_action_scale is not None
+        assert torch.isfinite(motion.compact_state).all()
     trainer.config.simulation = {**trainer.config.simulation, "iterations": 10, "ls_iterations": 10}
     try:
         trainer.create_env()

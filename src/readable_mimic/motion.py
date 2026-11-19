@@ -22,6 +22,7 @@ class ReferenceMotion:
         kinematics: Kinematics,
         device: str,
         load_motion: Callable[[str], MotionArrays],
+        feedforward_robot: RobotSpec | None = None,
     ):
         self.device = device
         self.names = [
@@ -29,10 +30,16 @@ class ReferenceMotion:
         ]
         self.kinematics = kinematics
         base_pos_clips, compact_clips, clip_lengths = [], [], []
+        feedforward = None
+        if feedforward_robot is not None:
+            from .feedforward import ReferenceFeedforward
+
+            feedforward = ReferenceFeedforward(feedforward_robot)
         for path in files:
             base_pos_w, base_quat_w, joint_pos, source_frame_rate = load_motion(path)
             base_pos_w, base_quat_w, joint_pos = (
-                torch.as_tensor(values, dtype=torch.float32) for values in (base_pos_w, base_quat_w, joint_pos)
+                torch.as_tensor(values, dtype=torch.float32)
+                for values in (base_pos_w, base_quat_w, joint_pos)
             )
             if len(base_pos_w) < 2 or not np.isfinite(source_frame_rate) or source_frame_rate <= 0:
                 raise ValueError(f"Invalid reference clip: {path}")
@@ -60,14 +67,31 @@ class ReferenceMotion:
             base_rot_mat_w = quat_to_mat(base_quat_w)
             base_lin_vel_w = _gradient(base_pos_w, CONTROL_DT)
             base_ang_vel_w = torch.empty_like(base_pos_w)
-            base_ang_vel_w[1:-1] = so3_log(
-                base_rot_mat_w[2:] @ base_rot_mat_w[:-2].transpose(-1, -2)
-            ) / (2 * CONTROL_DT)
+            base_ang_vel_w[1:-1] = so3_log(base_rot_mat_w[2:] @ base_rot_mat_w[:-2].transpose(-1, -2)) / (
+                2 * CONTROL_DT
+            )
             base_ang_vel_w[0] = so3_log(base_rot_mat_w[1] @ base_rot_mat_w[0].T) / CONTROL_DT
             base_ang_vel_w[-1] = so3_log(base_rot_mat_w[-1] @ base_rot_mat_w[-2].T) / CONTROL_DT
-            compact = torch.cat(
-                (base_quat_w, base_lin_vel_w, base_ang_vel_w, joint_pos, _gradient(joint_pos, CONTROL_DT)), -1
-            ).half()
+            joint_vel = _gradient(joint_pos, CONTROL_DT)
+            compact = torch.cat((base_quat_w, base_lin_vel_w, base_ang_vel_w, joint_pos, joint_vel), -1)
+            if feedforward is not None:
+                base_ang_vel = (base_rot_mat_w.transpose(-1, -2) @ base_ang_vel_w.unsqueeze(-1)).squeeze(-1)
+                base_velocity = torch.cat((base_lin_vel_w, base_ang_vel), -1)
+                acceleration = _gradient(torch.cat((base_velocity, joint_vel), -1), CONTROL_DT)
+                offsets = feedforward.position_offsets(
+                    base_pos_w.numpy(),
+                    base_quat_w.numpy(),
+                    base_velocity.numpy(),
+                    joint_pos.numpy(),
+                    joint_vel.numpy(),
+                    acceleration.numpy(),
+                )
+                compact = torch.cat((compact, offsets), -1)
+                if (len(clip_lengths) + 1) % 1000 == 0:
+                    print(
+                        f"Reference inverse dynamics: {len(clip_lengths) + 1}/{len(files)} clips", flush=True
+                    )
+            compact = compact.half()
             if not torch.isfinite(compact).all():
                 raise ValueError(f"Reference state exceeds FP16 range or is non-finite: {path}")
             base_pos_clips.append(base_pos_w)
@@ -75,7 +99,10 @@ class ReferenceMotion:
             clip_lengths.append(num_frames)
 
         self.num_frames = sum(clip_lengths)
-        self.num_joints = (compact_clips[0].shape[-1] - 10) // 2
+        self.num_joints = joint_pos.shape[-1]
+        self.feedforward_action_scale = None
+        if feedforward_robot is not None:
+            self.feedforward_action_scale = torch.tensor(feedforward_robot.action_scale_list(), device=device)
         self.base_pos_w = torch.empty((self.num_frames, 3), device=device, dtype=torch.float32)
         self.compact_state = torch.empty(
             (self.num_frames, compact_clips[0].shape[-1]), device=device, dtype=torch.float16
@@ -104,6 +131,18 @@ class ReferenceMotion:
         self.bin_start = torch.tensor(bin_start, device=device)
         self.num_bins = len(bin_start)
 
+    def control_action(self, action, motion_frame_index, default_joint_pos):
+        if self.feedforward_action_scale is None:
+            return action
+        state = self.compact_state[motion_frame_index].float()
+        ref_joint_pos = state[..., 10 : 10 + self.num_joints]
+        feedforward_position_offset = state[..., 10 + 2 * self.num_joints :]
+        return (
+            action
+            + (ref_joint_pos - default_joint_pos + feedforward_position_offset)
+            / self.feedforward_action_scale
+        )
+
     def end_frame(self, motion_frame_index):
         return self.clip_end[torch.searchsorted(self.clip_end, motion_frame_index.contiguous())]
 
@@ -118,11 +157,15 @@ class ReferenceMotion:
         return self.kinematics.forward(*self.ref_state(motion_frame_index))
 
     @staticmethod
-    def from_dir(path: str, robot: RobotSpec, kinematics: Kinematics, device: str) -> ReferenceMotion:
+    def from_dir(
+        path: str, robot: RobotSpec, kinematics: Kinematics, device: str, *, dkwbc_feedforward=False
+    ) -> ReferenceMotion:
         files = sorted(glob.glob(os.path.join(path, robot.motion_glob)))
         if not files:
             raise FileNotFoundError(f"No reference motion files found in {path}; run tools/download_data.py.")
-        return ReferenceMotion(files, kinematics, device, robot.load_motion)
+        return ReferenceMotion(
+            files, kinematics, device, robot.load_motion, robot if dkwbc_feedforward else None
+        )
 
     def set_ref_foot_contact(
         self, feet: list[int], margin: float = 0.015, vmax: float = 0.5, floor_quantile: float = 0.05
@@ -131,7 +174,9 @@ class ReferenceMotion:
         q-quantile of that foot's height in the clip) + margin, and horizontal speed below vmax. A fixed 4.5 cm
         threshold misses most stance frames of clips whose retargeted feet sit ~1 cm higher (LAFAN1 subject1:
         floor ~4.5 cm against ~3.5 cm for the others)."""
-        self.ref_foot_contact = torch.empty((self.num_frames, len(feet)), dtype=torch.bool, device=self.device)
+        self.ref_foot_contact = torch.empty(
+            (self.num_frames, len(feet)), dtype=torch.bool, device=self.device
+        )
         with torch.no_grad():
             for start, end in self._clip_bounds:
                 heights, speeds = [], []
@@ -153,7 +198,7 @@ class ReferenceMotion:
             state[..., 4:7],
             state[..., 7:10],
             state[..., 10 : 10 + self.num_joints],
-            state[..., 10 + self.num_joints :],
+            state[..., 10 + self.num_joints : 10 + 2 * self.num_joints],
         )
 
 

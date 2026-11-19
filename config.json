@@ -1,5 +1,6 @@
 {
   "robot": "g1",
+  "dkwbc_feedforward": false,
   "simulator": "genesis",
   "genesis": {
     "enable_self_collision": false,

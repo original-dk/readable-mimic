@@ -123,7 +123,8 @@ class TrackingEnv:
         motion_frame_index = self.motion_frame_index.clone()
         episode_step = self.episode_step.clone()
         joint_pos_offset = self.xi[:, 1 : 1 + self.num_joints]
-        target_joint_pos = self.default_joint_pos + joint_pos_offset + self.action_scale * action
+        control_action = self.motion.control_action(action, motion_frame_index, self.default_joint_pos)
+        target_joint_pos = self.default_joint_pos + joint_pos_offset + self.action_scale * control_action
         self.simulation.step(target_joint_pos)
         next_state = self.state()
         next_motion_frame_index = motion_frame_index + 1

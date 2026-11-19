@@ -129,7 +129,8 @@ class TrainingUpdates:
         command,
     ):
         action = self.actor(observation_history, command)
-        next_state = self.world_model.step(state, action, last_action, normalized_xi)
+        control_action = self.motion.control_action(action, motion_frame_index, self.default_joint_pos)
+        next_state = self.world_model.step(state, control_action, last_action, normalized_xi)
         next_motion_frame_index = motion_frame_index + 1
         next_observation = transforms.apply_observation_noise(
             transforms.compute_observation(
@@ -186,6 +187,9 @@ class TrainingUpdates:
 
     def update_world_model(self):
         windows = self.buffer.sample_windows(self.config.wm_batch)
+        windows["action"] = self.motion.control_action(
+            windows["action"], windows["motion_frame_index"], self.default_joint_pos
+        )
         if self.mirror is not None:
             windows = self.mirror_windows(windows, int(self.config.wm_batch * self.config.wm_mirror))
         self.timer.record("world_model_prepare")

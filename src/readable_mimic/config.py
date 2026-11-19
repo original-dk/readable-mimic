@@ -19,6 +19,7 @@ def load_config(path="config.json", resume=None, *, restore_training_config=True
     path = Path(path).resolve()
     values = json.loads(path.read_text(encoding="utf-8"))
     values.setdefault("resume", None)
+    values.setdefault("dkwbc_feedforward", False)
     values.setdefault("profile_speed", False)
     values.setdefault("compile_world_model", True)
     values.setdefault("compile_actor", True)
@@ -65,6 +66,8 @@ def load_config(path="config.json", resume=None, *, restore_training_config=True
         values = {**values, **saved_config, **runtime_config}
     config = SimpleNamespace(**values)
     assert config.simulator in ("mujoco", "genesis"), "simulator must be mujoco or genesis"
+    if config.dkwbc_feedforward and (config.simulator != "genesis" or config.robot != "g1"):
+        raise ValueError("dkwbc_feedforward requires Genesis and G1")
     assert config.amp == "none", "Only FP32 is supported."
     assert config.fail_reset == 0, "Only uniform reset sampling is supported."
     assert config.warmup_steps >= config.wm_window
