@@ -43,5 +43,19 @@
     "max_floor_alignment": 0.05
   },
   "max_com_support_distance": 0.05,
-  "max_com_support_duration": 0.5
+  "max_com_support_duration": 0.5,
+  "max_static_com_speed": 0.15,
+  "max_static_com_acceleration": 1.5,
+  "max_static_foot_speed": 0.12,
+  "max_seated_thigh_vertical_ratio": 0.65,
+  "seated_thigh_bodies": [
+    [
+      "left_hip_pitch_link",
+      "left_knee_link"
+    ],
+    [
+      "right_hip_pitch_link",
+      "right_knee_link"
+    ]
+  ]
 }

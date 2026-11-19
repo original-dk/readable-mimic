@@ -102,9 +102,18 @@ def support_distance(points, center_of_mass):
     return float(np.linalg.norm(offset - fraction[:, None] * edge, axis=1).min())
 
 
-def check_support_distance(distance, settings, frame_rate=30):
+def check_support_distance(distance, center_of_mass_pos_w, foot_pos_w, seated_pose, settings, frame_rate=30):
     # Airborne frames are NaN: they interrupt support intervals and use the flight checks.
-    outside = distance > settings["max_com_support_distance"]
+    center_of_mass_lin_vel_w = np.gradient(center_of_mass_pos_w, 1 / frame_rate, axis=0)
+    center_of_mass_lin_acc_w = np.gradient(center_of_mass_lin_vel_w, 1 / frame_rate, axis=0)
+    foot_lin_vel_w = np.gradient(foot_pos_w, 1 / frame_rate, axis=0)
+    quiet = (
+        (np.linalg.norm(center_of_mass_lin_vel_w, axis=1) <= settings["max_static_com_speed"])
+        & (np.linalg.norm(center_of_mass_lin_acc_w, axis=1) <= settings["max_static_com_acceleration"])
+        & (np.linalg.norm(foot_lin_vel_w, axis=2).max(axis=1) <= settings["max_static_foot_speed"])
+    )
+    # A static COM projection cannot diagnose dynamic balance. Only reject quiet supported poses.
+    outside = (distance > settings["max_com_support_distance"]) & quiet & seated_pose
     edges = np.diff(np.r_[False, outside, False].astype(int))
     intervals = [
         dict(
@@ -151,12 +160,19 @@ class GroundContactChecker:
         if not np.all(self.sphere_mask | (types == mujoco.mjtGeom.mjGEOM_BOX)):
             raise ValueError("Expected sphere or box foot collision geometry")
         self.foot_sizes = model.geom_size[self.foot_indices]
+        self.foot_body_ids = [model.body(name).id for name in foot_body_names]
+        self.thigh_body_ids = np.array(
+            [[model.body(name).id for name in pair] for pair in settings["seated_thigh_bodies"]]
+        )
         self.box_corners = np.array(list(itertools.product([-1, 1], repeat=3)))
         angles = np.arange(16) * (2 * np.pi / 16)
         self.sphere_directions = np.column_stack([np.cos(angles), np.sin(angles)])
 
     def check(self, values, progress_label=None):
         foot_height = np.empty(len(values))
+        center_of_mass_pos_w = np.empty((len(values), 3))
+        foot_pos_w = np.empty((len(values), len(self.foot_body_ids), 3))
+        seated_pose = np.zeros(len(values), dtype=bool)
         com_height = np.empty(len(values))
         com_support_distance = np.full(len(values), np.nan)
         nonfoot_contact = False
@@ -183,6 +199,13 @@ class GroundContactChecker:
             radius = np.where(self.sphere_mask, self.foot_sizes[:, 0], box_radius)
             sole_height = self.data.geom_xpos[self.foot_indices, 2] - radius
             foot_height[index] = np.min(sole_height)
+            thigh = self.data.xpos[self.thigh_body_ids[:, 1]] - self.data.xpos[self.thigh_body_ids[:, 0]]
+            seated_pose[index] = np.all(
+                np.abs(thigh[:, 2]) / np.linalg.norm(thigh, axis=1)
+                <= self.settings["max_seated_thigh_vertical_ratio"]
+            )
+            center_of_mass_pos_w[index] = self.data.subtree_com[self.base_body_id]
+            foot_pos_w[index] = self.data.xpos[self.foot_body_ids]
             support_points = []
             for foot in np.flatnonzero(sole_height <= self.settings["foot_contact_height"]):
                 center = self.data.geom_xpos[self.foot_indices[foot]]
@@ -207,7 +230,9 @@ class GroundContactChecker:
                     for contact in self.data.contact
                 )
         flags, metrics = check_ground_support(foot_height, com_height, self.settings)
-        support_flags, support_metrics = check_support_distance(com_support_distance, self.settings)
+        support_flags, support_metrics = check_support_distance(
+            com_support_distance, center_of_mass_pos_w, foot_pos_w, seated_pose, self.settings
+        )
         flags += support_flags
         metrics.update(support_metrics)
         if nonfoot_contact:

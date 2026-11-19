@@ -207,7 +207,17 @@ def test_support_distance_and_persistent_external_support():
     assert distance(square, np.array([0.0, 0.0])) == 0
     assert distance(square, np.array([0.2, 0.1])) == pytest.approx(0.1)
     assert distance(square, np.array([0.2, 0.2])) == pytest.approx(np.sqrt(0.02))
-    check = MODULE["check_support_distance"]
+    support_check = MODULE["check_support_distance"]
+
+    def check(distance, rules):
+        return support_check(
+            distance,
+            np.zeros((len(distance), 3)),
+            np.zeros((len(distance), 2, 3)),
+            np.ones(len(distance), dtype=bool),
+            rules,
+        )
+
     rules = support_rules()
     # Brief excursions and flight must not be combined into a persistent interval.
     for values in [
@@ -223,7 +233,7 @@ def test_support_distance_and_persistent_external_support():
 
 
 @pytest.mark.skipif(
-    not (ROOT / "data/amass/train/train/CMU__111__111_11_stageii.csv").exists(),
+    not (ROOT / "data/amass/train/candidates/CMU__111__111_11_stageii.csv").exists(),
     reason="Licensed local seated motion unavailable",
 )
 def test_reported_seated_cmu_requires_external_support():
@@ -235,7 +245,49 @@ def test_reported_seated_cmu_requires_external_support():
     checker = MODULE["GroundContactChecker"](
         spec.compile(), get_robot("g1"), ["left_ankle_roll_link", "right_ankle_roll_link"], support_rules()
     )
-    values = np.loadtxt(ROOT / "data/amass/train/train/CMU__111__111_11_stageii.csv", delimiter=",")
+    values = np.loadtxt(ROOT / "data/amass/train/candidates/CMU__111__111_11_stageii.csv", delimiter=",")
     flags, metrics = checker.check(values)
     assert "unsupported_support" in flags
     assert metrics["longest_com_outside_support_duration"] > 1
+
+
+def test_dynamic_motion_outside_support_is_not_static_support_failure():
+    check = MODULE["check_support_distance"]
+    time = np.arange(90) / 30
+    position = np.zeros((90, 3))
+    feet = np.zeros((90, 2, 3))
+    distance = np.full(90, 0.2)
+    assert check(distance, position, feet, np.zeros(90, dtype=bool), support_rules())[0] == []
+    position[:, 0] = time
+    assert check(distance, position, feet, np.ones(90, dtype=bool), support_rules())[0] == []
+    position[:, 0] = 0.1 * np.sin(8 * time)
+    assert check(distance, position, feet, np.ones(90, dtype=bool), support_rules())[0] == []
+    position[:] = 0
+    feet[:, :, 0] = time[:, None]
+    assert check(distance, position, feet, np.ones(90, dtype=bool), support_rules())[0] == []
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "CMU__05__05_05_stageii",
+        "CMU__05__05_06_stageii",
+        "CMU__05__05_09_stageii",
+        "CMU__05__05_12_stageii",
+        "CMU__05__05_18_stageii",
+    ],
+)
+def test_reported_dynamic_cmu_not_rejected_as_static_support(name):
+    import mujoco
+    from readable_mimic.robot import get_robot
+
+    path = ROOT / "data/amass/train/candidates" / (name + ".csv")
+    if not path.exists():
+        pytest.skip("Licensed local motion unavailable")
+    spec = mujoco.MjSpec.from_file(str(ROOT / "data/g1_description/g1_29dof.xml"))
+    spec.worldbody.add_geom(name="screen_ground", type=mujoco.mjtGeom.mjGEOM_PLANE, size=[0, 0, 0.1])
+    checker = MODULE["GroundContactChecker"](
+        spec.compile(), get_robot("g1"), ["left_ankle_roll_link", "right_ankle_roll_link"], support_rules()
+    )
+    flags, _ = checker.check(np.loadtxt(path, delimiter=","))
+    assert "unsupported_support" not in flags
