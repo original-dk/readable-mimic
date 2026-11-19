@@ -221,3 +221,26 @@ def test_ghost_excludes_ground_on_separate_body():
     assert scene.geoms[before_count].type == mujoco.mjtGeom.mjGEOM_SPHERE
     for index in range(before_count):
         np.testing.assert_array_equal(scene.geoms[index].rgba, before_colors[index])
+
+
+def test_evaluation_selects_files_before_loading(tmp_path, monkeypatch):
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    from readable_mimic import evaluate
+
+    for name in ("cartwheel.csv", "walk.csv"):
+        (tmp_path / name).touch()
+    robot = SimpleNamespace(motion_glob="*.csv", load_motion=None)
+    selected = []
+    # Keep file discovery real and capture the exact constructor input.
+    from readable_mimic.motion import ReferenceMotion
+
+    def capture(files, kinematics, device, load_motion, feedforward_robot):
+        selected.extend(files)
+        assert feedforward_robot is robot
+
+    capture.find_files = ReferenceMotion.find_files
+    monkeypatch.setattr(evaluate, "ReferenceMotion", capture)
+    evaluate.load_evaluation_motion(tmp_path, robot, None, "cpu", "cartwheel", True)
+    assert [Path(path).name for path in selected] == ["cartwheel.csv"]
