@@ -188,7 +188,11 @@ LAFAN1 原有 `data/lafan1_g1` 的 40 条 CSV 已是同一布局，保持上游�
 
 HDM05 全部 215 条修复版原始候选在 `data/amass/cache/hdm05_fixed/candidates/`，
 再次经过 CSV 后处理的全部候选在 `data/amass/cache/hdm05_fixed/processed/candidates/`，
-筛选通过的测试 CSV 在 `processed/train/`。原候选和旧处理输出保留，路径不会自动指向修复版。
+筛选通过的测试 CSV 在 `processed/train/`。
+已将 215 条修复版 HDM05 同步到正式 `data/amass/candidates`，旧候选及旧后处理缓存备份在
+`data/amass/cache/legacy/hdm05_before_promotion/`。按用户原命令以 `data/amass/train` 作为输出根重跑后，
+真正的导出 CSV 位于 `data/amass/train/train/`（输出根不是最终 train），其中 `mm_08-01_01` 已与修复版逐字节一致。
+旧播放器需关闭重开才能加载更新文件；代码更新不会自动替换另一台机器上已有的 CSV，跨机器需同步更新的数据。
 `arm_tracking_comparison.json`、`initialization_regression.json` 保留完整对照数值。
 该修复在统一 AMASS 转换器中生效；旧 CSV 不会自动改变，其他库重转时应使用新的候选目录。
 
