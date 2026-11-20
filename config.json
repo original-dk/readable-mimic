@@ -53,7 +53,7 @@
   "compile_world_model": true,
   "compile_actor": true,
   "allow_tf32": true,
-  "motion_dir": "data/lafan1_g1",
+  "motion_dir": "data/lafan2/train",
   "log_dir": "runs/main",
   "seed": 0,
   "resume": null,
