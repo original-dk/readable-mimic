@@ -4,9 +4,6 @@
   "quaternion_tolerance": 1e-05,
   "joint_limit_tolerance": 0.0001,
   "velocity_limit_multiplier": 1,
-  "excluded_motions": [
-    "HDM05__bk__HDM_bk_01-02_01_120_stageii"
-  ],
   "chair_support": {
     "min_pelvis_height_m": 0.20,
     "foot_contact_height_m": 0.03,
