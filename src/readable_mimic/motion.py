@@ -118,11 +118,15 @@ class ReferenceMotion:
         return self.kinematics.forward(*self.ref_state(motion_frame_index))
 
     @staticmethod
-    def from_dir(path: str, robot: RobotSpec, kinematics: Kinematics, device: str) -> ReferenceMotion:
+    def find_files(path: str, robot: RobotSpec) -> list[str]:
         files = sorted(glob.glob(os.path.join(path, robot.motion_glob)))
         if not files:
             raise FileNotFoundError(f"No reference motion files found in {path}; run tools/download_data.py.")
-        return ReferenceMotion(files, kinematics, device, robot.load_motion)
+        return files
+
+    @staticmethod
+    def from_dir(path: str, robot: RobotSpec, kinematics: Kinematics, device: str) -> ReferenceMotion:
+        return ReferenceMotion(ReferenceMotion.find_files(path, robot), kinematics, device, robot.load_motion)
 
     def set_ref_foot_contact(
         self, feet: list[int], margin: float = 0.015, vmax: float = 0.5, floor_quantile: float = 0.05

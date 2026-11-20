@@ -60,6 +60,12 @@ def select_motion_indices(names, requested_motions):
     return [names.index(name) for name in requested_names]
 
 
+def load_evaluation_motion(motion_dir, robot, kinematics, device, requested_motions):
+    files = ReferenceMotion.find_files(motion_dir, robot)
+    indices = select_motion_indices([Path(path).stem for path in files], requested_motions)
+    return ReferenceMotion([files[index] for index in indices], kinematics, device, robot.load_motion)
+
+
 def select_actor_weights(checkpoint):
     average = checkpoint.get("actor_average")
     if average is not None and int(average["n_averaged"]) > 0:
@@ -252,8 +258,7 @@ def main(argv=None):
     )
     kinematics = Kinematics(robot, config.device)
     motion_dir = arguments.motion_dir if arguments.motion_dir is not None else config.motion_dir
-    motion = ReferenceMotion.from_dir(motion_dir, robot, kinematics, config.device)
-    selected_indices = select_motion_indices(motion.names, arguments.motions)
+    motion = load_evaluation_motion(motion_dir, robot, kinematics, config.device, arguments.motions)
     history_length, command_frames = (actor_config["hist"], actor_config["goal_frames"])
     actor = Actor(
         transforms.compute_observation_dim(robot.num_joints),
@@ -283,7 +288,7 @@ def main(argv=None):
     output_directory.mkdir(parents=True, exist_ok=True)
 
     def export(renderer=None, render_data=None, ghost=None, native_renderer=None):
-        for clip_index in selected_indices:
+        for clip_index in range(len(motion.names)):
             output_path = output_directory / (motion.names[clip_index] + ".mp4")
             render_motion(
                 env,
