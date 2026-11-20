@@ -38,14 +38,14 @@ def check_values(values, limits, velocity_limits, settings):
     rotations = Rotation.from_quat(values[:, 3:7]).as_matrix()
     tilt = float(np.degrees(np.arccos(np.clip(rotations[:, 2, 2], -1, 1))).max())
     height = float(values[:, 2].min())
-    if height < settings["min_base_height"]:
+    if "min_base_height" in settings and height < settings["min_base_height"]:
         flags.append("low_base")
     return flags, dict(
         peak_joint_vel=float(np.abs(joint_vel).max()),
         velocity_limit_ratio=velocity_ratio,
         min_base_height=height,
         max_base_tilt_degrees=tilt,
-        base_tilt_above_review_threshold=tilt > settings["max_base_tilt_degrees"],
+        base_tilt_above_review_threshold=tilt > settings.get("max_base_tilt_degrees", 70),
     )
 
 
@@ -187,11 +187,50 @@ class GroundContactChecker:
             if model.body(body).name in support_body_names
         }
         self.thigh_body_ids = np.array(
-            [[model.body(name).id for name in pair] for pair in settings["seated_thigh_bodies"]]
+            [[model.body(name).id for name in pair] for pair in settings.get("seated_thigh_bodies", ())]
         )
         self.box_corners = np.array(list(itertools.product([-1, 1], repeat=3)))
         angles = np.arange(16) * (2 * np.pi / 16)
         self.sphere_directions = np.column_stack([np.cos(angles), np.sin(angles)])
+
+    def check_chair_support(self, values):
+        rules = self.settings["chair_support"]
+        behind = np.zeros(len(values), dtype=bool)
+        for index, frame in enumerate(values):
+            self.data.qpos[:3] = frame[:3]
+            self.data.qpos[3:7] = frame[[6, 3, 4, 5]]
+            self.data.qpos[self.joint_indices] = frame[7:]
+            mujoco.mj_kinematics(self.model, self.data)
+            rotations = self.data.geom_xmat[self.foot_indices].reshape(-1, 3, 3)
+            centers = self.data.geom_xpos[self.foot_indices]
+            vertical_radius = np.where(
+                self.sphere_mask, self.foot_sizes[:, 0],
+                (np.abs(rotations[:, 2]) * self.foot_sizes).sum(axis=1),
+            )
+            supported = centers[:, 2] - vertical_radius <= self.settings["foot_contact_height"]
+            if not supported.any():
+                continue
+            forward = self.data.xmat[self.base_body_id].reshape(3, 3)[:, 0].copy()
+            forward[2] = 0
+            length = np.linalg.norm(forward)
+            if length < 1e-6:
+                continue
+            forward /= length
+            rear_radius = np.where(
+                self.sphere_mask, self.foot_sizes[:, 0],
+                (np.abs(forward @ rotations) * self.foot_sizes).sum(axis=1),
+            )
+            rear_edge = (centers @ forward - rear_radius)[supported].min()
+            mujoco.mj_comPos(self.model, self.data)
+            behind[index] = rear_edge - self.data.subtree_com[self.base_body_id] @ forward > rules["rear_margin_m"]
+        edges = np.flatnonzero(np.diff(np.r_[False, behind, False]))
+        intervals = [
+            dict(start_time=start / 30, end_time=stop / 30, duration=(stop - start) / 30)
+            for start, stop in zip(edges[::2], edges[1::2])
+        ]
+        longest = max((item["duration"] for item in intervals), default=0.0)
+        flags = ["chair_support_behind_feet"] if longest > rules["duration_seconds"] else []
+        return flags, dict(longest_chair_support_duration=longest, chair_support_intervals=intervals)
 
     def check(self, values, progress_label=None):
         foot_height = np.empty(len(values))
@@ -362,17 +401,18 @@ def screen_motion(path):
         )
     except (ValueError, OSError, KeyError) as error:
         return dict(name=path.stem, status="rejected", flags=["invalid_candidate"], error=str(error))
-    if path.stem in settings["excluded_motions"]:
+    if path.stem in settings.get("excluded_motions", ()):
         flags.append("excluded_motion")
     words = {
         word.lower() for word in re.findall(r"[A-Z]?[a-z]+|[A-Z]+(?![a-z])", path.stem.split("__")[-1])
     }
-    if words.intersection(settings["review_keywords"]):
+    if words.intersection(settings.get("review_keywords", ())):
         flags.append("motion_name_context_review")
-    if path.stem.split("__")[0] in settings["context_review_datasets"]:
+    if path.stem.split("__")[0] in settings.get("context_review_datasets", ()):
         flags.append("dataset_context_review")
     if metrics:
-        ground_flags, ground_metrics = ground_checker.check(values)
+        check_ground = ground_checker.check_chair_support if "chair_support" in settings else ground_checker.check
+        ground_flags, ground_metrics = check_ground(values)
         flags += ground_flags
         metrics.update(ground_metrics)
     return dict(name=path.stem, status="rejected" if flags else "passed_checks", flags=flags, metrics=metrics)

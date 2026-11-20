@@ -4,38 +4,12 @@
   "quaternion_tolerance": 1e-05,
   "joint_limit_tolerance": 0.0001,
   "velocity_limit_multiplier": 1,
-  "min_base_height": 0.045,
-  "max_base_tilt_degrees": 70,
-  "unsupported_contact_penetration": null,
-  "review_keywords": [
-    "sit",
-    "sitting",
-    "chair",
-    "crawl",
-    "lie",
-    "lying",
-    "roll",
-    "cartwheel",
-    "climb",
-    "pickup",
-    "lift",
-    "carry",
-    "object"
-  ],
-  "context_review_datasets": [
-    "GRAB",
-    "MOYO"
-  ],
-  "excluded_motions": [
-    "CMU__13__13_37_stageii",
-    "CMU__36__36_01_stageii"
-  ],
+  "chair_support": {
+    "rear_margin_m": 0.05,
+    "duration_seconds": 2.5
+  },
   "foot_contact_height": 0.03,
-  "body_support_height": 0.03,
   "max_foot_penetration": 0.003,
-  "min_flight_check_duration": 0.1,
-  "max_flight_duration": 2.5,
-  "max_flight_fit_error": 0.06,
   "shoulder_limit_check": {
     "tolerance_degrees": 1,
     "duration_seconds": 1
@@ -51,22 +25,6 @@
     "floor_quantile": 0.02,
     "max_floor_alignment": 0.05
   },
-  "max_com_support_distance": 0.05,
-  "max_com_support_duration": 2.5,
-  "max_static_com_speed": 0.15,
-  "max_static_com_acceleration": 1.5,
-  "max_static_foot_speed": 0.12,
-  "max_seated_thigh_vertical_ratio": 0.65,
-  "seated_thigh_bodies": [
-    [
-      "left_hip_pitch_link",
-      "left_knee_link"
-    ],
-    [
-      "right_hip_pitch_link",
-      "right_knee_link"
-    ]
-  ],
   "boneseed": {
     "source_fps": 120,
     "terrain_keywords": [
