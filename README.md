@@ -205,7 +205,10 @@ HDM05 全部 215 条修复版原始候选在 `data/amass/cache/hdm05_fixed/candi
 
 统一处理入口是 **`tools/process_motion_csv.py`**，内部复用 `tools/prepare_training_data.py` 的筛选与导出实现。两类数据共享
 默认规则 **`motion_filter_level_1.json`**（原 `motion_filter_keep_fallup.json`）。
-需要使用原严格规则时，显式传入 `--rules motion_filter_level_0.json`：
+需要使用原严格规则时，显式传入 `--rules motion_filter_level_0.json`。
+
+`--output-dir` 是处理根目录。若输入是 `data/amass/candidates` 且输出根设为 `data/amass`，
+处理后的候选写入 `data/amass/processed_candidates`，训练 CSV 写入 `data/amass/train`。
 
 ```bash
 UV_PROJECT_ENVIRONMENT=.venv-retarget uv run --extra retarget \

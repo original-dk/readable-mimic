@@ -212,10 +212,16 @@ def process_directory(input_dir, output_dir, config_path, rules_path, pattern="*
     import readable_mimic.retargeting.smoothing as smoothing_module
 
     input_dir, output_dir = Path(input_dir).resolve(), Path(output_dir).resolve()
+    in_place_dataset = input_dir == output_dir / "candidates"
+    candidates = output_dir / ("processed_candidates" if in_place_dataset else "candidates")
+    reports = output_dir / "cache/reports"
     if (
-        input_dir == output_dir
-        or output_dir.is_relative_to(input_dir)
-        or input_dir.is_relative_to(output_dir)
+        output_dir.is_relative_to(input_dir)
+        or (input_dir.is_relative_to(output_dir) and not in_place_dataset)
+        or any(
+            target.resolve().is_relative_to(input_dir) or input_dir.is_relative_to(target.resolve())
+            for target in (candidates, reports, output_dir / "train")
+        )
     ):
         raise ValueError("Input and output directories must be separate, not nested")
     config_path, rules_path = Path(config_path).resolve(), Path(rules_path).resolve()
@@ -232,7 +238,6 @@ def process_directory(input_dir, output_dir, config_path, rules_path, pattern="*
     names = ["__".join(p.relative_to(input_dir).with_suffix("").parts) + ".csv" for p in files]
     if len(set(names)) != len(names):
         raise ValueError("Duplicate flattened filenames")
-    candidates, reports = output_dir / "candidates", output_dir / "cache/reports"
     candidates.mkdir(parents=True, exist_ok=True)
     reports.mkdir(parents=True, exist_ok=True)
     if set(p.name for p in candidates.glob("*.csv")) - set(names):
@@ -292,7 +297,7 @@ def process_directory(input_dir, output_dir, config_path, rules_path, pattern="*
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input-dir", required=True)
-    parser.add_argument("--output-dir", required=True)
+    parser.add_argument("--output-dir", required=True, help="Dataset output root containing the train directory")
     parser.add_argument("--pattern", default="*.csv")
     parser.add_argument("--config", default="retarget_amass.json")
     parser.add_argument("--rules", default=Path(__file__).resolve().parents[1] / "motion_filter_level_1.json")

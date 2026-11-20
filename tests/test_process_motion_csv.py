@@ -133,3 +133,18 @@ def test_output_cannot_be_nested_in_input(tmp_path):
     assert result.returncode != 0
     assert "must be separate" in result.stderr
     assert not (source / "output").exists()
+
+
+
+def test_dataset_root_keeps_raw_candidates_separate(tmp_path):
+    source, config, rules = csv_fixture(tmp_path)
+    dataset = tmp_path / "dataset"
+    dataset.mkdir()
+    source = source.rename(dataset / "candidates")
+    original = {path.name: path.read_bytes() for path in source.glob("*.csv")}
+    result = run_cli(source, dataset, config, rules)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert {path.name: path.read_bytes() for path in source.iterdir()} == original
+    assert {path.name for path in (dataset / "processed_candidates").glob("*.csv")} == set(original)
+    assert (dataset / "train/CMU__test__stand.csv").is_file()
+    assert (dataset / "cache/reports/screening_report.json").is_file()
