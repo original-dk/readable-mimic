@@ -28,6 +28,7 @@ class TrackingEnv:
         timer=None,
         backend="mujoco",
         genesis_settings=None,
+        failure_reset_fraction=0.0,
     ):
         self.evaluation = evaluation
         self.num_envs = num_envs
@@ -49,6 +50,11 @@ class TrackingEnv:
         self.episode_step = torch.zeros(num_envs, dtype=torch.long, device=device)
         self.last_action = torch.zeros(num_envs, self.num_joints, device=device)
         self.episode_return = torch.zeros(num_envs, device=device)
+        self.failure_reset = None
+        if failure_reset_fraction and not evaluation:
+            from .failure_reset import FailureReset
+
+            self.failure_reset = FailureReset(motion, num_envs, failure_reset_fraction, max_episode_steps)
         self.reset(torch.arange(num_envs, device=device))
         self.observation_noise_limits = transforms.compute_observation_noise_limits(
             robot.observation_noise, robot.num_joints
@@ -74,6 +80,10 @@ class TrackingEnv:
         reset_config = self.robot_description.domain_randomization
         if motion_frames is None:
             motion_frames = self.sample_motion_frames(num_resets)
+            if self.failure_reset is not None:
+                motion_frames = self.failure_reset.choose(env_indices, motion_frames)
+        elif self.failure_reset is not None:
+            self.failure_reset.target_bin[env_indices] = -1
         base_pos_w, base_rot_mat_w, base_lin_vel_w, base_ang_vel_w, joint_pos, joint_vel = (
             values.clone() for values in self.motion.ref_state(motion_frames)
         )
@@ -152,6 +162,8 @@ class TrackingEnv:
             done=done,
             transition_cut=done,
         )
+        if self.failure_reset is not None:
+            self.failure_reset.observe(next_motion_frame_index, termination, done)
         self.motion_frame_index = next_motion_frame_index
         self.episode_step += 1
         self.last_action = action.clone()

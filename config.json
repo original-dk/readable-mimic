@@ -27,7 +27,7 @@
   "wm_hidden": "1024,1024,1024",
   "enc_hidden": "2048,1024,512,256",
   "dec_hidden": "2048,1024,512,256",
-  "fail_reset": 0.0,
+  "failure_reset_fraction": 0.0,
   "pi_beta1": 0.9,
   "pi_clip_value": 0.1,
   "pi_ema": 0.995,

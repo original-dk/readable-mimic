@@ -198,6 +198,7 @@ class Trainer:
             timer=self.updates.timer,
             backend=self.config.simulator,
             genesis_settings=self.config.genesis,
+            failure_reset_fraction=self.config.failure_reset_fraction,
         )
 
     @torch.no_grad()
@@ -268,6 +269,8 @@ class Trainer:
         self.create_env()
         return_window = self.collect(config.warmup_steps)
         self.failure_counts.zero_()
+        if self.env.failure_reset is not None:
+            self.env.failure_reset.report()
         self.sim_reward_sum.zero_()
         self.sim_reward_count = 0
         if self.pending_random_states is not None:
@@ -310,6 +313,8 @@ class Trainer:
                     for name, value in metrics.items()
                 }
                 metrics.update(self.updates.timer.report())
+                if self.env.failure_reset is not None:
+                    metrics.update(self.env.failure_reset.report())
                 average_return = sum(return_window) / max(len(return_window), 1)
                 deadline = config.lr_decay_by > 0 and self.iteration >= config.lr_decay_by
                 if (
@@ -321,6 +326,10 @@ class Trainer:
                 metrics["episode_return"] = average_return
                 metrics["sim_r"] = (
                     float(self.sim_reward_sum) / max(self.sim_reward_count, 1) / MAX_STEP_REWARD
+                )
+                metrics["sim_termination_count"] = int(self.failure_counts.sum())
+                metrics["sim_termination_rate"] = (
+                    metrics["sim_termination_count"] / max(self.sim_reward_count, 1)
                 )
                 self.sim_reward_sum.zero_()
                 self.sim_reward_count = 0

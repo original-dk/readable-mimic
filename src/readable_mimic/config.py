@@ -19,6 +19,7 @@ def load_config(path="config.json", resume=None, *, restore_training_config=True
     path = Path(path).resolve()
     values = json.loads(path.read_text(encoding="utf-8"))
     values.setdefault("resume", None)
+    values.setdefault("failure_reset_fraction", values.get("fail_reset", 0.0))
     values.setdefault("ground_supported_reset", False)
     values.setdefault("reset_foot_clearance_cm", 3.0)
     values.setdefault("reset_foot_bodies", ["left_ankle_roll_link", "right_ankle_roll_link"])
@@ -51,6 +52,7 @@ def load_config(path="config.json", resume=None, *, restore_training_config=True
             "num_threads",
             "motion_dir",
             "ground_supported_reset",
+            "failure_reset_fraction",
             "reset_foot_clearance_cm",
             "reset_foot_bodies",
             "log_dir",
@@ -72,7 +74,10 @@ def load_config(path="config.json", resume=None, *, restore_training_config=True
     config = SimpleNamespace(**values)
     assert config.simulator in ("mujoco", "genesis"), "simulator must be mujoco or genesis"
     assert config.amp == "none", "Only FP32 is supported."
-    assert config.fail_reset == 0, "Only uniform reset sampling is supported."
+    if not 0 <= config.failure_reset_fraction <= 1:
+        raise ValueError("failure_reset_fraction must be in [0, 1]")
+    if config.failure_reset_fraction and not config.ground_supported_reset:
+        raise ValueError("Failure reset requires ground_supported_reset")
     assert config.warmup_steps >= config.wm_window
     assert config.buffer_steps >= config.warmup_steps
     assert config.horizon * config.pi_batch >= config.critic_minibatches
