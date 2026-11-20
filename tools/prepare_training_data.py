@@ -16,6 +16,7 @@ import numpy as np
 from scipy.spatial import ConvexHull
 from scipy.spatial.transform import Rotation
 from readable_mimic.robot import get_robot
+from readable_mimic.motion_starts import foot_heights
 from readable_mimic.g1.g1_constants import motor_of
 
 
@@ -152,6 +153,7 @@ class GroundContactChecker:
         self.model = model
         self.data = mujoco.MjData(model)
         self.settings = settings
+        self.foot_body_names = foot_body_names
         self.ground_id = model.geom("screen_ground").id
         self.body_support_height = settings.get("body_support_height", 0.0)
         model.geom_margin[self.ground_id] = max(
@@ -192,6 +194,31 @@ class GroundContactChecker:
         self.box_corners = np.array(list(itertools.product([-1, 1], repeat=3)))
         angles = np.arange(16) * (2 * np.pi / 16)
         self.sphere_directions = np.column_stack([np.cos(angles), np.sin(angles)])
+
+    def check_stair_support(self, values):
+        rules = self.settings["stair_support"]
+        frame_rate = 30
+        qpos = np.zeros((len(values), self.model.nq))
+        qpos[:, :3] = values[:, :3]
+        qpos[:, 3:7] = values[:, [6, 3, 4, 5]]
+        qpos[:, self.joint_indices] = values[:, 7:]
+        heights = foot_heights(self.model, qpos, self.foot_body_names)
+        rotations = Rotation.from_quat(values[:, 3:7])
+        step_speed = (rotations[:-1].inv() * rotations[1:]).magnitude() * frame_rate
+        # At an interior frame, both adjacent steps must be slow.
+        speed = np.maximum(np.r_[step_speed[0], step_speed], np.r_[step_speed, step_speed[-1]])
+        elevated = (heights > rules["min_foot_height_m"]) & (speed < rules["max_base_ang_vel_rad_s"])
+        edges = np.flatnonzero(np.diff(np.r_[False, elevated, False]))
+        intervals = [
+            dict(start_time=start / frame_rate, end_time=stop / frame_rate,
+                 duration=(stop - start) / frame_rate,
+                 min_foot_height=float(heights[start:stop].min()),
+                 max_base_ang_vel=float(speed[start:stop].max()))
+            for start, stop in zip(edges[::2], edges[1::2])
+            if (stop - start) / frame_rate > rules["duration_seconds"]
+        ]
+        flags = ["stair_support_elevated_feet"] if intervals else []
+        return flags, dict(stair_support_intervals=intervals)
 
     def check_chair_support(self, values):
         rules = self.settings["chair_support"]
@@ -417,6 +444,10 @@ def screen_motion(path):
         ground_flags, ground_metrics = check_ground(values)
         flags += ground_flags
         metrics.update(ground_metrics)
+        if "stair_support" in settings:
+            stair_flags, stair_metrics = ground_checker.check_stair_support(values)
+            flags += stair_flags
+            metrics.update(stair_metrics)
     return dict(name=path.stem, status="rejected" if flags else "passed_checks", flags=flags, metrics=metrics)
 
 
