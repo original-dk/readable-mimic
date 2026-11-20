@@ -33,6 +33,8 @@ def check_start_coverage(heights, clearance, gap_limit):
     return dict(
         frame_count=len(heights),
         legal_start_count=len(legal),
+        excluded_start_count=int((~eligible).sum()),
+        excluded_frame_fraction=float((~eligible).sum() / len(heights)),
         last_frame_excluded=len(heights) - 1,
         status="passed" if len(legal) and not any(r["exceeds_limit"] for r in excluded) else "rejected",
         reason="no_legal_start" if not len(legal) else (
@@ -77,10 +79,14 @@ def main():
         result = check_start_coverage(heights, clearance_cm / 100, gap_limit)
         motions.append(dict(motion=Path(path).name, **result))
     rejected = [motion["motion"] for motion in motions if motion["status"] == "rejected"]
+    total_frames = sum(motion["frame_count"] for motion in motions)
+    excluded_starts = sum(motion["excluded_start_count"] for motion in motions)
     report = dict(
         motion_dir=str(directory.resolve()), frame_rate=1 / CONTROL_DT,
         max_episode_steps=max_episode_steps, episode_fraction=args.episode_fraction,
         gap_limit_frames=gap_limit, foot_clearance_cm=clearance_cm,
+        total_frames=total_frames, excluded_start_count=excluded_starts,
+        excluded_frame_fraction=excluded_starts / total_frames,
         checked_count=len(motions), rejected_count=len(rejected),
         rejected_motions=rejected, motions=motions,
     )
