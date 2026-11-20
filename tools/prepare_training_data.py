@@ -80,7 +80,8 @@ def check_ground_support(foot_height, com_height, settings, frame_rate=30, body_
                 fit_error = float(np.max(np.abs(residual)))
                 interval["ballistic_fit_error"] = fit_error
                 interval["above_review_fit_error"] = fit_error > settings["max_flight_fit_error"]
-                if interval["above_review_fit_error"] and settings.get("reject_non_ballistic_flight", False):
+                reject_error = settings.get("non_ballistic_flight_reject_error", settings["max_flight_fit_error"])
+                if settings.get("reject_non_ballistic_flight", False) and fit_error > reject_error:
                     flags.append("non_ballistic_flight")
         intervals.append(interval)
     return sorted(set(flags)), dict(
