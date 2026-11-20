@@ -36,6 +36,9 @@
     "max_floor_alignment": 0.05,
     "max_upward_alignment_by_dataset": {
       "PosePrior": 0.10
+    },
+    "max_downward_alignment_by_dataset": {
+      "HDM05": 0.10
     }
   },
   "boneseed": {

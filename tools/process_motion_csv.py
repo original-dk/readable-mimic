@@ -56,7 +56,8 @@ def csv_support_mask(values, model, joint_indices, foot_bodies, rules, dataset=N
     floor_offset = grounding["clearance"] - float(np.quantile(heights, grounding["floor_quantile"]))
     limit = grounding["max_floor_alignment"]
     upward_limit = grounding.get("max_upward_alignment_by_dataset", {}).get(dataset, limit)
-    if floor_offset > upward_limit or floor_offset < -limit:
+    downward_limit = grounding.get("max_downward_alignment_by_dataset", {}).get(dataset, limit)
+    if floor_offset > upward_limit or floor_offset < -downward_limit:
         floor_offset = 0.0
     heights = heights + floor_offset
     support = (heights >= -rules["max_foot_penetration"]) & (heights <= rules["foot_contact_height"])
