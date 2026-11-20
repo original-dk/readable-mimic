@@ -46,16 +46,19 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--motion-dir", type=Path, help="Override motion_dir from the training config")
-    parser.add_argument("--foot-clearance-cm", type=float, default=3.0)
+    parser.add_argument("--foot-clearance-cm", type=float, help="Override reset_foot_clearance_cm from config")
     parser.add_argument("--episode-fraction", type=float, default=0.8)
     parser.add_argument("--report", type=Path, required=True)
     args = parser.parse_args()
-    if not np.isfinite(args.foot_clearance_cm) or args.foot_clearance_cm < 0:
-        parser.error("--foot-clearance-cm must be finite and nonnegative")
     if not 0 < args.episode_fraction <= 1:
         parser.error("--episode-fraction must be in (0, 1]")
     config = json.loads(args.config.read_text(encoding="utf-8"))
-    directory = args.motion_dir or Path(config["motion_dir"])
+    clearance_cm = args.foot_clearance_cm
+    if clearance_cm is None:
+        clearance_cm = config.get("reset_foot_clearance_cm", 3.0)
+    if not np.isfinite(clearance_cm) or clearance_cm < 0:
+        parser.error("Foot clearance must be finite and nonnegative")
+    directory = args.motion_dir or args.config.resolve().parent / config["motion_dir"]
     robot = get_robot(config["robot"])
     model, joint_indices, _ = smoothing_model(robot.mjcf_path, robot.name)
     root = Path(__file__).resolve().parents[1]
@@ -71,13 +74,13 @@ def main():
         qpos[:, 3:7] = motion.compact_state[:, :4].float().numpy()
         qpos[:, joint_indices] = motion.compact_state[:, 10 : 10 + motion.num_joints].float().numpy()
         heights = foot_heights(model, qpos, foot_bodies)
-        result = check_start_coverage(heights, args.foot_clearance_cm / 100, gap_limit)
+        result = check_start_coverage(heights, clearance_cm / 100, gap_limit)
         motions.append(dict(motion=Path(path).name, **result))
     rejected = [motion["motion"] for motion in motions if motion["status"] == "rejected"]
     report = dict(
         motion_dir=str(directory.resolve()), frame_rate=1 / CONTROL_DT,
         max_episode_steps=max_episode_steps, episode_fraction=args.episode_fraction,
-        gap_limit_frames=gap_limit, foot_clearance_cm=args.foot_clearance_cm,
+        gap_limit_frames=gap_limit, foot_clearance_cm=clearance_cm,
         checked_count=len(motions), rejected_count=len(rejected),
         rejected_motions=rejected, motions=motions,
     )
