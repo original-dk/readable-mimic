@@ -152,6 +152,7 @@ class Trainer:
         self.pending_random_states = None
         self.sim_reward_sum = torch.zeros((), device=self.device)
         self.sim_reward_count = 0
+        self.failure_counts = torch.zeros(self.motion.num_frames, device=self.device, dtype=torch.int32)
 
     @staticmethod
     def widths(text):
@@ -215,6 +216,10 @@ class Trainer:
             self.updates.timer.record("collect_env_other")
             self.sim_reward_sum.add_(transition["reward"].sum())
             self.sim_reward_count += transition["reward"].numel()
+            # Termination is evaluated against the next reference frame, before reset.
+            self.failure_counts.index_add_(
+                0, transition["motion_frame_index"] + 1, transition["termination"].to(torch.int32)
+            )
             self.buffer.add(transition)
             inputs, targets, increments = transforms.compute_world_model_training_data(
                 self.world_model,
@@ -257,6 +262,7 @@ class Trainer:
         (output / "config.json").write_text(json.dumps(vars(config), indent=2), encoding="utf-8")
         self.create_env()
         return_window = self.collect(config.warmup_steps)
+        self.failure_counts.zero_()
         self.sim_reward_sum.zero_()
         self.sim_reward_count = 0
         if self.pending_random_states is not None:
@@ -313,6 +319,8 @@ class Trainer:
                 )
                 self.sim_reward_sum.zero_()
                 self.sim_reward_count = 0
+                metrics["top_failures"] = self.motion.top_failure_frames(self.failure_counts)
+                self.failure_counts.zero_()
                 return_window.clear()
                 log_time = time.monotonic()
                 metrics["iterations_per_second"] = (self.iteration - last_log_iteration) / max(
@@ -323,7 +331,7 @@ class Trainer:
                 formatted_metrics = ", ".join(
                     f'"{name}": {value:.{4 if name.endswith("loss") else 3}f}'
                     if isinstance(value, float)
-                    else f'"{name}": {value}'
+                    else f'"{name}": {json.dumps(value, ensure_ascii=False)}'
                     for name, value in metrics.items()
                 )
                 print(
