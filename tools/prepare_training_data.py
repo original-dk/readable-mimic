@@ -90,7 +90,15 @@ def check_ground_support(foot_height, com_height, settings, frame_rate=30, body_
 
 
 def support_distance(points, center_of_mass):
-    """Horizontal distance to a conservative convex foot footprint (metres)."""
+    """Horizontal distance to the convex support region (metres)."""
+    points = np.unique(points, axis=0)
+    if len(points) == 1:
+        return float(np.linalg.norm(center_of_mass - points[0]))
+    if np.linalg.matrix_rank(points - points[0], tol=1e-10) == 1:
+        start, end = points[0], points[-1]
+        edge = end - start
+        fraction = np.clip((center_of_mass - start) @ edge / (edge @ edge), 0, 1)
+        return float(np.linalg.norm(center_of_mass - (start + fraction * edge)))
     polygon = points[ConvexHull(points).vertices]
     start = polygon
     edge = np.roll(polygon, -1, axis=0) - start
