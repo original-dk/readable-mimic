@@ -157,7 +157,7 @@ class Trainer:
         self.sim_reward_sum = torch.zeros((), device=self.device)
         self.sim_reward_count = 0
         self.failure_counts = torch.zeros(self.motion.num_frames, device=self.device, dtype=torch.int32)
-        self.cumulative_bin_failures = np.zeros(self.motion.num_bins, dtype=np.int64)
+        self.cumulative_motion_failures = [0] * len(self.motion.names)
 
     @staticmethod
     def widths(text):
@@ -325,7 +325,7 @@ class Trainer:
                 self.sim_reward_sum.zero_()
                 self.sim_reward_count = 0
                 metrics["top_failures"] = self.motion.top_failure_bins(
-                    self.failure_counts, self.cumulative_bin_failures
+                    self.failure_counts, self.cumulative_motion_failures
                 )
                 self.failure_counts.zero_()
                 return_window.clear()

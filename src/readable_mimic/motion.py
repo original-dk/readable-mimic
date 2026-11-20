@@ -105,21 +105,21 @@ class ReferenceMotion:
         self.num_bins = len(bin_start)
         self.reset_starts = None
 
-    def top_failure_bins(self, failure_counts, cumulative_bin_failures):
+    def top_failure_bins(self, failure_counts, cumulative_motion_failures):
         counts = failure_counts.cpu().numpy()
         ranked = []
-        bin_offset = 0
-        for name, (start, end) in zip(self.names, self._clip_bounds):
-            bin_count = (end - start) // BIN_FRAMES + 1
-            clip_bins = cumulative_bin_failures[bin_offset : bin_offset + bin_count]
-            bin_offset += bin_count
+        for clip_index, (name, (start, end)) in enumerate(zip(self.names, self._clip_bounds)):
             clip_counts = counts[start : end + 1]
             total = int(clip_counts.sum())
             if total:
+                cumulative_motion_failures[clip_index] += total
                 bin_starts = np.arange(0, len(clip_counts), BIN_FRAMES)
-                clip_bins += np.add.reduceat(clip_counts, bin_starts)
-                peak_bin = int(clip_bins.argmax())
-                ranked.append((total, name, bin_starts[peak_bin], clip_bins[peak_bin], clip_bins.sum()))
+                bin_failures = np.add.reduceat(clip_counts, bin_starts)
+                peak_bin = int(bin_failures.argmax())
+                ranked.append((
+                    total, name, bin_starts[peak_bin], bin_failures[peak_bin],
+                    cumulative_motion_failures[clip_index],
+                ))
         top = sorted(ranked, key=lambda entry: (-entry[0], entry[1]))[:5]
         names = "|".join(name for _, name, _, _, _ in top)
         bins = "|".join(f"{start}:{count}:{cumulative}" for _, _, start, count, cumulative in top)
