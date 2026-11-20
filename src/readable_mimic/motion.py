@@ -104,20 +104,25 @@ class ReferenceMotion:
         self.bin_start = torch.tensor(bin_start, device=device)
         self.num_bins = len(bin_start)
 
-    def top_failure_frames(self, failure_counts, cumulative_failures):
+    def top_failure_bins(self, failure_counts, cumulative_bin_failures):
         counts = failure_counts.cpu().numpy()
         ranked = []
-        for clip_index, (name, (start, end)) in enumerate(zip(self.names, self._clip_bounds)):
+        bin_offset = 0
+        for name, (start, end) in zip(self.names, self._clip_bounds):
+            bin_count = (end - start) // BIN_FRAMES + 1
+            clip_bins = cumulative_bin_failures[bin_offset : bin_offset + bin_count]
+            bin_offset += bin_count
             clip_counts = counts[start : end + 1]
             total = int(clip_counts.sum())
             if total:
-                frame = int(clip_counts.argmax())
-                cumulative_failures[clip_index] += total
-                ranked.append((total, name, frame, int(clip_counts[frame]), cumulative_failures[clip_index]))
+                bin_starts = np.arange(0, len(clip_counts), BIN_FRAMES)
+                clip_bins += np.add.reduceat(clip_counts, bin_starts)
+                peak_bin = int(clip_bins.argmax())
+                ranked.append((total, name, bin_starts[peak_bin], clip_bins[peak_bin], clip_bins.sum()))
         top = sorted(ranked, key=lambda entry: (-entry[0], entry[1]))[:5]
         names = "|".join(name for _, name, _, _, _ in top)
-        frames = "|".join(f"{frame}:{count}:{cumulative}" for _, _, frame, count, cumulative in top)
-        return f"{names}@{frames}" if top else ""
+        bins = "|".join(f"{start}:{count}:{cumulative}" for _, _, start, count, cumulative in top)
+        return f"{names}@{bins}" if top else ""
 
     def end_frame(self, motion_frame_index):
         return self.clip_end[torch.searchsorted(self.clip_end, motion_frame_index.contiguous())]
