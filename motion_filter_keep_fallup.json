@@ -5,7 +5,7 @@
   "velocity_limit_multiplier": 1,
   "min_base_height": 0.05,
   "max_base_tilt_degrees": 70,
-  "unsupported_contact_penetration": 0.02,
+  "unsupported_contact_penetration": null,
   "review_keywords": [
     "sit",
     "sitting",
@@ -47,7 +47,7 @@
     "max_floor_alignment": 0.05
   },
   "max_com_support_distance": 0.05,
-  "max_com_support_duration": 0.5,
+  "max_com_support_duration": 2.0,
   "max_static_com_speed": 0.15,
   "max_static_com_acceleration": 1.5,
   "max_static_foot_speed": 0.12,

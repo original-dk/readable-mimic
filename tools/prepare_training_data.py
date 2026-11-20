@@ -186,6 +186,7 @@ class GroundContactChecker:
         com_support_distance = np.full(len(values), np.nan)
         body_supported = np.zeros(len(values), dtype=bool)
         nonfoot_contact = False
+        penetration_limit = self.settings["unsupported_contact_penetration"]
         started = time.perf_counter()
         last_progress = started
         for index, frame in enumerate(values):
@@ -231,7 +232,11 @@ class GroundContactChecker:
                     np.asarray(support_points), self.data.subtree_com[self.base_body_id, :2]
                 )
             com_height[index] = self.data.subtree_com[self.base_body_id, 2]
-            check_penetration = not nonfoot_contact and index % self.settings["sample_stride"] == 0
+            check_penetration = (
+                penetration_limit is not None
+                and not nonfoot_contact
+                and index % self.settings["sample_stride"] == 0
+            )
             feet_off_ground = foot_height[index] > self.settings["foot_contact_height"]
             if feet_off_ground or check_penetration:
                 mujoco.mj_collision(self.model, self.data)
@@ -245,7 +250,7 @@ class GroundContactChecker:
                     if (
                         check_penetration
                         and other not in self.foot_indices
-                        and contact.dist < -self.settings["unsupported_contact_penetration"]
+                        and contact.dist < -penetration_limit
                     ):
                         nonfoot_contact = True
         flags, metrics = check_ground_support(
