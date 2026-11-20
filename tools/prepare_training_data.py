@@ -197,6 +197,8 @@ class GroundContactChecker:
         rules = self.settings["chair_support"]
         behind = np.zeros(len(values), dtype=bool)
         for index, frame in enumerate(values):
+            if frame[2] < rules.get("min_pelvis_height_m", 0.0):
+                continue
             self.data.qpos[:3] = frame[:3]
             self.data.qpos[3:7] = frame[[6, 3, 4, 5]]
             self.data.qpos[self.joint_indices] = frame[7:]
