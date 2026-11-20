@@ -204,7 +204,8 @@ HDM05 全部 215 条修复版原始候选在 `data/amass/cache/hdm05_fixed/candi
 相同源与配置会复用校验过的结果；改变 IK 或模型时使用新的候选目录，避免混用版本。
 
 统一处理入口是 **`tools/process_motion_csv.py`**，内部复用 `tools/prepare_training_data.py` 的筛选与导出实现。两类数据共享
-**同一个 `motion_filter.json`**，不会为 AMASS 放宽要求：
+默认规则 **`motion_filter_level_1.json`**（原 `motion_filter_keep_fallup.json`）。
+需要使用原严格规则时，显式传入 `--rules motion_filter_level_0.json`：
 
 ```bash
 UV_PROJECT_ENVIRONMENT=.venv-retarget uv run --extra retarget \
@@ -219,16 +220,16 @@ UV_PROJECT_ENVIRONMENT=.venv-retarget uv run --extra retarget \
 **逐帧**用实际足底碰撞几何检查平地支撑：足底高于 2 cm 视为腾空，连续超过 1 秒拒绝；
 超过 0.1 秒的短时腾空还必须具有起落地边界，且整机质心的重力抛物线拟合最大误差不超过 6 cm。
 足底穿地超过 3 mm 也拒绝。这里检查的是碰撞面的最低点，不是踝关节原点；保留正常短时跳跃，
-楼梯、悬停及依赖高处支撑的参考不能因为“没有穿地”就通过。各阈值集中在 `motion_filter.json`。
+楼梯、悬停及依赖高处支撑的参考不能因为“没有穿地”就通过。各阈值集中在 `motion_filter_level_1.json`。
 每 5 帧另外检查非足部地面穿透；可能依赖道具或其他支撑的名称也会被标记。
 报告记录悬空比例、最长悬空时长、足底高度、各腾空区间与拟合误差，以及筛选源码 SHA256。
 `CMU__13__13_37` 是本地回归样例：连续悬空约 8.77 秒，必须被拒绝，不通过名字黑名单绕过检测。
 只有全部检查通过的动作复制到 train，其他候选保留供复核，原因见各自
 `cache/reports/screening_report.json`。单独复核已经后处理的候选时，可运行
-`tools/prepare_training_data.py --config <输出根目录>/cache/reports/filter_config.json --rules motion_filter.json`；
+`tools/prepare_training_data.py --config <输出根目录>/cache/reports/filter_config.json --rules motion_filter_level_1.json`；
 加 `--export` 才更新 train。这个独立筛选命令不做平滑和接地，不能替代统一后处理入口。
 自动筛选不证明无抖动、无自碰撞或策略能稳定跟踪，实际训练前仍应预览并评估。
-手动测试后不满意的动作，把不带扩展名的完整文件名加入 `motion_filter.json` 的
+手动测试后不满意的动作，把不带扩展名的完整文件名加入 `motion_filter_level_1.json` 的
 `excluded_motions`，再执行导出；同一规则会阻止它再次进入 train。
 `cache/reports/training_export.json` 记录导出校验值；后续筛选只清理此前工具导出的旧文件，
 遇到手工修改的训练文件会报错保留。导出临时文件放 cache，train 只有最终 CSV。
@@ -263,7 +264,7 @@ uv run --extra retarget python tools/process_motion_csv.py --input-dir data/amas
 也可将输入换成 `data/amass/train` 或 `data/100style/candidates`，并使用新的输出目录。
 选择范围和路径以命令参数为准。
 默认 `--config retarget_amass.json` 提供 G1 模型和足部名称，
-`--rules motion_filter.json` 提供平滑、接地修正参数和全部筛选阈值。
+`--rules motion_filter_level_1.json` 提供平滑、接地修正参数和全部筛选阈值。
 
 流程：**原 CSV → 平滑 → 按原 CSV 的接地分段修正足底高度 → 共同筛选 → 新 CSV**。
 关节和基座位置采用二阶 5 Hz 双向零相位滤波；朝向先校正四元数符号连续性，滤波后归一化。
@@ -277,7 +278,7 @@ uv run --extra retarget python tools/process_motion_csv.py --input-dir data/amas
 当前共同限制是：基座倾角 70 度、连续离地 1 秒、质心重力轨迹拟合误差 6 cm；
 原有格式、四元数、限位、速度、最低基座高度和接地检查继续生效。
 最大关节改动超过 `smoothing.max_joint_change_degrees`（30 度）的平滑结果标记为
-`large_smoothing_change`，留在候选供复核，不直接进入 train。所有参数在 `motion_filter.json`。
+`large_smoothing_change`，留在候选供复核，不直接进入 train。所有参数在 `motion_filter_level_1.json`。
 
 输出结构：
 
@@ -505,7 +506,7 @@ CSV 筛选中的 `unsupported_support` 只针对近静止坐姿，不再直接�
 必须同时满足：双侧大腿接近水平（竖直分量/大腿长度不超过 0.65）、有脚底接近地面、
 质心速度不超过 0.15 m/s、质心加速度不超过 1.5 m/s²、两脚速度均不超过 0.12 m/s，
 且质心水平投影超出脚底支撑区域 0.05 米，连续超过 0.5 秒。
-所有阈值和大腿身体名称统一位于 `motion_filter.json`；腾空、运动或离开坐姿会中断计时。
+所有阈值和大腿身体名称统一位于 `motion_filter_level_1.json`；腾空、运动或离开坐姿会中断计时。
 这是外部支撑依赖的保守几何启发式，不代表完整动力学验证，也不能识别所有坐椅子动作。
 报告保留最大质心出界距离，以及满足上述全部条件的连续区间和最长时长。
 在 `process_motion_csv.py` 的共用筛选阶段执行，已有平滑缓存仍会重新筛选。
@@ -528,5 +529,5 @@ uv run --extra retarget python tools/prepare_boneseed.py --input-dir /path/to/g1
 记录几何筛选结果。仅转换或全部被名称拦截时只生成转换阶段输出。
 
 名称规则参考 [Uni-SuperMimic BONES-SEED 筛选](https://github.com/Motphys/Uni-SuperMimic/blob/main/src/unisupermimic/data/boneseed.py)，
-仅选用楼梯、外物支撑等相关词，配置在 `motion_filter.json` 的 `boneseed` 段。
+仅选用楼梯、外物支撑等相关词，配置在 `motion_filter_level_1.json` 的 `boneseed` 段。
 几何检查沿用本项目的持续悬空、落地和坐姿支撑规则。无标签楼梯的识别取决于这些几何条件。

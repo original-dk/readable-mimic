@@ -337,7 +337,7 @@ def export_training_data(directory, training_dir, results):
 def screen(config_path, rules_path=None, export=False):
     config_path = Path(config_path).resolve()
     config = json.loads(config_path.read_text(encoding="utf-8"))
-    rules_path = Path(rules_path).resolve() if rules_path else config_path.parent / "motion_filter.json"
+    rules_path = Path(rules_path).resolve() if rules_path else Path(__file__).resolve().parents[1] / "motion_filter_level_1.json"
     settings = json.loads(rules_path.read_text(encoding="utf-8"))
     directory = (config_path.parent / config["output_dir"]).resolve()
     dataset_root = directory.parent

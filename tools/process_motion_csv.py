@@ -295,7 +295,7 @@ def main():
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--pattern", default="*.csv")
     parser.add_argument("--config", default="retarget_amass.json")
-    parser.add_argument("--rules", default="motion_filter.json")
+    parser.add_argument("--rules", default=Path(__file__).resolve().parents[1] / "motion_filter_level_1.json")
     args = parser.parse_args()
     process_directory(args.input_dir, args.output_dir, args.config, args.rules, args.pattern)
 

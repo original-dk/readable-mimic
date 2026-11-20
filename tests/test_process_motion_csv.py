@@ -56,7 +56,7 @@ def csv_fixture(tmp_path):
     )
     config_path = tmp_path / "config.json"
     config_path.write_text(json.dumps(config))
-    rules = json.loads((ROOT / "motion_filter.json").read_text())
+    rules = json.loads((ROOT / "motion_filter_level_0.json").read_text())
     rules["smoothing"]["workers"] = 1
     rules_path = tmp_path / "rules.json"
     rules_path.write_text(json.dumps(rules))

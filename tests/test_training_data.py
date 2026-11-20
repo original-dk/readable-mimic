@@ -88,7 +88,7 @@ def test_shared_gate_keeps_manually_excluded_motion_out_of_train(tmp_path):
     )
     config_path = tmp_path / "config.json"
     config_path.write_text(json.dumps(config))
-    rules = json.loads((ROOT / "motion_filter.json").read_text())
+    rules = json.loads((ROOT / "motion_filter_level_0.json").read_text())
     rules["excluded_motions"] = ["excluded"]
     rules_path = tmp_path / "rules.json"
     rules_path.write_text(json.dumps(rules))
@@ -100,7 +100,7 @@ def test_shared_gate_keeps_manually_excluded_motion_out_of_train(tmp_path):
 
 
 def support_rules():
-    return json.loads((ROOT / "motion_filter.json").read_text())
+    return json.loads((ROOT / "motion_filter_level_0.json").read_text())
 
 
 def test_ground_support_accepts_walk_and_short_ballistic_jump():

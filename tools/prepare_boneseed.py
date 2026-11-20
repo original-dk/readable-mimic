@@ -47,7 +47,7 @@ def main():
     parser.add_argument("--pattern", default="*.csv")
     parser.add_argument("--limit", type=int)
     parser.add_argument("--convert-only", action="store_true")
-    parser.add_argument("--rules", type=Path, default=ROOT / "motion_filter.json")
+    parser.add_argument("--rules", type=Path, default=ROOT / "motion_filter_level_1.json")
     args = parser.parse_args()
     source_dir, output_dir = args.input_dir.resolve(), args.output_dir.resolve()
     if (
