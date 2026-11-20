@@ -89,6 +89,21 @@ def csv_support_mask(values, model, joint_indices, foot_bodies, rules):
     return support, floor_offset
 
 
+def shoulder_limit_frames(values, joint_names, ik_limits, tolerance_degrees):
+    longest = 0
+    for side in ("left", "right"):
+        names = [f"{side}_shoulder_{axis}_joint" for axis in ("pitch", "roll", "yaw")]
+        if not all(name in ik_limits for name in names):
+            continue
+        positions = values[:, [7 + joint_names.index(name) for name in names]]
+        distances = np.abs(positions[:, :, None] - np.asarray([ik_limits[name] for name in names]))
+        near_limit = distances.min(axis=2) <= np.deg2rad(tolerance_degrees)
+        saturated = near_limit.sum(axis=1) >= 2
+        edges = np.flatnonzero(np.diff(np.r_[False, saturated, False]))
+        longest = max(longest, max(edges[1::2] - edges[::2], default=0))
+    return int(longest)
+
+
 def process_csv(source, output, config, rules, pipeline_sha256):
     started = time.perf_counter()
     source = Path(source)
@@ -96,6 +111,8 @@ def process_csv(source, output, config, rules, pipeline_sha256):
     content = source.read_bytes()
     source_sha256 = hashlib.sha256(content).hexdigest()
     settings = rules["smoothing"]
+    shoulder_check = rules.get("shoulder_limit_check")
+    ik_limits = config.get("ik", {}).get("joint_pos_limits", {})
     parameters = dict(
         cutoff_hz=settings["cutoff_hz"],
         filter_order=settings["filter_order"],
@@ -104,6 +121,8 @@ def process_csv(source, output, config, rules, pipeline_sha256):
         grounding=rules["grounding"],
         frame_rate=30,
     )
+    if shoulder_check and ik_limits:
+        parameters.update(shoulder_limit_check=shoulder_check, ik_limits=ik_limits)
     fingerprint = hashlib.sha256(
         json.dumps(
             dict(
@@ -166,7 +185,7 @@ def process_csv(source, output, config, rules, pipeline_sha256):
         grounding_applied=correction is not None,
         processing_stage="processed",
         postprocessing=dict(
-            **parameters, support_source="original_csv_collision_soles", support_frames=int(support.sum())
+            **{key: value for key, value in parameters.items() if key != "ik_limits"}, support_source="original_csv_collision_soles", support_frames=int(support.sum())
         ),
         changes=dict(
             max_joint_change_degrees=float(np.degrees(joint_delta[frame, joint])),
@@ -177,6 +196,12 @@ def process_csv(source, output, config, rules, pipeline_sha256):
         ),
         processing_seconds=round(time.perf_counter() - started, 3),
     )
+    if shoulder_check and ik_limits:
+        longest = max(
+            shoulder_limit_frames(sequence, robot.joint_names, ik_limits, shoulder_check["tolerance_degrees"])
+            for sequence in (values, result)
+        )
+        metadata["shoulder_limit_seconds"] = longest / parameters["frame_rate"]
     metadata_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
     return metadata
 

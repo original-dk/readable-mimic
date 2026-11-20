@@ -238,7 +238,7 @@ class GroundContactChecker:
         return flags, metrics
 
 
-def check_metadata(path, values, joint_names, max_smoothing_change_degrees=None):
+def check_metadata(path, values, joint_names, max_smoothing_change_degrees=None, shoulder_limit_check=None):
     metadata = json.loads(path.with_suffix(".json").read_text(encoding="utf-8"))
     valid = (
         metadata["frame_rate"] == 30
@@ -252,6 +252,11 @@ def check_metadata(path, values, joint_names, max_smoothing_change_degrees=None)
         and metadata.get("changes", {}).get("max_joint_change_degrees", 0) > max_smoothing_change_degrees
     ):
         flags.append("large_smoothing_change")
+    if (
+        shoulder_limit_check
+        and metadata.get("shoulder_limit_seconds", 0) >= shoulder_limit_check["duration_seconds"]
+    ):
+        flags.append("sustained_shoulder_limits")
     return flags
 
 
@@ -317,7 +322,9 @@ def screen(config_path, rules_path=None, export=False):
             values = np.loadtxt(path, delimiter=",", ndmin=2)
             flags, metrics = check_values(values, limits, velocity_limits, settings)
             flags += check_metadata(
-                path, values, robot.joint_names, settings.get("smoothing", {}).get("max_joint_change_degrees")
+                path, values, robot.joint_names,
+                settings.get("smoothing", {}).get("max_joint_change_degrees"),
+                settings.get("shoulder_limit_check"),
             )
         except (ValueError, OSError, KeyError) as error:
             results.append(
