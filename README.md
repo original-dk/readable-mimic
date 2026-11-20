@@ -241,6 +241,18 @@ UV_PROJECT_ENVIRONMENT=.venv-retarget uv run --extra retarget \
 加载器照常重采样至 50 Hz 并做 FK。原有正式 train 目录保留，不自动替换。
 不要把 raw、candidates 或 cache 指定为正式训练目录。
 
+### Level 1 楼梯筛选
+
+`motion_filter_level_1.json` 的 `stair_support` 独立定义楼梯规则。先完成足底修正，再检查处理后的 CSV。
+同一只脚的速度低于 0.15 m/s、两脚脚底都高于地面 8 cm、骨盆比起始参考高度抬升超过 12 cm，
+三项连续同时满足至少 0.3 秒时标记 `stair_support`。起始参考高度取五帧中值滤波后的前九帧中位数。
+明确的地形名称可单独触发 `stair_terrain_label`，骨盆漂移指标单独记录供复核。
+
+在 2,535 条处理后的 AMASS 候选上，楼梯专项命中 104 条。已知楼梯 `CMU__36__36_01` 和
+`CMU__13__13_37` 均命中；翻跟头 `CMU__90__90_03`、跳绳
+`HDM05__tr__HDM_tr_03-10_02_120` 和单腿支撑 `PosePrior__03099__lar3` 均未命中。
+专项名单位于 `data/amass/cache/reports/stair_combined_hits.csv`，不含椅子规则的结果。
+
 ### CSV → CSV 批量平滑与筛选（推荐入口）
 
 只用原 CSV 即可，不要求输入同名 JSON、AMASS NPZ 或 SMPL-X 模型。
