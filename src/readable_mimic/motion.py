@@ -104,18 +104,19 @@ class ReferenceMotion:
         self.bin_start = torch.tensor(bin_start, device=device)
         self.num_bins = len(bin_start)
 
-    def top_failure_frames(self, failure_counts):
+    def top_failure_frames(self, failure_counts, cumulative_failures):
         counts = failure_counts.cpu().numpy()
         ranked = []
-        for name, (start, end) in zip(self.names, self._clip_bounds):
+        for clip_index, (name, (start, end)) in enumerate(zip(self.names, self._clip_bounds)):
             clip_counts = counts[start : end + 1]
             total = int(clip_counts.sum())
             if total:
                 frame = int(clip_counts.argmax())
-                ranked.append((total, name, frame, int(clip_counts[frame])))
+                cumulative_failures[clip_index] += total
+                ranked.append((total, name, frame, int(clip_counts[frame]), cumulative_failures[clip_index]))
         top = sorted(ranked, key=lambda entry: (-entry[0], entry[1]))[:5]
-        names = "|".join(name for _, name, _, _ in top)
-        frames = "|".join(f"{frame}:{count}" for _, _, frame, count in top)
+        names = "|".join(name for _, name, _, _, _ in top)
+        frames = "|".join(f"{frame}:{count}:{cumulative}" for _, _, frame, count, cumulative in top)
         return f"{names}@{frames}" if top else ""
 
     def end_frame(self, motion_frame_index):
