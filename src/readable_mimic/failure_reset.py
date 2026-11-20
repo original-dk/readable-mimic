@@ -24,7 +24,10 @@ class FailureReset:
         before = (torch.searchsorted(legal, self.bin_start - lead, right=True) - 1).clamp_min(0)
         first_in_clip = torch.searchsorted(legal, clip_start)
         self.start_frame = legal[torch.maximum(before, first_in_clip)]
-        self.reachable = (self.start_frame <= self.bin_end) & (
+        # Termination tests the next frame. A reset on the target's first
+        # evaluable frame would skip it, so require a strictly earlier start.
+        first_tested_frame = torch.maximum(self.bin_start, clip_start + 1)
+        self.reachable = (self.start_frame < first_tested_frame) & (
             self.bin_end - self.start_frame <= max_episode_steps
         )
         self.stats = torch.zeros(5, dtype=torch.long, device=motion.device)
