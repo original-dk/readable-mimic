@@ -141,6 +141,10 @@ class GroundContactChecker:
         self.data = mujoco.MjData(model)
         self.settings = settings
         self.ground_id = model.geom("screen_ground").id
+        self.body_support_height = settings.get("body_support_height", 0.0)
+        model.geom_margin[self.ground_id] = max(
+            model.geom_margin[self.ground_id], self.body_support_height
+        )
         self.joint_indices = [int(model.joint(name).qposadr[0]) for name in robot.joint_names]
         self.base_body_id = int(
             model.jnt_bodyid[np.flatnonzero(model.jnt_type == mujoco.mjtJoint.mjJNT_FREE)[0]]
@@ -245,7 +249,7 @@ class GroundContactChecker:
                     if self.ground_id not in (first, second):
                         continue
                     other = second if first == self.ground_id else first
-                    if other in self.body_support_geoms and contact.dist <= 0:
+                    if other in self.body_support_geoms and contact.dist <= self.body_support_height:
                         body_supported[index] = True
                     if (
                         check_penetration
