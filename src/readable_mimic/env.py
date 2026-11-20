@@ -11,6 +11,7 @@ import torch
 from .task import MAX_STEP_REWARD
 from .rotations import so3_exp
 from .timing import TrainingTimer
+from .motion import BIN_FRAMES
 
 
 class TrackingEnv:
@@ -58,8 +59,12 @@ class TrackingEnv:
 
     def sample_motion_frames(self, num_samples):
         bin_indices = torch.randint(self.motion.num_bins, (num_samples,), device=self.device)
+        if self.motion.reset_starts is not None:
+            starts, counts = self.motion.reset_starts
+            offsets = (torch.rand(num_samples, device=self.device) * counts[bin_indices]).long()
+            return starts[bin_indices, offsets]
         start_frames = self.motion.bin_start[bin_indices]
-        end_frames = torch.minimum(start_frames + 50, self.motion.clip_end[self.motion.bin_clip[bin_indices]])
+        end_frames = torch.minimum(start_frames + BIN_FRAMES, self.motion.clip_end[self.motion.bin_clip[bin_indices]])
         return (
             start_frames + (torch.rand(num_samples, device=self.device) * (end_frames - start_frames)).long()
         )

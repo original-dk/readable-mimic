@@ -46,6 +46,10 @@ class Trainer:
         )
         self.kinematics = Kinematics(self.robot, self.device)
         self.motion = ReferenceMotion.from_dir(config.motion_dir, self.robot, self.kinematics, self.device)
+        if config.ground_supported_reset:
+            from .motion_starts import build_reset_starts
+
+            self.motion.reset_starts = build_reset_starts(self.motion, self.robot, config)
         self.xi_dim = compute_xi_dim(self.robot)
         self.joint_pos_offset_limits = joint_pos_offset_limits(self.robot, self.device)
         self.xi_center, self.xi_scale = transforms.compute_xi_normalization(

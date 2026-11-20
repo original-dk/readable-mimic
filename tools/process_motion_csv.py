@@ -12,37 +12,9 @@ import mujoco
 import numpy as np
 from scipy.spatial.transform import Rotation
 
+from readable_mimic.motion_starts import foot_heights
 from readable_mimic.robot import get_robot
 from readable_mimic.retargeting.smoothing import smooth_values, smoothing_model
-
-
-def foot_heights(model, qpos, foot_body_names):
-    """Height of the lowest actual collision sole, not the ankle origin."""
-    data = mujoco.MjData(model)
-    foot_ids = {model.body(name).id for name in foot_body_names}
-    geom_indices = [
-        index
-        for index in range(model.ngeom)
-        if model.geom_bodyid[index] in foot_ids
-        and (model.geom_contype[index] or model.geom_conaffinity[index])
-    ]
-    if not geom_indices:
-        raise ValueError("No collision geoms on the G1 feet")
-    geom_indices = np.asarray(geom_indices)
-    geom_types = model.geom_type[geom_indices]
-    sphere_mask = geom_types == mujoco.mjtGeom.mjGEOM_SPHERE
-    if not np.all(sphere_mask | (geom_types == mujoco.mjtGeom.mjGEOM_BOX)):
-        raise ValueError("Expected sphere or box collision geoms on the G1 feet")
-    sizes = model.geom_size[geom_indices]
-    heights = []
-    for frame in qpos:
-        data.qpos[:] = frame
-        mujoco.mj_kinematics(model, data)
-        rotations = data.geom_xmat[geom_indices].reshape(-1, 3, 3)
-        box_radius = np.einsum("ij,ij->i", np.abs(rotations[:, 2]), sizes)
-        vertical_radius = np.where(sphere_mask, sizes[:, 0], box_radius)
-        heights.append(np.min(data.geom_xpos[geom_indices, 2] - vertical_radius))
-    return np.asarray(heights)
 
 
 def ground_motion(model, qpos, foot_body_names, clearance, support_mask=None):

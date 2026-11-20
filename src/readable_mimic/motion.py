@@ -103,6 +103,7 @@ class ReferenceMotion:
         self.bin_clip = torch.tensor(bin_clip, device=device)
         self.bin_start = torch.tensor(bin_start, device=device)
         self.num_bins = len(bin_start)
+        self.reset_starts = None
 
     def top_failure_bins(self, failure_counts, cumulative_bin_failures):
         counts = failure_counts.cpu().numpy()

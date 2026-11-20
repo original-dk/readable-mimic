@@ -105,6 +105,7 @@
     "termination_tilt_threshold": 0.8
   },
   "max_episode_steps": 500,
+  "ground_supported_reset": true,
   "reset_foot_clearance_cm": 3.0,
   "simulation": {
     "decimation": 4,

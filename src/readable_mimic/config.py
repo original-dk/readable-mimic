@@ -19,6 +19,9 @@ def load_config(path="config.json", resume=None, *, restore_training_config=True
     path = Path(path).resolve()
     values = json.loads(path.read_text(encoding="utf-8"))
     values.setdefault("resume", None)
+    values.setdefault("ground_supported_reset", False)
+    values.setdefault("reset_foot_clearance_cm", 3.0)
+    values.setdefault("reset_foot_bodies", ["left_ankle_roll_link", "right_ankle_roll_link"])
     values.setdefault("profile_speed", False)
     values.setdefault("compile_world_model", True)
     values.setdefault("compile_actor", True)
@@ -47,6 +50,9 @@ def load_config(path="config.json", resume=None, *, restore_training_config=True
             "device",
             "num_threads",
             "motion_dir",
+            "ground_supported_reset",
+            "reset_foot_clearance_cm",
+            "reset_foot_bodies",
             "log_dir",
             "resume",
             "iterations",
