@@ -6,6 +6,7 @@
   "velocity_limit_multiplier": 1,
   "chair_support": {
     "min_pelvis_height_m": 0.20,
+    "foot_contact_height_m": 0.03,
     "rear_margin_m": 0.05,
     "duration_seconds": 2.5
   },

@@ -197,7 +197,7 @@ class GroundContactChecker:
         rules = self.settings["chair_support"]
         behind = np.zeros(len(values), dtype=bool)
         for index, frame in enumerate(values):
-            if frame[2] < rules.get("min_pelvis_height_m", 0.0):
+            if frame[2] < rules["min_pelvis_height_m"]:
                 continue
             self.data.qpos[:3] = frame[:3]
             self.data.qpos[3:7] = frame[[6, 3, 4, 5]]
@@ -209,7 +209,7 @@ class GroundContactChecker:
                 self.sphere_mask, self.foot_sizes[:, 0],
                 (np.abs(rotations[:, 2]) * self.foot_sizes).sum(axis=1),
             )
-            supported = centers[:, 2] - vertical_radius <= self.settings["foot_contact_height"]
+            supported = centers[:, 2] - vertical_radius <= rules["foot_contact_height_m"]
             if not supported.any():
                 continue
             forward = self.data.xmat[self.base_body_id].reshape(3, 3)[:, 0].copy()
