@@ -33,6 +33,7 @@
   "min_flight_check_duration": 0.1,
   "max_flight_duration": 2.5,
   "max_flight_fit_error": 0.06,
+  "reject_non_ballistic_flight": true,
   "shoulder_limit_check": {
     "tolerance_degrees": 1,
     "duration_seconds": 1
