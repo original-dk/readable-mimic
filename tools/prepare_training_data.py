@@ -48,12 +48,14 @@ def check_values(values, limits, velocity_limits, settings):
     )
 
 
-def check_ground_support(foot_height, com_height, settings, frame_rate=30):
+def check_ground_support(foot_height, com_height, settings, frame_rate=30, body_supported=None):
     """Check flat-floor support and distinguish short ballistic flight from hovering."""
     flags = []
     if foot_height.min() < -settings["max_foot_penetration"]:
         flags.append("foot_ground_penetration")
     airborne = foot_height > settings["foot_contact_height"]
+    if body_supported is not None:
+        airborne &= ~body_supported
     edges = np.diff(np.r_[False, airborne, False].astype(int))
     intervals = []
     gravity = 9.81
@@ -159,6 +161,15 @@ class GroundContactChecker:
             raise ValueError("Expected sphere or box foot collision geometry")
         self.foot_sizes = model.geom_size[self.foot_indices]
         self.foot_body_ids = [model.body(name).id for name in foot_body_names]
+        support_body_names = {
+            "pelvis", "pelvis_contour_link", "torso_link",
+            *(f"{side}_{part}" for side in ("left", "right")
+              for part in ("knee_link", "elbow_link", "wrist_yaw_link", "rubber_hand")),
+        }
+        self.body_support_geoms = {
+            geom for geom, body in enumerate(model.geom_bodyid)
+            if model.body(body).name in support_body_names
+        }
         self.thigh_body_ids = np.array(
             [[model.body(name).id for name in pair] for pair in settings["seated_thigh_bodies"]]
         )
@@ -173,6 +184,7 @@ class GroundContactChecker:
         seated_pose = np.zeros(len(values), dtype=bool)
         com_height = np.empty(len(values))
         com_support_distance = np.full(len(values), np.nan)
+        body_supported = np.zeros(len(values), dtype=bool)
         nonfoot_contact = False
         started = time.perf_counter()
         last_progress = started
@@ -219,15 +231,26 @@ class GroundContactChecker:
                     np.asarray(support_points), self.data.subtree_com[self.base_body_id, :2]
                 )
             com_height[index] = self.data.subtree_com[self.base_body_id, 2]
-            if not nonfoot_contact and index % self.settings["sample_stride"] == 0:
+            check_penetration = not nonfoot_contact and index % self.settings["sample_stride"] == 0
+            feet_off_ground = foot_height[index] > self.settings["foot_contact_height"]
+            if feet_off_ground or check_penetration:
                 mujoco.mj_collision(self.model, self.data)
-                nonfoot_contact = any(
-                    self.ground_id in contact.geom
-                    and not any(int(i) in self.foot_indices for i in contact.geom)
-                    and contact.dist < -self.settings["unsupported_contact_penetration"]
-                    for contact in self.data.contact
-                )
-        flags, metrics = check_ground_support(foot_height, com_height, self.settings)
+                for contact in self.data.contact:
+                    first, second = contact.geom
+                    if self.ground_id not in (first, second):
+                        continue
+                    other = second if first == self.ground_id else first
+                    if other in self.body_support_geoms and contact.dist <= 0:
+                        body_supported[index] = True
+                    if (
+                        check_penetration
+                        and other not in self.foot_indices
+                        and contact.dist < -self.settings["unsupported_contact_penetration"]
+                    ):
+                        nonfoot_contact = True
+        flags, metrics = check_ground_support(
+            foot_height, com_height, self.settings, body_supported=body_supported
+        )
         support_flags, support_metrics = check_support_distance(
             com_support_distance, center_of_mass_pos_w, foot_pos_w, seated_pose, self.settings
         )
