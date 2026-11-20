@@ -11,10 +11,11 @@
     "duration_seconds": 2.5
   },
   "stair_support": {
-    "min_foot_height_m": 0.06,
-    "min_duration_seconds": 0.35,
-    "max_base_angular_speed_rad_s": 0.8,
-    "min_ballistic_fit_error_m": 0.10
+    "min_foot_height_m": 0.08,
+    "max_foot_speed_m_s": 0.15,
+    "min_duration_seconds": 0.3,
+    "pelvis_drift_review_m": 0.15,
+    "terrain_keywords": ["stair", "step", "climb", "upstairs", "downstairs", "ladder", "hurdle", "platform", "box"]
   },
   "foot_contact_height": 0.03,
   "max_foot_penetration": 0.003,
