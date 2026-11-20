@@ -13,7 +13,7 @@
   "stair_support": {
     "min_foot_height_m": 0.08,
     "max_foot_speed_m_s": 0.15,
-    "min_duration_seconds": 0.3,
+    "min_duration_seconds": 0.5,
     "pelvis_drift_review_m": 0.15,
     "terrain_keywords": ["stair", "step", "climb", "upstairs", "downstairs", "ladder", "hurdle", "platform", "box"]
   },

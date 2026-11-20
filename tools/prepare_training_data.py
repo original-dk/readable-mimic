@@ -216,7 +216,9 @@ class GroundContactChecker:
             foot_pos[index] = self.data.xpos[self.foot_body_ids]
             foot_height[index] = [heights[mask].min() for mask in foot_geoms]
         speed = np.linalg.norm(np.gradient(foot_pos, axis=0) * frame_rate, axis=-1)
+        lower_foot = foot_height.argmin(axis=1)
         raised = (foot_height > rules["min_foot_height_m"]) & (speed < rules["max_foot_speed_m_s"])
+        raised &= np.arange(foot_height.shape[1]) == lower_foot[:, None]
         intervals = []
         for foot, mask in enumerate(raised.T):
             edges = np.flatnonzero(np.diff(np.r_[False, mask, False]))
