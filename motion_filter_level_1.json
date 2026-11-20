@@ -33,7 +33,10 @@
   "grounding": {
     "clearance": -0.0001,
     "floor_quantile": 0.02,
-    "max_floor_alignment": 0.05
+    "max_floor_alignment": 0.05,
+    "max_upward_alignment_by_dataset": {
+      "PosePrior": 0.10
+    }
   },
   "boneseed": {
     "source_fps": 120,

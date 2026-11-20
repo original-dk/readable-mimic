@@ -45,7 +45,7 @@ def ground_motion(model, qpos, foot_body_names, clearance, support_mask=None):
     }
 
 
-def csv_support_mask(values, model, joint_indices, foot_bodies, rules):
+def csv_support_mask(values, model, joint_indices, foot_bodies, rules, dataset=None):
     """Recover flat-floor support from collision soles in the original CSV."""
     qpos = np.zeros((len(values), model.nq))
     qpos[:, :3] = values[:, :3]
@@ -54,7 +54,9 @@ def csv_support_mask(values, model, joint_indices, foot_bodies, rules):
     heights = foot_heights(model, qpos, foot_bodies)
     grounding = rules["grounding"]
     floor_offset = grounding["clearance"] - float(np.quantile(heights, grounding["floor_quantile"]))
-    if abs(floor_offset) > grounding["max_floor_alignment"]:
+    limit = grounding["max_floor_alignment"]
+    upward_limit = grounding.get("max_upward_alignment_by_dataset", {}).get(dataset, limit)
+    if floor_offset > upward_limit or floor_offset < -limit:
         floor_offset = 0.0
     heights = heights + floor_offset
     support = (heights >= -rules["max_foot_penetration"]) & (heights <= rules["foot_contact_height"])
@@ -91,6 +93,7 @@ def process_csv(source, output, config, rules, pipeline_sha256):
         foot_contact_height=rules["foot_contact_height"],
         max_foot_penetration=rules["max_foot_penetration"],
         grounding=rules["grounding"],
+        grounding_dataset=output.stem.split("__", 1)[0],
         frame_rate=30,
     )
     if shoulder_check and ik_limits:
@@ -120,7 +123,9 @@ def process_csv(source, output, config, rules, pipeline_sha256):
     result = smooth_values(values, settings, limits)
     if np.max(np.abs(np.linalg.norm(values[:, 3:7], axis=1) - 1)) > rules["quaternion_tolerance"]:
         raise ValueError("Input quaternion is not unit length")
-    support, floor_offset = csv_support_mask(values, model, joint_indices, config["foot_bodies"], rules)
+    support, floor_offset = csv_support_mask(
+        values, model, joint_indices, config["foot_bodies"], rules, parameters["grounding_dataset"]
+    )
     correction = None
     if support.sum() >= 2:
         result[:, 2] += floor_offset
