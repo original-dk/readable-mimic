@@ -220,6 +220,49 @@ class GroundContactChecker:
         flags = ["stair_support_elevated_feet"] if intervals else []
         return flags, dict(stair_support_intervals=intervals)
 
+    def check_stair_support(self, values):
+        rules = self.settings["stair_support"]
+        frame_rate = 30
+        rotation = Rotation.from_quat(values[:, 3:7])
+        speed = (rotation[1:] * rotation[:-1].inv()).magnitude() * frame_rate
+        speed = np.maximum(np.r_[speed[0], speed], np.r_[speed, speed[-1]])
+        slow = speed < rules["max_base_angular_speed_rad_s"]
+        airborne = np.zeros(len(values), dtype=bool)
+        com = np.zeros((len(values), 3))
+        for index in np.flatnonzero(slow):
+            frame = values[index]
+            self.data.qpos[:3] = frame[:3]
+            self.data.qpos[3:7] = frame[[6, 3, 4, 5]]
+            self.data.qpos[self.joint_indices] = frame[7:]
+            mujoco.mj_kinematics(self.model, self.data)
+            rotations = self.data.geom_xmat[self.foot_indices].reshape(-1, 3, 3)
+            radius = np.where(
+                self.sphere_mask, self.foot_sizes[:, 0],
+                (np.abs(rotations[:, 2]) * self.foot_sizes).sum(axis=1),
+            )
+            heights = self.data.geom_xpos[self.foot_indices, 2] - radius
+            if heights.min() > rules["min_foot_height_m"]:
+                airborne[index] = True
+                mujoco.mj_comPos(self.model, self.data)
+                com[index] = self.data.subtree_com[self.base_body_id]
+        edges = np.flatnonzero(np.diff(np.r_[False, airborne, False]))
+        intervals = []
+        for start, stop in zip(edges[::2], edges[1::2]):
+            duration = (stop - start) / frame_rate
+            if duration < rules["min_duration_seconds"]:
+                continue
+            time = np.arange(stop - start) / frame_rate
+            corrected = com[start:stop].copy()
+            corrected[:, 2] += 0.5 * 9.81 * time**2
+            linear = np.column_stack((np.ones(len(time)), time))
+            fit = linear @ np.linalg.lstsq(linear, corrected, rcond=None)[0]
+            error = float(np.linalg.norm(corrected - fit, axis=1).max())
+            if error > rules["min_ballistic_fit_error_m"]:
+                intervals.append(dict(start_frame=int(start), start_time=start / frame_rate,
+                                      end_time=stop / frame_rate, duration=duration, fit_error_m=error))
+        flags = ["stair_support"] if intervals else []
+        return flags, dict(stair_support_intervals=intervals)
+
     def check_chair_support(self, values):
         rules = self.settings["chair_support"]
         behind = np.zeros(len(values), dtype=bool)
@@ -440,10 +483,18 @@ def screen_motion(path):
     if path.stem.split("__")[0] in settings.get("context_review_datasets", ()):
         flags.append("dataset_context_review")
     if metrics:
-        check_ground = ground_checker.check_chair_support if "chair_support" in settings else ground_checker.check
-        ground_flags, ground_metrics = check_ground(values)
-        flags += ground_flags
-        metrics.update(ground_metrics)
+        if "chair_support" in settings:
+            ground_flags, ground_metrics = ground_checker.check_chair_support(values)
+            flags += ground_flags
+            metrics.update(ground_metrics)
+        elif "stair_support" not in settings:
+            ground_flags, ground_metrics = ground_checker.check(values)
+            flags += ground_flags
+            metrics.update(ground_metrics)
+        if "stair_support" in settings:
+            stair_flags, stair_metrics = ground_checker.check_stair_support(values)
+            flags += stair_flags
+            metrics.update(stair_metrics)
         if "stair_support" in settings:
             stair_flags, stair_metrics = ground_checker.check_stair_support(values)
             flags += stair_flags
