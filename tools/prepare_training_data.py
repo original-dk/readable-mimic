@@ -231,10 +231,6 @@ class GroundContactChecker:
                     corners = self.box_corners * self.foot_sizes[foot]
                     points = (corners @ rotations[foot].T + center)[:, :2]
                 support_points.extend(points)
-            if support_points:
-                com_support_distance[index] = support_distance(
-                    np.asarray(support_points), self.data.subtree_com[self.base_body_id, :2]
-                )
             com_height[index] = self.data.subtree_com[self.base_body_id, 2]
             check_penetration = (
                 penetration_limit is not None
@@ -242,7 +238,7 @@ class GroundContactChecker:
                 and index % self.settings["sample_stride"] == 0
             )
             feet_off_ground = foot_height[index] > self.settings["foot_contact_height"]
-            if feet_off_ground or check_penetration:
+            if feet_off_ground or check_penetration or self.body_support_height > 0:
                 mujoco.mj_collision(self.model, self.data)
                 for contact in self.data.contact:
                     first, second = contact.geom
@@ -251,12 +247,18 @@ class GroundContactChecker:
                     other = second if first == self.ground_id else first
                     if other in self.body_support_geoms and contact.dist <= self.body_support_height:
                         body_supported[index] = True
+                        if self.body_support_height > 0:
+                            support_points.append(contact.pos[:2].copy())
                     if (
                         check_penetration
                         and other not in self.foot_indices
                         and contact.dist < -penetration_limit
                     ):
                         nonfoot_contact = True
+            if support_points:
+                com_support_distance[index] = support_distance(
+                    np.asarray(support_points), self.data.subtree_com[self.base_body_id, :2]
+                )
         flags, metrics = check_ground_support(
             foot_height, com_height, self.settings, body_supported=body_supported
         )
