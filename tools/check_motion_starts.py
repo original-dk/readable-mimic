@@ -2,6 +2,8 @@
 
 import argparse
 import json
+import shutil
+import tempfile
 from pathlib import Path
 
 import numpy as np
@@ -21,6 +23,8 @@ def main():
     parser.add_argument("--foot-clearance-cm", type=float, help="Override reset_foot_clearance_cm from config")
     parser.add_argument("--episode-fraction", type=float, default=0.8)
     parser.add_argument("--report", type=Path, required=True)
+    parser.add_argument("--move-rejected", action="store_true",
+                        help="Move rejected CSVs to a unique folder under the project backup directory")
     args = parser.parse_args()
     if not 0 < args.episode_fraction <= 1:
         parser.error("--episode-fraction must be in (0, 1]")
@@ -56,7 +60,21 @@ def main():
         rejected_motions=rejected, motions=motions,
     )
     args.report.parent.mkdir(parents=True, exist_ok=True)
-    args.report.write_text(json.dumps(report, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    def write_report():
+        args.report.write_text(json.dumps(report, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+
+    write_report()
+    if args.move_rejected and rejected:
+        root = Path(__file__).resolve().parents[1]
+        backup_root = root / "backup"
+        backup_root.mkdir(exist_ok=True)
+        backup = Path(tempfile.mkdtemp(prefix="rejected_motion_starts_", dir=backup_root))
+        for name in rejected:
+            shutil.move(directory / name, backup / name)
+        report["backup_dir"] = str(backup)
+        report["moved_count"] = len(rejected)
+        write_report()
+        print(f"Moved {len(rejected)} rejected motions to {backup}")
     print(f"Checked {len(motions)} motions, rejected {len(rejected)}. Report: {args.report}")
 
 
