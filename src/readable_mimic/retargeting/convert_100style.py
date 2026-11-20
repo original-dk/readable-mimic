@@ -57,6 +57,8 @@ def convert_clip(source, output_dir, settings, cuts):
         settings["output_frame_rate"],
         settings["bvh_position_scale"],
         settings["bvh_axis_order"],
+        **({"position_channels_replace_offsets": True}
+           if settings.get("bvh_position_channels_replace_offsets") else {}),
     )
     robot = get_robot(settings["robot"])
     model = mujoco.MjModel.from_xml_path(settings["mjcf_path"])
@@ -113,15 +115,20 @@ def convert_dataset(config_path, output_dir=None):
         )
     ).hexdigest()
     for key in ("input_dir", "output_dir", "frame_cuts", "mjcf_path"):
-        settings[key] = str((config_path.parent / settings[key]).resolve())
+        if settings.get(key) is not None:
+            settings[key] = str((config_path.parent / settings[key]).resolve())
     if output_dir is not None:
         settings["output_dir"] = str(Path(output_dir).resolve())
     if settings["output_frame_rate"] != 30:
         raise ValueError("The project's CSV loader requires 30 Hz output")
     if not isinstance(settings["workers"], int) or settings["workers"] < 1:
         raise ValueError("workers must be a positive integer")
-    with Path(settings["frame_cuts"]).open(encoding="utf-8-sig", newline="") as file:
-        rows = {row["STYLE_NAME"]: row for row in csv.DictReader(file)}
+    frame_cuts = settings.get("frame_cuts")
+    if frame_cuts:
+        with Path(frame_cuts).open(encoding="utf-8-sig", newline="") as file:
+            rows = {row["STYLE_NAME"]: row for row in csv.DictReader(file)}
+    else:
+        rows = {}
     files = sorted(Path(settings["input_dir"]).rglob("*.bvh"))
     if not files:
         raise ValueError(f"No BVH files in {settings['input_dir']}")
@@ -132,8 +139,10 @@ def convert_dataset(config_path, output_dir=None):
             continue
         if settings["movements"] and movement not in settings["movements"]:
             continue
-        row = rows[style]
-        cuts = [int(row[f"{movement}_START"]), int(row[f"{movement}_STOP"])]
+        cuts = [0, None]
+        if frame_cuts:
+            row = rows[style]
+            cuts = [int(row[f"{movement}_START"]), int(row[f"{movement}_STOP"])]
         tasks.append((source, settings["output_dir"], settings, cuts))
     if not tasks or len({task[0].stem for task in tasks}) != len(tasks):
         raise ValueError("Empty selection or duplicate motion names")

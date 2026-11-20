@@ -16,7 +16,7 @@ class HumanMotion:
     frame_rate: float
 
 
-def load_bvh(path, start_frame, stop_frame, output_frame_rate, position_scale, axis_order):
+def load_bvh(path, start_frame, stop_frame, output_frame_rate, position_scale, axis_order, *, position_channels_replace_offsets=False):
     """Frame cuts are zero-based [start, stop); output is in metres, Z up.
 
     Both world vectors and local bone axes are changed to the robot convention.
@@ -76,7 +76,11 @@ def load_bvh(path, start_frame, stop_frame, output_frame_rate, position_scale, a
         rotation_axes = ""
         for channel in body_channels:
             if channel.endswith("position"):
-                local_pos[:, body_index, "XYZ".index(channel[0])] += values[:, cursor]
+                axis = "XYZ".index(channel[0])
+                if position_channels_replace_offsets:
+                    local_pos[:, body_index, axis] = values[:, cursor]
+                else:
+                    local_pos[:, body_index, axis] += values[:, cursor]
             elif channel.endswith("rotation"):
                 rotation_axes += channel[0]
                 rotation_columns.append(cursor)
