@@ -89,6 +89,7 @@ def test_shared_gate_keeps_manually_excluded_motion_out_of_train(tmp_path):
     config_path = tmp_path / "config.json"
     config_path.write_text(json.dumps(config))
     rules = json.loads((ROOT / "motion_filter_level_0.json").read_text())
+    rules["filter_workers"] = 1
     rules["excluded_motions"] = ["excluded"]
     rules_path = tmp_path / "rules.json"
     rules_path.write_text(json.dumps(rules))

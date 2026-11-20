@@ -2,6 +2,7 @@
 
 import argparse
 from collections import Counter
+from concurrent.futures import ProcessPoolExecutor, as_completed
 import hashlib
 import json
 import itertools
@@ -334,6 +335,46 @@ def export_training_data(directory, training_dir, results):
     return len(exported)
 
 
+def initialize_screen_worker(config, settings):
+    global screen_worker_state
+    robot = get_robot(config["robot"])
+    spec = mujoco.MjSpec.from_file(config["mjcf_path"])
+    spec.worldbody.add_geom(name="screen_ground", type=mujoco.mjtGeom.mjGEOM_PLANE, size=[0, 0, 0.1])
+    model = spec.compile()
+    ground_checker = GroundContactChecker(model, robot, config["foot_bodies"], settings)
+    limits = np.array([model.joint(name).range for name in robot.joint_names])
+    velocity_limits = np.array([motor_of(name)[1] for name in robot.joint_names])
+    screen_worker_state = (ground_checker, robot, limits, velocity_limits, settings)
+
+
+def screen_motion(path):
+    ground_checker, robot, limits, velocity_limits, settings = screen_worker_state
+    try:
+        values = np.loadtxt(path, delimiter=",", ndmin=2)
+        flags, metrics = check_values(values, limits, velocity_limits, settings)
+        flags += check_metadata(
+            path, values, robot.joint_names,
+            settings.get("smoothing", {}).get("max_joint_change_degrees"),
+            settings.get("shoulder_limit_check"),
+        )
+    except (ValueError, OSError, KeyError) as error:
+        return dict(name=path.stem, status="rejected", flags=["invalid_candidate"], error=str(error))
+    if path.stem in settings["excluded_motions"]:
+        flags.append("excluded_motion")
+    words = {
+        word.lower() for word in re.findall(r"[A-Z]?[a-z]+|[A-Z]+(?![a-z])", path.stem.split("__")[-1])
+    }
+    if words.intersection(settings["review_keywords"]):
+        flags.append("motion_name_context_review")
+    if path.stem.split("__")[0] in settings["context_review_datasets"]:
+        flags.append("dataset_context_review")
+    if metrics:
+        ground_flags, ground_metrics = ground_checker.check(values)
+        flags += ground_flags
+        metrics.update(ground_metrics)
+    return dict(name=path.stem, status="rejected" if flags else "passed_checks", flags=flags, metrics=metrics)
+
+
 def screen(config_path, rules_path=None, export=False):
     config_path = Path(config_path).resolve()
     config = json.loads(config_path.read_text(encoding="utf-8"))
@@ -341,56 +382,37 @@ def screen(config_path, rules_path=None, export=False):
     settings = json.loads(rules_path.read_text(encoding="utf-8"))
     directory = (config_path.parent / config["output_dir"]).resolve()
     dataset_root = directory.parent
-    robot = get_robot(config["robot"])
-    spec = mujoco.MjSpec.from_file(str(config_path.parent / config["mjcf_path"]))
-    spec.worldbody.add_geom(name="screen_ground", type=mujoco.mjtGeom.mjGEOM_PLANE, size=[0, 0, 0.1])
-    model = spec.compile()
-    ground_checker = GroundContactChecker(model, robot, config["foot_bodies"], settings)
-    limits = np.array([model.joint(name).range for name in robot.joint_names])
-    velocity_limits = np.array([motor_of(name)[1] for name in robot.joint_names])
+    config["mjcf_path"] = str((config_path.parent / config["mjcf_path"]).resolve())
     files = sorted(directory.glob("*.csv"))
     if not files:
         raise ValueError(f"No candidates in {directory}")
     results = []
     started = time.perf_counter()
-    print(f"[Filter] {len(files)} motions: ground contact + COM support checks", flush=True)
-    for index, path in enumerate(files, 1):
-        elapsed = time.perf_counter() - started
-        remaining = elapsed * (len(files) - index + 1) / max(index - 1, 1)
-        label = f"[Filter {index}/{len(files)}] {path.name}"
-        eta = f" | ETA {remaining:.0f}s" if index > 1 else ""
-        print(f"{label} | elapsed {elapsed:.0f}s{eta}", flush=True)
-        try:
-            values = np.loadtxt(path, delimiter=",", ndmin=2)
-            flags, metrics = check_values(values, limits, velocity_limits, settings)
-            flags += check_metadata(
-                path, values, robot.joint_names,
-                settings.get("smoothing", {}).get("max_joint_change_degrees"),
-                settings.get("shoulder_limit_check"),
-            )
-        except (ValueError, OSError, KeyError) as error:
-            results.append(
-                dict(name=path.stem, status="rejected", flags=["invalid_candidate"], error=str(error))
-            )
-            continue
-        if path.stem in settings["excluded_motions"]:
-            flags.append("excluded_motion")
-        words = {
-            word.lower() for word in re.findall(r"[A-Z]?[a-z]+|[A-Z]+(?![a-z])", path.stem.split("__")[-1])
-        }
-        if words.intersection(settings["review_keywords"]):
-            flags.append("motion_name_context_review")
-        if path.stem.split("__")[0] in settings["context_review_datasets"]:
-            flags.append("dataset_context_review")
-        if metrics:
-            ground_flags, ground_metrics = ground_checker.check(values, progress_label=label)
-            flags += ground_flags
-            metrics.update(ground_metrics)
-        results.append(
-            dict(
-                name=path.stem, status="rejected" if flags else "passed_checks", flags=flags, metrics=metrics
-            )
-        )
+    workers = min(len(files), settings.get("filter_workers", 8))
+    if workers < 1:
+        raise ValueError("filter_workers must be positive")
+    print(f"[Filter] {len(files)} motions, {workers} workers", flush=True)
+
+    def record(result):
+        results.append(result)
+        count = len(results)
+        if count == 1 or count % 10 == 0 or count == len(files):
+            elapsed = time.perf_counter() - started
+            remaining = elapsed * (len(files) - count) / count
+            print(f"[Filter {count}/{len(files)}] elapsed {elapsed:.0f}s | ETA {remaining:.0f}s", flush=True)
+
+    if workers == 1:
+        initialize_screen_worker(config, settings)
+        for path in files:
+            record(screen_motion(path))
+    else:
+        with ProcessPoolExecutor(
+            max_workers=workers, initializer=initialize_screen_worker, initargs=(config, settings)
+        ) as executor:
+            futures = [executor.submit(screen_motion, path) for path in files]
+            for future in as_completed(futures):
+                record(future.result())
+    results.sort(key=lambda item: item["name"])
     training_dir = dataset_root / "train"
     print(f"[Filter] finished in {time.perf_counter() - started:.1f}s", flush=True)
     if export:
