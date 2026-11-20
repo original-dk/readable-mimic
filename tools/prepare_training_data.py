@@ -13,6 +13,7 @@ import time
 
 import mujoco
 import numpy as np
+from scipy.ndimage import median_filter
 from scipy.spatial import ConvexHull
 from scipy.spatial.transform import Rotation
 from readable_mimic.robot import get_robot
@@ -216,9 +217,11 @@ class GroundContactChecker:
             foot_pos[index] = self.data.xpos[self.foot_body_ids]
             foot_height[index] = [heights[mask].min() for mask in foot_geoms]
         speed = np.linalg.norm(np.gradient(foot_pos, axis=0) * frame_rate, axis=-1)
-        lower_foot = foot_height.argmin(axis=1)
-        raised = (foot_height > rules["min_foot_height_m"]) & (speed < rules["max_foot_speed_m_s"])
-        raised &= np.arange(foot_height.shape[1]) == lower_foot[:, None]
+        pelvis = median_filter(values[:, 2], size=5, mode="nearest")
+        start_height = np.median(pelvis[:9])
+        pelvis_raised = pelvis - start_height > rules["min_pelvis_rise_m"]
+        floor_support_gone = foot_height.min(axis=1) > rules["min_foot_height_m"]
+        raised = (speed < rules["max_foot_speed_m_s"]) & (floor_support_gone & pelvis_raised)[:, None]
         intervals = []
         for foot, mask in enumerate(raised.T):
             edges = np.flatnonzero(np.diff(np.r_[False, mask, False]))
