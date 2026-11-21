@@ -40,6 +40,7 @@ def parse_args(argv=None):
         default="follow",
         help="follow: align ghost xy/yaw to robot; reference: retain the ref world trajectory.",
     )
+    parser.add_argument("--start-from-zero", action="store_true", help="Start each reset at the first frame of the selected clip.")
     parser.add_argument("--seed", type=int, default=0)
     if argv is None:
         arguments = parser.parse_args()
@@ -77,11 +78,13 @@ def select_actor_weights(checkpoint):
     return checkpoint["actor"]
 
 
-def sample_start_frame(motion, clip_index):
+def sample_start_frame(motion, clip_index, start_from_zero=False):
     start_frame = int(motion.clip_start[clip_index])
     end_frame = int(motion.clip_end[clip_index])
     if end_frame <= start_frame:
         raise ValueError(f"Motion {motion.names[clip_index]} has fewer than two frames.")
+    if start_from_zero:
+        return motion.clip_start[clip_index].reshape(1)
     return torch.randint(start_frame, end_frame, (1,), device=motion.device)
 
 
@@ -157,10 +160,11 @@ def render_motion(
     follow_base,
     output_path,
     native_renderer=None,
+    start_from_zero=False,
 ):
     command_frame_offsets = torch.arange(1, command_frames + 1, device=env.device)
     env_indices = torch.tensor([0], device=env.device)
-    env.reset(env_indices, sample_start_frame(motion, clip_index))
+    env.reset(env_indices, sample_start_frame(motion, clip_index, start_from_zero))
     history = transforms.compute_observation_history(env.observe(), history_length)
     camera = mujoco.MjvCamera()
     camera.distance = 3.0
@@ -223,7 +227,7 @@ def render_motion(
                 writer.append_data(renderer.render())
             if bool(transition["done"][0]):
                 completed_returns.append(float(transition["normalized_episode_return"][0]))
-                env.reset(env_indices, sample_start_frame(motion, clip_index))
+                env.reset(env_indices, sample_start_frame(motion, clip_index, start_from_zero))
                 history = transforms.compute_observation_history(env.observe(), history_length)
             else:
                 history = transforms.update_observation_history(history, env.observe())
@@ -304,6 +308,7 @@ def main(argv=None):
                 arguments.ghost_base == "follow",
                 output_path,
                 native_renderer=native_renderer,
+                start_from_zero=arguments.start_from_zero,
             )
             print(f"Saved {output_path.resolve()}", flush=True)
 
