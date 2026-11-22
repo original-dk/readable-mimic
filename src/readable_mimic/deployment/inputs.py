@@ -20,7 +20,6 @@ def compute_observation(
             base_ang_vel,
             -base_rot_mat_w[2, :],
             last_action,
-            (base_rot_mat_w.T @ ref_base_rot_mat_w)[:, :2].reshape(6),
         )
     ).astype(np.float32)
 

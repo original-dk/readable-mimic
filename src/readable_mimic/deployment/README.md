@@ -70,10 +70,10 @@ headless 不创建 viewer 或 GL 场景，不等待墙钟时间，每条轨迹�
 
 ## 输入与物理约定
 
-- observation_history：float32，`[1, history_length, 3*num_joints+12]`，最旧观测在前。
+- observation_history：float32，`[1, history_length, 3*num_joints+6]`，最旧观测在前。
 - command：float32，`[1, command_frames*(15+2*num_joints)]`，未来帧在 clip 末端截断。
 - action：float32，`[1, num_joints]`，顺序与 policy.json 的 joint_names 一致。
-- 观测包含 joint_pos-default_joint_pos、joint_vel、机体系 base_ang_vel、projected_gravity、last_action、相对参考姿态 6D。
+- 观测包含 joint_pos-default_joint_pos、joint_vel、机体系 base_ang_vel、projected_gravity、last_action。
 - 不输入 xi，不添加训练噪声和域随机化；joint_pos_offset 默认为零。
 - ONNX 内执行标准化和 reference skip；MuJoCo 目标仅为 `default_joint_pos + action_scale * action`。
 - ONNX 按控制周期更新目标；每个物理子步显式计算 tau=kp*(target_joint_pos-joint_pos)-kd*joint_vel，按力矩范围裁剪后 data.ctrl[:]=tau，再 mj_step。

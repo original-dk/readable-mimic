@@ -14,7 +14,7 @@ def compute_state_dim(num_joints: int) -> int:
 
 
 def compute_observation_dim(num_joints: int) -> int:
-    return num_joints + num_joints + 3 + 3 + num_joints + 6
+    return 3 * num_joints + 6
 
 
 def flatten_state(state) -> torch.Tensor:
@@ -65,7 +65,6 @@ def compute_observation_noise_limits(config, num_joints):
         + [config.base_ang_vel_noise] * 3
         + [config.projected_gravity_noise] * 3
         + [0.0] * num_joints
-        + [config.ref_base_rot_noise] * 6
     )
 
 
@@ -76,7 +75,6 @@ def compute_observation(state, last_action, xi, motion_frame_index, motion, defa
     joint_pos_relative = joint_pos - default_joint_pos - joint_pos_offset
     base_ang_vel = (world_to_base @ base_ang_vel_w.unsqueeze(-1)).squeeze(-1)
     projected_gravity = -base_rot_mat_w[..., 2, :]
-    ref_base_rot_6d_relative = mat_to_6d(world_to_base @ motion.base_rotation(motion_frame_index))
     return torch.cat(
         (
             joint_pos_relative,
@@ -84,7 +82,6 @@ def compute_observation(state, last_action, xi, motion_frame_index, motion, defa
             base_ang_vel,
             projected_gravity,
             last_action,
-            ref_base_rot_6d_relative,
         ),
         -1,
     )

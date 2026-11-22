@@ -464,7 +464,7 @@ def test_observation_fields_and_context_normalization(tiny_trainer):
     torch.testing.assert_close(observation[:, 10:12], last_action)
     normalized = transforms.compute_normalized_xi(xi, trainer.xi_center, trainer.xi_scale)
     torch.testing.assert_close(normalized[:, 1:3], torch.tensor([[0.4, -0.6]]))
-    assert observation.shape == (1, 18)
+    assert observation.shape == (1, 12)
 
 
 def test_reward_detail_names_and_total(tiny_trainer):
