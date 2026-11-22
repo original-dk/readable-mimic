@@ -14,6 +14,8 @@ def fields(num_joints: int, xi_dim: int) -> dict:
         "xi": (xi_dim, torch.float32),
         "reward": ((), torch.float32),
         "motion_frame_index": ((), torch.long),
+        "init_root": (7, torch.float32),
+        "init_f": ((), torch.long),
         "episode_step": ((), torch.int32),
         "done": ((), torch.bool),
         "transition_cut": ((), torch.bool),
@@ -92,5 +94,7 @@ class ReplayBuffer:
         history_rows = self._row(transforms.compute_history_ages(ages, episode_step, self.history_lookback))
         fields = ("state", "last_action", "xi", "motion_frame_index")
         start = {field: self.data[field][row_indices, env_indices] for field in fields}
+        for field in ("init_root", "init_f"):
+            start[field] = self.data[field][row_indices, env_indices]
         history = {field: self.data[field][history_rows, env_indices[:, None]] for field in fields}
         return (start, history)

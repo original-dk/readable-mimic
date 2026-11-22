@@ -4,10 +4,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 import torch
 from .sim import CONTROL_DT
-from .rotations import mm3, mv3, rot_angle_sq, yaw_mat
+from .rotations import mm3, mv3, mat_to_quat, quat_to_mat, so3_log
 
 CONTACT_Z = 0.045
-MAX_STEP_REWARD = (4 * 1.0 + 2 * 0.5) * CONTROL_DT
+MAX_STEP_REWARD = (8 * 0.75) * CONTROL_DT
 
 
 @dataclass
@@ -16,7 +16,7 @@ class RewardConfig:
     body_rot_std: float = 0.4
     body_lin_vel_std: float = 1.0
     body_ang_vel_std: float = 3.14
-    base_pos_std: float = 0.3
+    base_pos_std: float = 0.5
     base_rot_std: float = 0.4
     action_rate_weight: float = -0.1
     joint_limit_weight: float = -2.0
@@ -40,6 +40,71 @@ class TrackingTask:
         )
         self.feet = []
 
+    def base_diff(self, S, f, init_root=None, init_f=None):
+        """Reference base diffs: initial-frame displacement/rotation, current-base local velocities.
+
+        ``init_root`` is robot xyz+wxyz after reset noise; ``init_f`` selects the expert frame before
+        noise. Without context, position/orientation compare absolute poses for standalone playback.
+        Rotation diff is 2 * sign(q_err.w) * q_err.xyz, not a rotation vector/geodesic angle.
+        Velocity diffs use each current base frame; initial velocities are not subtracted.
+        """
+        assert (init_root is None) == (init_f is None), "reset pose and expert frame must be supplied together"
+        p, R, v, w = S[:4]
+        m = self.motion
+        rp, rR, ref_v, ref_w = m.ref_state(f)[:4]
+        if init_root is None:
+            diff_pos, rel_R, ref_rel_R = rp - p, R, rR
+        else:
+            p0, R0 = init_root[..., :3], quat_to_mat(init_root[..., 3:7])
+            rp0, rR0 = m.base_pos_w[init_f], m.base_rotation(init_f)
+            R0t, rR0t = R0.transpose(-1, -2), rR0.transpose(-1, -2)
+            diff_pos = mv3(rR0t, rp - rp0) - mv3(R0t, p - p0)
+            rel_R, ref_rel_R = mm3(R0t, R), mm3(rR0t, rR)
+        q_err = mat_to_quat(mm3(rel_R.transpose(-1, -2), ref_rel_R))
+        sign = torch.where(q_err[..., :1] < 0, -1.0, 1.0)
+        diff_rot = 2 * sign * q_err[..., 1:]
+        Rt, rRt = R.transpose(-1, -2), rR.transpose(-1, -2)
+        diff_lv = mv3(rRt, ref_v) - mv3(Rt, v)
+        diff_av = mv3(rRt, ref_w) - mv3(Rt, w)
+        return diff_pos, diff_rot, diff_lv, diff_av
+
+    def hybrid_root(self, R, f):
+        """Robot's current yaw with the reference's current roll/pitch; not a reset-frame transform."""
+        rR = self.motion.base_rotation(f)
+
+        def heading(A):
+            x, y = A[..., 0, 0], A[..., 1, 0]
+            valid = x.square() + y.square() > 1e-12
+            # At a vertical forward axis yaw is undefined: use zero, keeping a valid rotation and finite gradients.
+            return torch.atan2(torch.where(valid, y, 0.0), torch.where(valid, x, 1.0))
+
+        delta = heading(R) - heading(rR)
+        c, s = delta.cos(), delta.sin()
+        z, one = torch.zeros_like(c), torch.ones_like(c)
+        Y = torch.stack((c, -s, z, s, c, z, z, z, one), -1).reshape(R.shape)
+        return mm3(Y, rR)
+
+    def body_diff(self, S, f, body_state=None, ref_body_state=None):
+        """Link diffs in reference-root / hybrid-root frames, with rotation as a shortest-path 3D rotvec.
+
+        Subtract each own root for positions. Velocities are full link world velocities rotated into
+        those frames; do not subtract base velocity. ``body_state`` reuses FK when reward needs contacts.
+        All four outputs have shape (..., tracked_links, 3).
+        """
+        p, R = S[:2]
+        bp, bR, bv, bw = self.kinematics.forward(*S) if body_state is None else body_state
+        m = self.motion
+        rp, rR = m.base_pos_w[f], m.base_rotation(f)
+        ref_p, ref_R, ref_v, ref_w = m.ref_body_state(f) if ref_body_state is None else ref_body_state
+        rRt = rR.transpose(-1, -2).unsqueeze(-3)
+        Ht = self.hybrid_root(R, f).transpose(-1, -2).unsqueeze(-3)
+        diff_pos = mv3(rRt, ref_p - rp.unsqueeze(-2)) - mv3(Ht, bp - p.unsqueeze(-2))
+        ref_local_R, local_R = mm3(rRt, ref_R), mm3(Ht, bR)
+        diff_rot = so3_log(mm3(local_R.transpose(-1, -2), ref_local_R))
+        diff_lv = mv3(rRt, ref_v) - mv3(Ht, bv)
+        diff_av = mv3(rRt, ref_w) - mv3(Ht, bw)
+        return diff_pos, diff_rot, diff_lv, diff_av
+
     def reward(
         self,
         state,
@@ -48,6 +113,8 @@ class TrackingTask:
         last_action,
         return_details: bool = False,
         foot_contact_reward_weight: float = 0.0,
+        init_root=None,
+        init_f=None,
     ):
         """Per-step reward, scaled by CONTROL_DT, compared with the ref motion frame.
 
@@ -55,41 +122,28 @@ class TrackingTask:
         origin below 4.5 cm) matched to the reference's contact state, plus low horizontal foot speed while
         the reference foot is down. Evaluation keeps ``foot_contact_reward_weight = 0``, i.e. the paper's reward."""
         reward_config, motion = (self.config, self.motion)
-        base_pos_w, base_rot_mat_w, base_lin_vel_w, base_ang_vel_w, joint_pos, joint_vel = state
-        body_pos_w, body_rot_mat_w, body_lin_vel_w, body_ang_vel_w = self.kinematics.forward(
-            base_pos_w, base_rot_mat_w, base_lin_vel_w, base_ang_vel_w, joint_pos, joint_vel
+        joint_pos = state[4]
+        body_state = self.kinematics.forward(*state)
+        body_pos_w, _, body_lin_vel_w, _ = body_state
+        ref_body_state = motion.ref_body_state(motion_frame_index)
+        body_errors = self.body_diff(state, motion_frame_index, body_state, ref_body_state)
+        body_pos_error, body_rot_error, body_lin_vel_error, body_ang_vel_error = (
+            diff.square().sum(-1).mean(-1) for diff in body_errors
         )
-        ref_state = motion.ref_state(motion_frame_index)
-        ref_base_pos_w, ref_base_rot_mat_w = ref_state[:2]
-        ref_body_pos_w, ref_body_rot_mat_w, ref_body_lin_vel_w, ref_body_ang_vel_w = (
-            self.kinematics.forward(*ref_state)
+        base_pos_error, base_rot_error, base_lin_vel_error, base_ang_vel_error = (
+            diff.square().sum(-1) for diff in self.base_diff(state, motion_frame_index, init_root, init_f)
         )
-        ref_alignment_rot_mat_w = yaw_mat(mm3(base_rot_mat_w, ref_base_rot_mat_w.transpose(-1, -2)))
-        ref_anchor_pos_w = torch.cat((base_pos_w[..., :2], ref_base_pos_w[..., 2:3]), -1)
-        ref_body_pos_w_aligned = ref_anchor_pos_w.unsqueeze(-2) + mv3(
-            ref_alignment_rot_mat_w.unsqueeze(-3),
-            ref_body_pos_w - ref_base_pos_w.unsqueeze(-2),
-        )
-        ref_body_rot_mat_w_aligned = mm3(
-            ref_alignment_rot_mat_w.unsqueeze(-3), ref_body_rot_mat_w
-        )
-        body_pos_error = ((ref_body_pos_w_aligned - body_pos_w) ** 2).sum(-1).mean(-1)
-        body_rot_error = rot_angle_sq(ref_body_rot_mat_w_aligned, body_rot_mat_w).mean(-1)
-        body_lin_vel_error = (
-            ((ref_body_lin_vel_w - body_lin_vel_w) ** 2).sum(-1).mean(-1)
-        )
-        body_ang_vel_error = (
-            ((ref_body_ang_vel_w - body_ang_vel_w) ** 2).sum(-1).mean(-1)
-        )
-        base_pos_error = ((ref_base_pos_w - base_pos_w) ** 2).sum(-1)
-        base_rot_error = rot_angle_sq(ref_base_rot_mat_w, base_rot_mat_w)
-        tracking_reward = (
-            torch.exp(-body_pos_error / reward_config.body_pos_std**2)
-            + torch.exp(-body_rot_error / reward_config.body_rot_std**2)
+        # The reference sigma sums position and rotation over its 14 tracked links.
+        link_scale = body_pos_w.shape[-2] / 14
+        tracking_reward = 0.75 * (
+            torch.exp(-body_pos_error * link_scale / reward_config.body_pos_std**2)
+            + torch.exp(-body_rot_error * link_scale / reward_config.body_rot_std**2)
             + torch.exp(-body_lin_vel_error / reward_config.body_lin_vel_std**2)
             + torch.exp(-body_ang_vel_error / reward_config.body_ang_vel_std**2)
-            + 0.5 * torch.exp(-base_pos_error / reward_config.base_pos_std**2)
-            + 0.5 * torch.exp(-base_rot_error / reward_config.base_rot_std**2)
+            + torch.exp(-base_pos_error / reward_config.base_pos_std**2)
+            + torch.exp(-base_rot_error / reward_config.base_rot_std**2)
+            + torch.exp(-base_lin_vel_error)
+            + torch.exp(-base_ang_vel_error / 3.14**2)
         )
         action_rate_penalty = ((action - last_action) ** 2).sum(-1)
         joint_limit_penalty = (
@@ -104,7 +158,7 @@ class TrackingTask:
         if foot_contact_reward_weight > 0:
             foot_height, ref_foot_height = (
                 body_pos_w[..., self.feet, 2],
-                ref_body_pos_w[..., self.feet, 2],
+                ref_body_state[0][..., self.feet, 2],
             )
             foot_contact_probability = torch.sigmoid((CONTACT_Z - foot_height) / 0.005)
             ref_foot_contact_labels = getattr(motion, "ref_foot_contact", None)
@@ -131,6 +185,8 @@ class TrackingTask:
                     "body_lin_vel_error": body_lin_vel_error,
                     "body_ang_vel_error": body_ang_vel_error,
                     "base_pos_error": base_pos_error,
+                    "base_lin_vel_error": base_lin_vel_error,
+                    "base_ang_vel_error": base_ang_vel_error,
                     "base_rot_error": base_rot_error,
                     "action_rate_penalty": action_rate_penalty,
                     "joint_limit_penalty": joint_limit_penalty,

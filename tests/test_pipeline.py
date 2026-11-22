@@ -61,6 +61,7 @@ def tiny_trainer(tmp_path, monkeypatch):
     monkeypatch.setattr("readable_mimic.trainer.get_robot", lambda name: robot)
     config = load_config(Path(__file__).parents[1] / "config.json")
     config.device = "cpu"
+    config.ground_supported_reset = False
     config.num_envs = 4
     config.motion_dir = str(tmp_path)
     config.hist = 3
@@ -89,6 +90,8 @@ def tiny_trainer(tmp_path, monkeypatch):
             last_action=action,
             xi=xi,
             reward=trainer.task.reward(next_state, frames + 1, action, action),
+            init_f=frames - step,
+            init_root=transforms.flatten_state(trainer.motion.ref_state(frames - step))[:, :7],
             motion_frame_index=frames,
             episode_step=torch.full((4,), step),
             done=torch.zeros(4, dtype=torch.bool),
@@ -212,7 +215,7 @@ def test_compiled_actor_step_and_reward_gradients(tiny_trainer):
             state, last_action, observation_history, frames, command = step(
                 state, observation_history, last_action, frames, xi, normalized_xi, command
             )
-            rewards, termination = reward(state, frames, last_action, previous_action)
+            rewards, termination = reward(state, frames, last_action, previous_action, start["init_root"], start["init_f"])
             objective = objective + (rewards * (1 - termination)).sum() + 0.01 * last_action.square().sum()
         gradients = torch.autograd.grad(objective, tuple(updates.actor.parameters()))
         return state, objective, gradients
@@ -275,6 +278,8 @@ def test_collect_and_training_loop(tiny_trainer, tmp_path, monkeypatch):
     trainer = tiny_trainer
 
     class NativeEnv:
+        failure_reset = None
+
         def __init__(self):
             self.model = mujoco.MjModel.from_xml_path(trainer.robot.mjcf_path)
             self.model.opt.timestep = 0.005
@@ -335,7 +340,10 @@ def test_collect_and_training_loop(tiny_trainer, tmp_path, monkeypatch):
                 last_action=last_action,
                 xi=self.xi,
                 motion_frame_index=frames,
+                init_f=frames - steps,
+                init_root=transforms.flatten_state(trainer.motion.ref_state(frames - steps))[:, :7],
                 episode_step=steps,
+                termination=torch.zeros(4, dtype=torch.bool),
                 done=torch.zeros(4, dtype=torch.bool),
                 transition_cut=torch.zeros(4, dtype=torch.bool),
                 reward=trainer.task.reward(next_state, frames + 1, action, last_action),
@@ -467,6 +475,29 @@ def test_observation_fields_and_context_normalization(tiny_trainer):
     assert observation.shape == (1, 12)
 
 
+def test_reset_relative_features_follow_each_episode(tiny_trainer):
+    from readable_mimic.rotations import mat_to_quat, mv3, so3_exp
+
+    trainer = tiny_trainer
+    frames = torch.tensor([13, 27])
+    starts = torch.tensor([10, 20])
+    transform = so3_exp(torch.tensor([[0.2, 0.1, -0.7], [-0.4, 0.2, 1.0]]))
+    translation = torch.tensor([[1., 2., 0.], [-3., 0., 1.]])
+
+    def transformed(indices):
+        p, r, v, w, q, qd = trainer.motion.ref_state(indices)
+        return mv3(transform, p) + translation, transform @ r, mv3(transform, v), mv3(transform, w), q, qd
+
+    state = transformed(frames)
+    p0, r0 = transformed(starts)[:2]
+    reset_pose = torch.cat((p0, mat_to_quat(r0)), -1)
+    diffs = trainer.task.base_diff(state, frames, reset_pose, starts)
+    for diff in diffs:
+        torch.testing.assert_close(diff, torch.zeros_like(diff), atol=2e-6, rtol=0)
+    wrong = trainer.task.base_diff(state, frames, reset_pose.flip(0), starts)
+    assert wrong[0].norm(dim=-1).min() > 1
+
+
 def test_reward_detail_names_and_total(tiny_trainer):
     from readable_mimic.sim import CONTROL_DT
 
@@ -484,6 +515,8 @@ def test_reward_detail_names_and_total(tiny_trainer):
         "body_ang_vel_error",
         "base_pos_error",
         "base_rot_error",
+        "base_lin_vel_error",
+        "base_ang_vel_error",
         "action_rate_penalty",
         "joint_limit_penalty",
     }
@@ -648,7 +681,8 @@ def test_sim_r_uses_all_real_transitions(tiny_trainer):
 
     trainer = tiny_trainer
     transition = {name: values[0].clone() for name, values in trainer.buffer.data.items()}
-    transition["reward"].fill_(0.05)
+    transition["termination"] = torch.zeros_like(transition["done"])
+    transition["reward"].fill_(0.5 * MAX_STEP_REWARD)
     trainer.env = SimpleNamespace(
         observe=lambda: torch.zeros(4, trainer.observation_dim),
         episode_step=torch.zeros(4, dtype=torch.long),

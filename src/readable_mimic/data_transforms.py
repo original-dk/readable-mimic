@@ -127,43 +127,6 @@ def compute_command(motion_frame_index: torch.Tensor, command_frame_offsets, mot
     return command_features.reshape(motion_frame_index.shape[0], -1)
 
 
-def compute_critic_state_features(
-    state, motion_frame_index, normalized_xi, motion, kinematics
-) -> torch.Tensor:
-    base_pos_w, base_rot_mat_w, base_lin_vel_w, base_ang_vel_w, joint_pos, joint_vel = state
-    base_heading_rot_mat_w = yaw_mat(base_rot_mat_w)
-    world_to_heading = base_heading_rot_mat_w.transpose(-1, -2)
-    ref_base_pos_w, ref_base_rot_mat_w = (
-        motion.base_pos_w[motion_frame_index],
-        motion.base_rotation(motion_frame_index),
-    )
-    body_pos_w = kinematics.forward(
-        base_pos_w, base_rot_mat_w, base_lin_vel_w, base_ang_vel_w, joint_pos, joint_vel
-    )[0]
-    ref_alignment_rot_mat_w = yaw_mat(mm3(base_rot_mat_w, ref_base_rot_mat_w.transpose(-1, -2)))
-    ref_anchor_pos_w = torch.cat((base_pos_w[..., :2], ref_base_pos_w[..., 2:3]), -1)
-    ref_body_pos_w_aligned = ref_anchor_pos_w.unsqueeze(-2) + mv3(
-        ref_alignment_rot_mat_w.unsqueeze(-3),
-        motion.ref_body_state(motion_frame_index)[0] - ref_base_pos_w.unsqueeze(-2),
-    )
-    body_pos_error_heading = mv3(world_to_heading.unsqueeze(-3), ref_body_pos_w_aligned - body_pos_w).flatten(
-        -2
-    )
-    base_pos_error_heading = mv3(world_to_heading, ref_base_pos_w - base_pos_w)
-    ref_base_rot_6d_relative = mat_to_6d(mm3(base_rot_mat_w.transpose(-1, -2), ref_base_rot_mat_w))
-    return torch.cat(
-        (
-            compute_invariant_features(state),
-            motion.joint_position(motion_frame_index) - joint_pos,
-            body_pos_error_heading,
-            base_pos_error_heading,
-            ref_base_rot_6d_relative,
-            normalized_xi,
-        ),
-        -1,
-    )
-
-
 def compute_actor_return(
     rewards, termination_probabilities, bootstrap_value, discount_factors, bootstrap_discount
 ):
@@ -187,23 +150,17 @@ def compute_value_targets(state_values, detached_rewards, detached_terminations,
     return torch.stack(targets[::-1])
 
 
-def compute_critic_input(state, motion_frame_index, normalized_xi, command, motion, kinematics):
-    state_features = compute_critic_state_features(
-        state, motion_frame_index, normalized_xi, motion, kinematics
-    )
-    return torch.cat((state_features, command), -1)
+def compute_critic_input(state, motion_frame_index, normalized_xi, command, task, init_root, init_f):
+    body = task.body_diff(state, motion_frame_index)
+    base = task.base_diff(state, motion_frame_index, init_root, init_f)
+    joint_pos, joint_vel = state[4:]
+    joint_error = task.motion.joint_position(motion_frame_index) - joint_pos
+    return torch.cat((joint_pos, joint_vel, joint_error, *(diff.flatten(-2) for diff in body),
+                      *base, normalized_xi, command), -1)
 
 
 def compute_critic_input_dim(num_joints, num_tracked_bodies, xi_dim, command_dim):
-    return (
-        compute_invariant_feature_dim(num_joints)
-        + num_joints
-        + 3 * num_tracked_bodies
-        + 3
-        + 6
-        + xi_dim
-        + command_dim
-    )
+    return 3 * num_joints + 12 * num_tracked_bodies + 12 + xi_dim + command_dim
 
 
 def compute_observation_history(observation, history_length):

@@ -9,7 +9,7 @@ from .sim import (
 from . import data_transforms as transforms
 import torch
 from .task import MAX_STEP_REWARD
-from .rotations import so3_exp
+from .rotations import so3_exp, mat_to_quat
 from .timing import TrainingTimer
 from .motion import BIN_FRAMES
 
@@ -47,6 +47,8 @@ class TrackingEnv:
         self.joint_pos_offset_limits = joint_pos_offset_limits(robot, device)
         self.xi = initialize_xi(self, randomize=not evaluation)
         self.motion_frame_index = torch.zeros(num_envs, dtype=torch.long, device=device)
+        self.init_f = torch.zeros_like(self.motion_frame_index)
+        self.init_root = torch.empty(num_envs, 7, device=device)
         self.episode_step = torch.zeros(num_envs, dtype=torch.long, device=device)
         self.last_action = torch.zeros(num_envs, self.num_joints, device=device)
         self.episode_return = torch.zeros(num_envs, device=device)
@@ -110,6 +112,8 @@ class TrackingEnv:
         self.simulation.reset(
             env_indices, (base_pos_w, base_rot_mat_w, base_lin_vel_w, base_ang_vel_w, joint_pos, joint_vel)
         )
+        self.init_root[env_indices] = torch.cat((base_pos_w, mat_to_quat(base_rot_mat_w)), -1)
+        self.init_f[env_indices] = motion_frames
         self.motion_frame_index[env_indices] = motion_frames
         self.episode_step[env_indices] = 0
         self.last_action[env_indices] = 0
@@ -143,7 +147,8 @@ class TrackingEnv:
         next_state = self.state()
         next_motion_frame_index = motion_frame_index + 1
         self.timer.record("collect_physics")
-        reward = self.task.reward(next_state, next_motion_frame_index, action, last_action)
+        reward = self.task.reward(next_state, next_motion_frame_index, action, last_action,
+                                  init_root=self.init_root, init_f=self.init_f)
         termination = self.task.termination(next_state, next_motion_frame_index)
         clip_end_frame = self.motion.end_frame(motion_frame_index)
         timeout = (next_motion_frame_index >= clip_end_frame) | (episode_step + 1 >= self.max_episode_steps)
@@ -156,6 +161,8 @@ class TrackingEnv:
             last_action=last_action,
             motion_frame_index=motion_frame_index,
             episode_step=episode_step,
+            init_root=self.init_root.clone(),
+            init_f=self.init_f.clone(),
             xi=self.xi.clone(),
             reward=reward,
             termination=termination,

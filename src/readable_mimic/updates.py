@@ -3,6 +3,7 @@
 from . import data_transforms as transforms
 from .timing import TrainingTimer
 import torch
+from .task import MAX_STEP_REWARD
 from torch import nn
 
 
@@ -151,13 +152,15 @@ class TrainingUpdates:
             transforms.compute_command(next_motion_frame_index, self.command_frame_offsets, self.motion),
         )
 
-    def reward_and_termination(self, state, motion_frame_index, action, last_action):
+    def reward_and_termination(self, state, motion_frame_index, action, last_action, init_root, init_f):
         return (
             self.task.reward(
                 state,
                 motion_frame_index,
                 action,
                 last_action,
+                init_root=init_root,
+                init_f=init_f,
                 foot_contact_reward_weight=self.config.contact_reward,
             ),
             self.task.soft_termination(state, motion_frame_index),
@@ -296,7 +299,8 @@ class TrainingUpdates:
         )
         all_frames = flat(rollout_frames)
         rewards, termination_probabilities = self.reward_and_termination(
-            all_states, all_frames, flat(rollout_actions), flat(rollout_last_actions)
+            all_states, all_frames, flat(rollout_actions), flat(rollout_last_actions),
+            start["init_root"].repeat(self.horizon, 1), start["init_f"].repeat(self.horizon),
         )
         rewards, termination_probabilities = (
             rewards.view(self.horizon, batch_size),
@@ -309,8 +313,9 @@ class TrainingUpdates:
                 motion_frame_index,
                 normalized_xi,
                 command,
-                self.motion,
-                self.task.kinematics,
+                self.task,
+                start["init_root"],
+                start["init_f"],
             )
         )
         actor_return, survival_weights, final_survival = transforms.compute_actor_return(
@@ -356,7 +361,7 @@ class TrainingUpdates:
         return (
             loss.detach(),
             critic_loss.detach(),
-            (reward_sum / self.horizon / 0.1).mean(),
+            (reward_sum / self.horizon / MAX_STEP_REWARD).mean(),
             gradient_norm.detach(),
             final_survival.mean().detach(),
         )
@@ -402,8 +407,9 @@ class TrainingUpdates:
                 critic_frames,
                 critic_xi,
                 critic_commands,
-                self.motion,
-                self.task.kinematics,
+                self.task,
+                start["init_root"].repeat(self.horizon + 1, 1),
+                start["init_f"].repeat(self.horizon + 1),
             ).view(self.horizon + 1, batch_size, -1)
         self.critic.norm.update(critic_features)
         with torch.no_grad():

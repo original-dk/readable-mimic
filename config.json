@@ -96,7 +96,7 @@
     "body_rot_std": 0.4,
     "body_lin_vel_std": 1.0,
     "body_ang_vel_std": 3.14,
-    "base_pos_std": 0.3,
+    "base_pos_std": 0.5,
     "base_rot_std": 0.4,
     "action_rate_weight": -0.1,
     "joint_limit_weight": -2.0,
