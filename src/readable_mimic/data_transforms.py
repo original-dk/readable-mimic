@@ -6,7 +6,7 @@ Functions receive their data explicitly; they never read Trainer or TrainingUpda
 from __future__ import annotations
 import torch
 from .rotations import mat_to_6d, mm3, mv3, quat_to_mat, mat_to_quat, yaw_mat
-from .sim import default_xi
+from .sim import default_xi, DYNAMICS_RANGES, DYNAMICS_DEFAULTS
 
 
 def compute_state_dim(num_joints: int) -> int:
@@ -232,11 +232,16 @@ def compute_ghost_pose(ref_state, robot_state, follow_base):
 def compute_xi_normalization(robot, offset_limits):
     friction_lower, friction_upper = robot.domain_randomization.friction_range
     center = default_xi(robot, offset_limits.device)
+    dynamics_scales = []
+    for name, nominal in zip(DYNAMICS_RANGES, DYNAMICS_DEFAULTS):
+        lower, upper = getattr(robot.domain_randomization, name)
+        dynamics_scales.append(max(abs(lower - nominal), abs(upper - nominal), 1e-6))
     scale = torch.cat(
         (
             offset_limits.new_tensor([(friction_upper - friction_lower) / 2]),
             offset_limits.clamp_min(1e-06),
             offset_limits.new_full((3,), 0.05),
+            offset_limits.new_tensor(dynamics_scales),
         )
     )
     return (center, scale)

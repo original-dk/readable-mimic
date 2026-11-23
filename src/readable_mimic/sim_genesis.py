@@ -66,6 +66,14 @@ class GenesisSim:
             [robot.joint_armature[name] for name in robot.joint_names], self.joint_dof_indices
         )
 
+        self.default_mass = self.robot.get_mass().clone()
+        self.default_inertia = self.robot.get_links_inertia().clone()
+        self.default_armature = self.robot.get_dofs_armature(self.joint_dof_indices).clone()
+        self.default_passive_damping = self.robot.get_dofs_damping(self.joint_dof_indices).clone()
+        self.default_frictionloss = self.robot.get_dofs_frictionloss(self.joint_dof_indices).clone()
+        self.default_kp = self.robot.get_dofs_kp(self.joint_dof_indices).clone()
+        self.default_kd = self.robot.get_dofs_kv(self.joint_dof_indices).clone()
+
     def state(self):
         return (
             self.robot.get_pos().clone(),
@@ -99,5 +107,13 @@ class GenesisSim:
         self.robot.set_friction(1.0)
         self.robot.set_friction_ratio(xi[:, :1].expand(-1, self.robot.n_links))
         self.robot.set_links_COM(
-            self.default_center_of_mass + xi[:, None, 1 + robot.num_joints :], [self.center_of_mass_index]
+            self.default_center_of_mass + xi[:, None, 1 + robot.num_joints : 4 + robot.num_joints], [self.center_of_mass_index]
         )
+        mass, inertia, armature, damping, frictionloss, kp, kd = xi[:, -7:].unbind(-1)
+        self.robot.set_mass(self.default_mass * mass)
+        self.robot.set_links_inertia(self.default_inertia * (mass * inertia)[:, None, None, None])
+        self.robot.set_dofs_armature(self.default_armature * armature[:, None], self.joint_dof_indices)
+        self.robot.set_dofs_damping(self.default_passive_damping + damping[:, None], self.joint_dof_indices)
+        self.robot.set_dofs_frictionloss(self.default_frictionloss + frictionloss[:, None], self.joint_dof_indices)
+        self.robot.set_dofs_kp(self.default_kp * kp[:, None], self.joint_dof_indices)
+        self.robot.set_dofs_kv(self.default_kd * kd[:, None], self.joint_dof_indices)

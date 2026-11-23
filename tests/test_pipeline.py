@@ -418,17 +418,30 @@ def test_xi_matches_applied_physics(tiny_trainer):
     trainer = tiny_trainer
     default_body_positions = torch.zeros(3, 3)
     simulation = SimpleNamespace(
-        model=SimpleNamespace(geom_friction=torch.zeros(4, 3, 3), body_ipos=torch.zeros(4, 3, 3)),
+        model=SimpleNamespace(
+            geom_friction=torch.zeros(4, 3, 3), body_ipos=torch.zeros(4, 3, 3),
+            body_mass=torch.ones(4, 3), body_inertia=torch.ones(4, 3, 3),
+            dof_armature=torch.ones(4, 2), dof_damping=torch.ones(4, 2),
+            dof_frictionloss=torch.ones(4, 2), actuator_gainprm=torch.ones(4, 2, 10),
+            actuator_biasprm=torch.ones(4, 2, 10),
+        ),
         mj_model=SimpleNamespace(geom_bodyid=np.array([3, 1, 2]), geom_type=np.array([mujoco.mjtGeom.mjGEOM_PLANE, mujoco.mjtGeom.mjGEOM_SPHERE, mujoco.mjtGeom.mjGEOM_SPHERE])),
         expand_model_fields=lambda names: None,
-        get_default_field=lambda name: default_body_positions,
+        get_default_field=lambda name: (
+            default_body_positions if name == "body_ipos" else
+            torch.ones_like(getattr(simulation.model, name)[0])
+        ),
+        recompute_constants=lambda level: None,
     )
     backend = MujocoSim.__new__(MujocoSim)
     backend.physics = simulation
     backend.robot_description = trainer.robot
     backend.device = "cpu"
     backend.robot = SimpleNamespace(
-        indexing=SimpleNamespace(geom_ids=torch.tensor([1, 2]), body_ids=torch.tensor([1, 2])),
+        indexing=SimpleNamespace(
+            geom_ids=torch.tensor([1, 2]), body_ids=torch.tensor([1, 2]),
+            joint_v_adr=torch.tensor([0, 1]), ctrl_ids=torch.tensor([0, 1]),
+        ),
         find_bodies=lambda name: ([0], [name]),
     )
     env = SimpleNamespace(
@@ -437,7 +450,10 @@ def test_xi_matches_applied_physics(tiny_trainer):
         num_envs=4,
         device="cpu",
         robot=SimpleNamespace(
-            indexing=SimpleNamespace(geom_ids=torch.tensor([1, 2]), body_ids=torch.tensor([1, 2])),
+            indexing=SimpleNamespace(
+            geom_ids=torch.tensor([1, 2]), body_ids=torch.tensor([1, 2]),
+            joint_v_adr=torch.tensor([0, 1]), ctrl_ids=torch.tensor([0, 1]),
+        ),
             find_bodies=lambda name: ([0], [name]),
         ),
     )
@@ -446,6 +462,21 @@ def test_xi_matches_applied_physics(tiny_trainer):
     torch.testing.assert_close(simulation.model.geom_friction[:, 1, 0], xi[:, 0])
     torch.testing.assert_close(simulation.model.geom_friction[:, 2, 0], xi[:, 0])
     torch.testing.assert_close(simulation.model.body_ipos[:, 1], xi[:, 3:6])
+    mass, inertia, armature, damping, frictionloss, kp, kd = xi[:, -7:].unbind(-1)
+    torch.testing.assert_close(simulation.model.body_mass[:, 1], mass)
+    torch.testing.assert_close(simulation.model.body_inertia[:, 1, 0], mass * inertia)
+    torch.testing.assert_close(simulation.model.dof_armature[:, 0], armature)
+    torch.testing.assert_close(simulation.model.dof_damping[:, 0], 1 + damping)
+    torch.testing.assert_close(simulation.model.dof_frictionloss[:, 0], 1 + frictionloss)
+    torch.testing.assert_close(simulation.model.actuator_gainprm[:, 0, 0], kp)
+    torch.testing.assert_close(simulation.model.actuator_biasprm[:, 0, 1], kp)
+    torch.testing.assert_close(simulation.model.actuator_biasprm[:, 0, 2], kd)
+    trainer.buffer.add({
+        name: (xi if name == "xi" else value[0].clone())
+        for name, value in trainer.buffer.data.items()
+    })
+    start, _ = trainer.buffer.starts_at(torch.tensor([trainer.buffer.size - 1]), torch.tensor([2]))
+    torch.testing.assert_close(start["xi"][0], xi[2])
     before = xi.clone()
     randomize_joint_pos_offsets(xi, torch.tensor([1, 3]), trainer.joint_pos_offset_limits)
     torch.testing.assert_close(xi[[0, 2]], before[[0, 2]])
@@ -454,7 +485,8 @@ def test_xi_matches_applied_physics(tiny_trainer):
     assert xi[:, 1:3].abs().le(0.01).all()
     evaluation_xi = initialize_xi(env, randomize=False)
     torch.testing.assert_close(evaluation_xi[:, 0], torch.ones(4))
-    torch.testing.assert_close(evaluation_xi[:, 1:], torch.zeros(4, 5))
+    torch.testing.assert_close(evaluation_xi[:, 1:6], torch.zeros(4, 5))
+    torch.testing.assert_close(evaluation_xi[:, -7:], torch.tensor([1., 1., 1., 0., 0., 1., 1.]).expand(4, -1))
     torch.testing.assert_close(simulation.model.geom_friction[:, :, 0], torch.ones(4, 3))
     torch.testing.assert_close(simulation.model.body_ipos[:, 1], torch.zeros(4, 3))
 
@@ -766,10 +798,10 @@ def test_fixed_training_constants_are_not_rebuilt(tiny_trainer, monkeypatch):
         assert all((torch.isfinite(value).all() for value in metrics))
     for original, current in zip(before, constants):
         torch.testing.assert_close(original, current, rtol=0, atol=0)
-    xi = torch.randn(2, 6, requires_grad=True)
+    xi = torch.randn(2, trainer.xi_dim, requires_grad=True)
     normalized = transforms.compute_normalized_xi(xi, trainer.xi_center, trainer.xi_scale)
-    expected_center = torch.tensor([0.75, 0.0, 0.0, 0.0, 0.0, 0.0])
-    expected_scale = torch.tensor([0.45, 0.01, 0.01, 0.05, 0.05, 0.05])
+    expected_center = torch.tensor([0.75, 0.0, 0.0, 0.0, 0.0, 0.0, 1., 1., 1., 0., 0., 1., 1.])
+    expected_scale = torch.tensor([0.45, 0.01, 0.01, 0.05, 0.05, 0.05, 0.1, 0.1, 0.2, 0.05, 0.1, 0.2, 0.2])
     torch.testing.assert_close(normalized, (xi - expected_center) / expected_scale)
     normalized.sum().backward()
     torch.testing.assert_close(xi.grad, expected_scale.reciprocal().expand_as(xi))
