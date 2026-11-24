@@ -63,7 +63,6 @@ class TrainingUpdates:
         self.discount_factors = (
             config.gamma ** torch.arange(config.horizon, device=self.device, dtype=torch.float32)[:, None]
         )
-        self.rollout_offsets = torch.arange(config.horizon + 1, device=self.device)[:, None]
         self.bootstrap_discount = config.gamma**config.horizon
         if config.compile_world_model and torch.device(self.device).type == "cuda":
             self.world_model_rollout = torch.compile(
@@ -79,10 +78,6 @@ class TrainingUpdates:
                 options={"triton.cudagraphs": False},
             )
         if config.compile_actor and torch.device(self.device).type == "cuda":
-            self.prepare_reference = torch.compile(
-                self.prepare_reference, fullgraph=True, dynamic=False,
-                options={"triton.cudagraphs": False},
-            )
             self.critic_features = torch.compile(
                 self.critic_features,
                 fullgraph=True,
@@ -102,15 +97,10 @@ class TrainingUpdates:
                 options={"triton.cudagraphs": False},
             )
 
-    def critic_features(self, state, motion_frame_index, normalized_xi, command, init_root, init_f, reference=None):
+    def critic_features(self, state, motion_frame_index, normalized_xi, command, init_root, init_f):
         return transforms.compute_critic_input(
-            state, motion_frame_index, normalized_xi, command, self.task, init_root, init_f, reference,
+            state, motion_frame_index, normalized_xi, command, self.task, init_root, init_f,
         )
-
-    def prepare_reference(self, frames):
-        state = self.motion.ref_state(frames)
-        command = transforms.compute_command(frames, self.command_frame_offsets, self.motion)
-        return command, (state, self.task.kinematics.forward(*state))
 
     def world_model_rollout(self, start, action, last_action, xi):
         state = transforms.unflatten_state(start[:, 0])
@@ -149,7 +139,6 @@ class TrainingUpdates:
         xi,
         normalized_xi,
         command,
-        next_command=None,
     ):
         action = self.actor(observation_history, command)
         next_state = self.world_model.step(state, action, last_action, normalized_xi)
@@ -171,11 +160,10 @@ class TrainingUpdates:
             action,
             observation_history,
             next_motion_frame_index,
-            transforms.compute_command(next_motion_frame_index, self.command_frame_offsets, self.motion)
-            if next_command is None else next_command,
+            transforms.compute_command(next_motion_frame_index, self.command_frame_offsets, self.motion),
         )
 
-    def reward_and_termination(self, state, motion_frame_index, action, last_action, init_root, init_f, reference=None):
+    def reward_and_termination(self, state, motion_frame_index, action, last_action, init_root, init_f):
         return (
             self.task.reward(
                 state,
@@ -185,7 +173,6 @@ class TrainingUpdates:
                 init_root=init_root,
                 init_f=init_f,
                 foot_contact_reward_weight=self.config.contact_reward,
-                reference=reference,
             ),
             self.task.soft_termination(state, motion_frame_index),
         )
@@ -283,15 +270,9 @@ class TrainingUpdates:
         set_requires_grad(self.world_model, False)
         set_requires_grad(self.critic, False)
         batch_size = self.config.pi_batch
-        with torch.no_grad():
-            reference_frames = motion_frame_index.unsqueeze(0) + self.rollout_offsets
-            flat_commands, flat_reference = self.prepare_reference(reference_frames.flatten())
-            commands = flat_commands.view(self.horizon + 1, batch_size, -1)
-            reference = tuple(
-                tuple(value.view(self.horizon + 1, batch_size, *value.shape[1:]) for value in group)
-                for group in flat_reference
-            )
-        initial_command = commands[0]
+        initial_command = transforms.compute_command(
+            motion_frame_index, self.command_frame_offsets, self.motion
+        )
         command = initial_command
         initial_state = state
         rollout_states, rollout_actions, rollout_last_actions, rollout_frames, rollout_commands = (
@@ -312,7 +293,6 @@ class TrainingUpdates:
                 xi,
                 normalized_xi,
                 command,
-                commands[step_index + 1],
             )
             (
                 rollout_states.append(state),
@@ -332,7 +312,6 @@ class TrainingUpdates:
         rewards, termination_probabilities = self.reward_and_termination(
             all_states, all_frames, flat(rollout_actions), flat(rollout_last_actions),
             start["init_root"].repeat(self.horizon, 1), start["init_f"].repeat(self.horizon),
-            tuple(tuple(value[1:].flatten(0, 1) for value in group) for group in reference),
         )
         rewards, termination_probabilities = (
             rewards.view(self.horizon, batch_size),
@@ -347,7 +326,6 @@ class TrainingUpdates:
                 command,
                 start["init_root"],
                 start["init_f"],
-                tuple(tuple(value[-1] for value in group) for group in reference),
             )
         )
         actor_return, survival_weights, final_survival = transforms.compute_actor_return(
@@ -388,7 +366,6 @@ class TrainingUpdates:
             detached_rewards,
             detached_terminations,
             batch_size,
-            reference,
         )
         self.timer.record("critic")
         return (
@@ -411,7 +388,6 @@ class TrainingUpdates:
         detached_rewards,
         detached_terminations,
         batch_size,
-        reference=None,
     ):
         value_loss = torch.zeros(())
         with torch.no_grad():
@@ -443,9 +419,6 @@ class TrainingUpdates:
                 critic_commands,
                 start["init_root"].repeat(self.horizon + 1, 1),
                 start["init_f"].repeat(self.horizon + 1),
-                None if reference is None else tuple(
-                    tuple(value.flatten(0, 1) for value in group) for group in reference
-                ),
             ).view(self.horizon + 1, batch_size, -1)
         self.critic.norm.update(critic_features)
         with torch.no_grad():

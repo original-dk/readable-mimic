@@ -40,7 +40,7 @@ class TrackingTask:
         )
         self.feet = []
 
-    def base_diff(self, S, f, init_root=None, init_f=None, reference_state=None):
+    def base_diff(self, S, f, init_root=None, init_f=None):
         """Reference base diffs: initial-frame displacement/rotation, current-base local velocities.
 
         ``init_root`` is robot xyz+wxyz after reset noise; ``init_f`` selects the expert frame before
@@ -51,7 +51,7 @@ class TrackingTask:
         assert (init_root is None) == (init_f is None), "reset pose and expert frame must be supplied together"
         p, R, v, w = S[:4]
         m = self.motion
-        rp, rR, ref_v, ref_w = (m.ref_state(f) if reference_state is None else reference_state)[:4]
+        rp, rR, ref_v, ref_w = m.ref_state(f)[:4]
         if init_root is None:
             diff_pos, rel_R, ref_rel_R = rp - p, R, rR
         else:
@@ -68,9 +68,9 @@ class TrackingTask:
         diff_av = mv3(rRt, ref_w) - mv3(Rt, w)
         return diff_pos, diff_rot, diff_lv, diff_av
 
-    def hybrid_root(self, R, f, reference_rotation=None):
+    def hybrid_root(self, R, f):
         """Robot's current yaw with the reference's current roll/pitch; not a reset-frame transform."""
-        rR = self.motion.base_rotation(f) if reference_rotation is None else reference_rotation
+        rR = self.motion.base_rotation(f)
 
         def heading(A):
             x, y = A[..., 0, 0], A[..., 1, 0]
@@ -84,7 +84,7 @@ class TrackingTask:
         Y = torch.stack((c, -s, z, s, c, z, z, z, one), -1).reshape(R.shape)
         return mm3(Y, rR)
 
-    def body_diff(self, S, f, body_state=None, ref_body_state=None, reference_state=None):
+    def body_diff(self, S, f, body_state=None, ref_body_state=None):
         """Link diffs in reference-root / hybrid-root frames, with rotation as a shortest-path 3D rotvec.
 
         Subtract each own root for positions. Velocities are full link world velocities rotated into
@@ -94,10 +94,10 @@ class TrackingTask:
         p, R = S[:2]
         bp, bR, bv, bw = self.kinematics.forward(*S) if body_state is None else body_state
         m = self.motion
-        rp, rR = (m.base_pos_w[f], m.base_rotation(f)) if reference_state is None else reference_state[:2]
+        rp, rR = m.base_pos_w[f], m.base_rotation(f)
         ref_p, ref_R, ref_v, ref_w = m.ref_body_state(f) if ref_body_state is None else ref_body_state
         rRt = rR.transpose(-1, -2).unsqueeze(-3)
-        Ht = self.hybrid_root(R, f, rR).transpose(-1, -2).unsqueeze(-3)
+        Ht = self.hybrid_root(R, f).transpose(-1, -2).unsqueeze(-3)
         diff_pos = mv3(rRt, ref_p - rp.unsqueeze(-2)) - mv3(Ht, bp - p.unsqueeze(-2))
         ref_local_R, local_R = mm3(rRt, ref_R), mm3(Ht, bR)
         diff_rot = so3_log(mm3(local_R.transpose(-1, -2), ref_local_R))
@@ -115,7 +115,6 @@ class TrackingTask:
         foot_contact_reward_weight: float = 0.0,
         init_root=None,
         init_f=None,
-        reference=None,
     ):
         """Per-step reward, scaled by CONTROL_DT, compared with the ref motion frame.
 
@@ -126,14 +125,13 @@ class TrackingTask:
         joint_pos = state[4]
         body_state = self.kinematics.forward(*state)
         body_pos_w, _, body_lin_vel_w, _ = body_state
-        reference_state = None if reference is None else reference[0]
-        ref_body_state = motion.ref_body_state(motion_frame_index) if reference is None else reference[1]
-        body_errors = self.body_diff(state, motion_frame_index, body_state, ref_body_state, reference_state)
+        ref_body_state = motion.ref_body_state(motion_frame_index)
+        body_errors = self.body_diff(state, motion_frame_index, body_state, ref_body_state)
         body_pos_error, body_rot_error, body_lin_vel_error, body_ang_vel_error = (
             diff.square().sum(-1).mean(-1) for diff in body_errors
         )
         base_pos_error, base_rot_error, base_lin_vel_error, base_ang_vel_error = (
-            diff.square().sum(-1) for diff in self.base_diff(state, motion_frame_index, init_root, init_f, reference_state)
+            diff.square().sum(-1) for diff in self.base_diff(state, motion_frame_index, init_root, init_f)
         )
         # The reference sigma sums position and rotation over its 14 tracked links.
         link_scale = body_pos_w.shape[-2] / 14
