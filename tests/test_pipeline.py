@@ -206,14 +206,19 @@ def test_compiled_actor_step_and_reward_gradients(tiny_trainer):
         updates.reward_and_termination, backend="aot_eager", fullgraph=True, dynamic=False
     )
 
-    def rollout(step, reward):
+    def rollout(step, reward, batched=False):
+        commands, _ = updates.prepare_reference(
+            (start["motion_frame_index"][None] + updates.rollout_offsets[:3]).flatten()
+        )
+        commands = commands.view(3, updates.config.pi_batch, -1)
         state, observation_history, command = initial_state, initial_history, initial_command
         frames, last_action = start["motion_frame_index"], start["last_action"]
         objective = torch.zeros(())
-        for _ in range(2):
+        for step_index in range(2):
             previous_action = last_action
+            args = (commands[step_index + 1],) if batched else ()
             state, last_action, observation_history, frames, command = step(
-                state, observation_history, last_action, frames, xi, normalized_xi, command
+                state, observation_history, last_action, frames, xi, normalized_xi, command, *args
             )
             rewards, termination = reward(state, frames, last_action, previous_action, start["init_root"], start["init_f"])
             objective = objective + (rewards * (1 - termination)).sum() + 0.01 * last_action.square().sum()
@@ -225,7 +230,7 @@ def test_compiled_actor_step_and_reward_gradients(tiny_trainer):
         updates.imagine_step, updates.reward_and_termination
     )
     torch.manual_seed(47)
-    actual_state, actual_objective, actual_gradients = rollout(compiled_step, compiled_reward)
+    actual_state, actual_objective, actual_gradients = rollout(compiled_step, compiled_reward, batched=True)
     for actual, expected in zip(actual_state, expected_state):
         torch.testing.assert_close(actual, expected)
     torch.testing.assert_close(actual_objective, expected_objective)
@@ -846,3 +851,67 @@ def test_compiled_collection_reward_and_critic_features(tiny_trainer):
         for actual_gradient, expected_gradient in zip(actual_gradients, expected_gradients):
             assert torch.isfinite(actual_gradient).all()
             torch.testing.assert_close(actual_gradient, expected_gradient, atol=1e-5, rtol=1e-4)
+
+
+def test_batched_rollout_commands_match_stepwise_reference(tiny_trainer):
+    trainer = tiny_trainer
+    end = int(trainer.motion.clip_end[0])
+    frames = torch.tensor([end - 2, 12, end - 1])
+    offsets = trainer.updates.rollout_offsets[:2]
+    grid = frames[None] + offsets
+    batched, _ = trainer.updates.prepare_reference(grid.flatten())
+    expected = torch.stack([
+        transforms.compute_command(row, trainer.command_frame_offsets, trainer.motion)
+        for row in grid
+    ])
+    torch.testing.assert_close(batched.view_as(expected), expected)
+    compiled = torch.compile(
+        trainer.updates.prepare_reference, backend="aot_eager", fullgraph=True, dynamic=False,
+    )
+    with torch.no_grad():
+        actual, reference = compiled(grid.flatten())
+        expected_commands, expected_reference = trainer.updates.prepare_reference(grid.flatten())
+    torch.testing.assert_close(actual, expected_commands)
+    for actual_group, expected_group in zip(reference, expected_reference):
+        for value, target in zip(actual_group, expected_group):
+            torch.testing.assert_close(value, target)
+
+
+
+def test_cached_reference_reward_features_and_gradients(tiny_trainer):
+    trainer = tiny_trainer
+    updates = trainer.updates
+    frames = torch.tensor([12, 17, 23, 31])
+    state = trainer.motion.ref_state(frames)
+    init_f = frames - 3
+    init_root = transforms.flatten_state(trainer.motion.ref_state(init_f))[:, :7]
+    command, reference = updates.prepare_reference(frames)
+    xi = default_xi(trainer.robot, "cpu").expand(len(frames), -1)
+    normalized_xi = transforms.compute_normalized_xi(xi, trainer.xi_center, trainer.xi_scale)
+    action = torch.full_like(state[4], 0.1)
+    compiled_reward = torch.compile(
+        updates.reward_and_termination, backend="aot_eager", fullgraph=True, dynamic=False,
+    )
+    compiled_features = torch.compile(
+        updates.critic_features, backend="aot_eager", fullgraph=True, dynamic=False,
+    )
+
+    def evaluate(reward_fn, feature_fn, cached):
+        inputs = tuple(value.detach().clone().requires_grad_() for value in state)
+        rewards, terminations = reward_fn(inputs, frames, action, -action, init_root, init_f, cached)
+        features = feature_fn(inputs, frames, normalized_xi, command, init_root, init_f, cached)
+        objective = rewards.sum() + features.square().mean() + terminations.sum()
+        gradients = torch.autograd.grad(objective, inputs)
+        return (rewards, terminations, features), gradients
+
+    expected, expected_gradients = evaluate(updates.reward_and_termination, updates.critic_features, None)
+    for reward_fn, features_fn in (
+        (updates.reward_and_termination, updates.critic_features),
+        (compiled_reward, compiled_features),
+    ):
+        actual, gradients = evaluate(reward_fn, features_fn, reference)
+        for value, target in zip(actual, expected):
+            torch.testing.assert_close(value, target)
+        for value, target in zip(gradients, expected_gradients):
+            assert torch.isfinite(value).all()
+            torch.testing.assert_close(value, target, atol=1e-5, rtol=1e-4)
