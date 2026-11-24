@@ -5,6 +5,7 @@ from .timing import TrainingTimer
 import torch
 from .task import MAX_STEP_REWARD
 from torch import nn
+from .grad_optimization import GradientOptimizationConfig, GradientStartSampler, capped_action_gradients
 
 
 def set_requires_grad(module, enabled):
@@ -35,6 +36,9 @@ class TrainingUpdates:
         command_frame_offsets,
     ):
         self.config = config
+        self.grad_config = GradientOptimizationConfig(**getattr(config, "grad_optimization", {}))
+        self.start_sampler = GradientStartSampler(self.grad_config, config.device)
+        self.grad_metrics = {}
         self.actor = actor
         self.critic = critic
         self.world_model = world_model
@@ -78,6 +82,12 @@ class TrainingUpdates:
                 options={"triton.cudagraphs": False},
             )
         if config.compile_actor and torch.device(self.device).type == "cuda":
+            self.policy_gradient_loss = torch.compile(
+                self.policy_gradient_loss,
+                fullgraph=True,
+                dynamic=False,
+                options={"triton.cudagraphs": False},
+            )
             self.critic_features = torch.compile(
                 self.critic_features,
                 fullgraph=True,
@@ -101,6 +111,57 @@ class TrainingUpdates:
         return transforms.compute_critic_input(
             state, motion_frame_index, normalized_xi, command, self.task, init_root, init_f,
         )
+
+    def policy_gradient_loss(self, history, command, action_gradient):
+        return -(self.actor(history, command) * action_gradient).sum()
+
+    @torch.no_grad()
+    def sample_actor_starts(self):
+        batch_size = self.config.pi_batch
+        count = batch_size * self.grad_config.candidates if self.grad_config.start_draw else batch_size
+        start, history = self.sample_valid_starts(count)
+        importance = torch.ones(batch_size, device=self.device)
+        quantiles = None
+        if self.grad_config.start_draw:
+            state = transforms.unflatten_state(start["state"])
+            command = transforms.compute_command(start["motion_frame_index"], self.command_frame_offsets, self.motion)
+            normalized_xi = transforms.compute_normalized_xi(start["xi"], self.xi_center, self.xi_scale)
+            values = self.critic(self.critic_features(
+                state, start["motion_frame_index"], normalized_xi, command, start["init_root"], start["init_f"],
+            ))
+            selected, importance, quantiles = self.start_sampler.draw(values, batch_size)
+            start = {key: value[selected] for key, value in start.items()}
+            history = {key: value[selected] for key, value in history.items()}
+        return start, history, importance, quantiles
+
+    @torch.no_grad()
+    def rank_reference(self, frames, horizon):
+        state = self.motion.ref_state(frames)
+        init_root = transforms.flatten_state(state)[:, :7]
+        init_f = frames
+        xi = transforms.default_xi(self.robot, self.device).expand(len(frames), -1).clone()
+        xi[:, 0] = 1.0
+        normalized_xi = transforms.compute_normalized_xi(xi, self.xi_center, self.xi_scale)
+        action = torch.zeros(len(frames), self.robot.num_joints, device=self.device)
+        observation = transforms.compute_observation(
+            state, action, xi, frames, self.motion, self.default_joint_pos,
+        )
+        history = transforms.compute_observation_history(observation, self.history_length)
+        command = transforms.compute_command(frames, self.command_frame_offsets, self.motion)
+        total = torch.zeros(len(frames), device=self.device)
+        survival = torch.ones_like(total)
+        for step in range(horizon):
+            previous_action = action
+            state, action, history, frames, command = self.imagine_step(
+                state, history, action, frames, xi, normalized_xi, command, noisy=False,
+            )
+            # Rank the same contact-free tracking objective reported in simulation.
+            reward = self.task.reward(state, frames, action, previous_action, init_root=init_root, init_f=init_f)
+            termination = self.task.soft_termination(state, frames)
+            total += self.config.gamma**step * survival * reward
+            survival *= 1 - termination
+        bootstrap = self.critic(self.critic_features(state, frames, normalized_xi, command, init_root, init_f))
+        return total + self.config.gamma**horizon * survival * bootstrap
 
     def world_model_rollout(self, start, action, last_action, xi):
         state = transforms.unflatten_state(start[:, 0])
@@ -139,21 +200,19 @@ class TrainingUpdates:
         xi,
         normalized_xi,
         command,
+        action_perturbation=None,
+        noisy=True,
     ):
         action = self.actor(observation_history, command)
+        if action_perturbation is not None:
+            action = action + action_perturbation
         next_state = self.world_model.step(state, action, last_action, normalized_xi)
         next_motion_frame_index = motion_frame_index + 1
-        next_observation = transforms.apply_observation_noise(
-            transforms.compute_observation(
-                next_state,
-                action,
-                xi,
-                next_motion_frame_index,
-                self.motion,
-                self.default_joint_pos,
-            ),
-            self.observation_noise_limits,
+        next_observation = transforms.compute_observation(
+            next_state, action, xi, next_motion_frame_index, self.motion, self.default_joint_pos,
         )
+        if noisy:
+            next_observation = transforms.apply_observation_noise(next_observation, self.observation_noise_limits)
         observation_history = transforms.update_observation_history(observation_history, next_observation)
         return (
             next_state,
@@ -177,8 +236,11 @@ class TrainingUpdates:
             self.task.soft_termination(state, motion_frame_index),
         )
 
-    def critic_loss(self, critic_features, value_targets):
-        return ((self.critic(critic_features) - value_targets) ** 2).mean()
+    def critic_loss(self, critic_features, value_targets, importance=None):
+        errors = (self.critic(critic_features) - value_targets) ** 2
+        if importance is not None:
+            errors = errors * importance
+        return errors.mean()
 
     def mirror_windows(self, windows: dict, num_samples: int) -> dict:
         """Replace the first n windows by their mirror images (states, actions, sim context)."""
@@ -255,7 +317,8 @@ class TrainingUpdates:
         return (concatenate_batches(starts), concatenate_batches(histories))
 
     def update_actor(self):
-        start, history = self.sample_valid_starts(self.config.pi_batch)
+        self.grad_metrics = {}
+        start, history, importance, quantiles = self.sample_actor_starts()
         state = transforms.unflatten_state(start["state"])
         xi, motion_frame_index, last_action = (
             start["xi"],
@@ -269,6 +332,10 @@ class TrainingUpdates:
             )
         set_requires_grad(self.world_model, False)
         set_requires_grad(self.critic, False)
+        capped = self.grad_config.cap > 0
+        if capped:
+            set_requires_grad(self.actor, False)
+        action_perturbations, policy_histories, policy_commands = [], [], []
         batch_size = self.config.pi_batch
         initial_command = transforms.compute_command(
             motion_frame_index, self.command_frame_offsets, self.motion
@@ -284,6 +351,12 @@ class TrainingUpdates:
         )
         self.timer.record("actor_prepare")
         for step_index in range(self.horizon):
+            perturbation = None
+            if capped:
+                perturbation = torch.zeros_like(last_action, requires_grad=True)
+                action_perturbations.append(perturbation)
+                policy_histories.append(observation_history.detach())
+                policy_commands.append(command.detach())
             rollout_last_actions.append(last_action)
             state, last_action, observation_history, motion_frame_index, command = self.imagine_step(
                 state,
@@ -293,6 +366,7 @@ class TrainingUpdates:
                 xi,
                 normalized_xi,
                 command,
+                action_perturbation=perturbation,
             )
             (
                 rollout_states.append(state),
@@ -340,7 +414,24 @@ class TrainingUpdates:
         loss = -actor_return.mean()
         self.timer.record("actor_return")
         self.actor_optimizer.zero_grad(set_to_none=True)
-        loss.backward()
+        if capped:
+            gradients = torch.stack(torch.autograd.grad(actor_return.sum(), action_perturbations))
+            weighted_gradients, raw_norms, self.grad_metrics = capped_action_gradients(
+                gradients, importance, self.grad_config.cap,
+            )
+            if quantiles is not None:
+                self.start_sampler.observe(quantiles, raw_norms)
+            self.grad_metrics["start_importance_min"] = importance.min()
+            self.grad_metrics["start_importance_max"] = importance.max()
+            set_requires_grad(self.actor, True)
+            for step_index in range(self.horizon):
+                surrogate = self.policy_gradient_loss(
+                    policy_histories[step_index], policy_commands[step_index],
+                    weighted_gradients[step_index] / batch_size,
+                )
+                surrogate.backward()
+        else:
+            loss.backward()
         self.timer.record("actor_backward_gradients")
         gradient_norm = nn.utils.clip_grad_norm_(self.actor.parameters(), 1.0)
         if self.config.pi_clip_value > 0:
@@ -366,6 +457,7 @@ class TrainingUpdates:
             detached_rewards,
             detached_terminations,
             batch_size,
+            importance,
         )
         self.timer.record("critic")
         return (
@@ -388,6 +480,7 @@ class TrainingUpdates:
         detached_rewards,
         detached_terminations,
         batch_size,
+        importance=None,
     ):
         value_loss = torch.zeros(())
         with torch.no_grad():
@@ -433,6 +526,9 @@ class TrainingUpdates:
             critic_features[:-1].reshape(-1, critic_features.shape[-1]),
             targets.reshape(-1),
         )
+        if importance is None:
+            importance = torch.ones(batch_size, device=self.device)
+        critic_importance = importance.repeat(self.horizon)
         num_samples = flat_critic_features.shape[0]
         minibatch_size = num_samples // self.config.critic_minibatches
         for _ in range(self.config.critic_epochs):
@@ -442,7 +538,8 @@ class TrainingUpdates:
                     component_index * minibatch_size : (component_index + 1) * minibatch_size
                 ]
                 value_loss = self.critic_loss(
-                    flat_critic_features[selected_indices], flat_value_targets[selected_indices]
+                    flat_critic_features[selected_indices], flat_value_targets[selected_indices],
+                    critic_importance[selected_indices],
                 )
                 self.critic_optimizer.zero_grad(set_to_none=True)
                 value_loss.backward()

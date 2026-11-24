@@ -60,6 +60,7 @@ def tiny_trainer(tmp_path, monkeypatch):
     )
     monkeypatch.setattr("readable_mimic.trainer.get_robot", lambda name: robot)
     config = load_config(Path(__file__).parents[1] / "config.json")
+    config.grad_optimization = {}
     config.device = "cpu"
     config.ground_supported_reset = False
     config.num_envs = 4

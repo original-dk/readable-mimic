@@ -18,6 +18,7 @@ class ObservationNoiseConfig:
 def load_config(path="config.json", resume=None, *, restore_training_config=True):
     path = Path(path).resolve()
     values = json.loads(path.read_text(encoding="utf-8"))
+    values.setdefault("grad_optimization", {})
     values.setdefault("resume", None)
     values.setdefault("failure_reset_fraction", values.get("fail_reset", 0.0))
     values.setdefault("ground_supported_reset", False)
@@ -71,7 +72,14 @@ def load_config(path="config.json", resume=None, *, restore_training_config=True
         )
         runtime_config = {name: values[name] for name in runtime_fields}
         values = {**values, **saved_config, **runtime_config}
+        # Older checkpoints resume their original update rule.
+        values["grad_optimization"] = saved_config.get("grad_optimization", {})
     config = SimpleNamespace(**values)
+    from .grad_optimization import GradientOptimizationConfig
+    gradient_config = GradientOptimizationConfig(**config.grad_optimization)
+    if gradient_config.model_resets and config.failure_reset_fraction:
+        raise ValueError("Choose model-ranked resets or failure_reset_fraction")
+
     assert config.simulator in ("mujoco", "genesis"), "simulator must be mujoco or genesis"
     assert config.amp == "none", "Only FP32 is supported."
     if not 0 <= config.failure_reset_fraction <= 1:

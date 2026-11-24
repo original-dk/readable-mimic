@@ -11,13 +11,13 @@
   "iterations": 3500,
   "buffer_steps": 1000,
   "utd": 0.4,
-  "horizon": 32,
+  "horizon": 64,
   "goal_frames": 10,
   "hist": 10,
   "wm_window": 8,
   "wm_batches": 5,
   "wm_batch": 2048,
-  "pi_batch": 2048,
+  "pi_batch": 1024,
   "lr": 0.0004,
   "gamma": 0.99,
   "lam": 0.95,
@@ -154,5 +154,19 @@
     "base_ang_vel_noise": 0.2,
     "projected_gravity_noise": 0.05,
     "ref_base_rot_noise": 0.05
+  },
+  "grad_optimization": {
+    "cap": 10.0,
+    "start_draw": true,
+    "candidates": 8,
+    "quantiles": 32,
+    "memory": 200,
+    "rate_limit": 30.0,
+    "model_resets": true,
+    "reset_interval": 2000,
+    "reset_horizon": 32,
+    "rank_batch": 32768,
+    "hard_fraction": 0.05,
+    "reset_tail": 50
   }
 }

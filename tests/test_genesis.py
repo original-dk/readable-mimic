@@ -1,4 +1,4 @@
-from dataclasses import replace
+from dataclasses import replace, asdict
 import torch
 import pytest
 
@@ -7,7 +7,8 @@ from test_pipeline import tiny_trainer as tiny_trainer
 from readable_mimic.rotations import so3_exp
 
 
-def test_real_genesis_state_reset_xi_and_training(tiny_trainer, tmp_path):
+@pytest.mark.parametrize("paper_update", [False, True])
+def test_real_genesis_state_reset_xi_and_training(tiny_trainer, tmp_path, paper_update):
     trainer = tiny_trainer
     joint_names = trainer.robot.joint_names
     trainer.robot = replace(
@@ -17,6 +18,17 @@ def test_real_genesis_state_reset_xi_and_training(tiny_trainer, tmp_path):
         joint_effort_limit={name: 20.0 for name in joint_names},
         joint_armature={name: 0.01 for name in joint_names},
     )
+    if paper_update:
+        from readable_mimic.grad_optimization import (
+            GradientOptimizationConfig, GradientStartSampler, ModelRankedReset,
+        )
+        trainer.updates.grad_config = GradientOptimizationConfig(
+            cap=10, start_draw=True, candidates=2, model_resets=True,
+            reset_horizon=3, reset_tail=5, rank_batch=8,
+        )
+        trainer.config.grad_optimization = asdict(trainer.updates.grad_config)
+        trainer.updates.start_sampler = GradientStartSampler(trainer.updates.grad_config, trainer.device)
+        trainer.model_reset = ModelRankedReset(trainer.motion, trainer.updates.grad_config)
     trainer.config.simulator = "genesis"
     trainer.config.simulation = {**trainer.config.simulation, "iterations": 10, "ls_iterations": 10}
     try:
@@ -68,6 +80,12 @@ def test_real_genesis_state_reset_xi_and_training(tiny_trainer, tmp_path):
         timings = trainer.updates.timer.report()
         assert timings["collect_physics_ms"] > 0 and timings["collect_finalize_ms"] > 0
         assert all(torch.isfinite(value).all() for value in (*world_model_metrics, *actor_metrics))
+        if paper_update:
+            assert env.reset_sampler is trainer.model_reset
+            ranked = trainer.model_reset.refresh(trainer.updates.rank_reference, 2000)
+            assert ranked["model_reset_hard_bins"] > 0
+            reset_frames = env.sample_motion_frames(100)
+            assert (reset_frames <= trainer.motion.end_frame(reset_frames) - 5).all()
         trainer.save(tmp_path / "genesis.pt")
         saved = torch.load(tmp_path / "genesis.pt", map_location="cpu", weights_only=False)
         assert saved["config"]["simulator"] == "genesis"

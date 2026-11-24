@@ -30,7 +30,9 @@ class TrackingEnv:
         genesis_settings=None,
         failure_reset_fraction=0.0,
         compile_reward=False,
+        reset_sampler=None,
     ):
+        self.reset_sampler = reset_sampler
         self.evaluation = evaluation
         self.num_envs = num_envs
         self.num_joints = robot.num_joints
@@ -83,6 +85,8 @@ class TrackingEnv:
         return self.simulation.state()
 
     def sample_motion_frames(self, num_samples):
+        if self.reset_sampler is not None:
+            return self.reset_sampler.sample(num_samples)
         bin_indices = torch.randint(self.motion.num_bins, (num_samples,), device=self.device)
         if self.motion.reset_starts is not None:
             starts, counts = self.motion.reset_starts

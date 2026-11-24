@@ -153,6 +153,10 @@ class Trainer:
             xi_scale=self.xi_scale,
             command_frame_offsets=self.command_frame_offsets,
         )
+        from .grad_optimization import ModelRankedReset
+        self.model_reset = None
+        if self.updates.grad_config.model_resets:
+            self.model_reset = ModelRankedReset(self.motion, self.updates.grad_config)
         self.pending_random_states = None
         self.sim_reward_sum = torch.zeros((), device=self.device)
         self.sim_reward_count = 0
@@ -199,6 +203,7 @@ class Trainer:
             genesis_settings=self.config.genesis,
             failure_reset_fraction=self.config.failure_reset_fraction,
             compile_reward=self.config.compile_actor,
+            reset_sampler=self.model_reset,
         )
 
     @torch.no_grad()
@@ -305,7 +310,15 @@ class Trainer:
                     gradient_norm=gradient_norm,
                     survival=survival,
                 )
+                metrics.update(self.updates.grad_metrics)
             self.iteration = iteration + 1
+            if (
+                self.model_reset is not None
+                and iteration >= config.wm_only_iters
+                and self.iteration % self.updates.grad_config.reset_interval == 0
+            ):
+                metrics.update(self.model_reset.refresh(self.updates.rank_reference, self.iteration))
+                self.updates.timer.record("model_reset_rank")
             self.updates.timer.end_iteration()
             if self.iteration % config.log_every == 0:
                 metrics = {
@@ -386,6 +399,10 @@ class Trainer:
             decay_start=self.decay_start,
             torch_rng_state=torch.get_rng_state(),
             format_version=2,
+            gradient_start_sampler=self.updates.start_sampler.state_dict(),
+            model_ranked_reset=None if self.model_reset is None else self.model_reset.state_dict(),
+            model_ranked_reset_frames=None if self.model_reset is None else self.model_reset.ranking_frames().cpu(),
+            model_ranked_reset_names=None if self.model_reset is None else self.motion.names,
             python_random_state=random.getstate(),
             numpy_random_state=np.random.get_state(),
             cuda_random_states=torch.cuda.get_rng_state_all() if torch.cuda.is_available() else [],
@@ -412,6 +429,19 @@ class Trainer:
             "world_model_optimizer",
         ):
             getattr(self, name).load_state_dict(state[name])
+        if "gradient_start_sampler" in state:
+            self.updates.start_sampler.load_state_dict(state["gradient_start_sampler"])
+        reset_state = state.get("model_ranked_reset")
+        if self.model_reset is not None and reset_state is not None:
+            saved_frames = state.get("model_ranked_reset_frames")
+            same_motion = state.get("model_ranked_reset_names") == self.motion.names
+            same_starts = saved_frames is not None and torch.equal(
+                saved_frames, self.model_reset.ranking_frames().cpu(),
+            )
+            if same_motion and same_starts:
+                self.model_reset.load_state_dict(reset_state)
+            else:
+                print("Rebuilding model-ranked resets for the current motion starts.", flush=True)
         self.iteration = state["iteration"]
         self.collection_remainder = state["collection_remainder"]
         self.decay_start = state["decay_start"]
