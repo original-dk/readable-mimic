@@ -18,10 +18,14 @@ from readable_mimic.sim import default_xi
 
 def test_numpy_inputs_match_training(tiny_trainer):
     trainer = tiny_trainer
-    motion = {
-        name: getattr(trainer.motion, name).numpy()
-        for name in ("base_pos_w", "base_rot_mat_w", "base_lin_vel", "base_ang_vel", "joint_pos", "joint_vel")
-    }
+    state = trainer.motion.ref_state(torch.arange(len(trainer.motion.base_pos_w)))
+    motion = dict(zip(
+        ("base_pos_w", "base_rot_mat_w", "base_lin_vel_w", "base_ang_vel_w", "joint_pos", "joint_vel"),
+        (value.numpy() for value in state),
+    ))
+    inverse_rotation = state[1].transpose(-1, -2)
+    motion["base_lin_vel"] = (inverse_rotation @ state[2].unsqueeze(-1)).squeeze(-1).numpy()
+    motion["base_ang_vel"] = (inverse_rotation @ state[3].unsqueeze(-1)).squeeze(-1).numpy()
     end = int(trainer.motion.clip_end[0])
     for frame in (12, end - 1):
         expected = transforms.compute_command(
@@ -193,3 +197,39 @@ print('Pure ONNX Runtime + native MuJoCo passed')
         cwd=Path(__file__).parents[1],
     )
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_fixed_deployment_dr(tmp_path):
+    import mujoco
+    from readable_mimic.deployment.play_mujoco import load_dr, apply_dr
+
+    settings = dict(joint_names=["joint"], friction=1.0, kp_scale=1.0, kd_scale=1.0)
+    model = mujoco.MjModel.from_xml_string(
+        '<mujoco><worldbody><geom name="ground" type="plane" size="1 1 .1"/>'
+        '<body name="torso_link"><joint name="joint" armature=".1" damping=".2" frictionloss=".3"/>'
+        '<geom type="sphere" size=".1" mass="2"/></body></worldbody></mujoco>'
+    )
+    mass, inertia = model.body_mass.copy(), model.body_inertia.copy()
+    path = tmp_path / "dr.json"
+    path.write_text(json.dumps({"domain_randomization": {
+        "mass_scale": 1.1, "inertia_scale": 0.9, "armature_scale": 1.2,
+        "passive_damping_add": 0.04, "frictionloss_add": 0.08,
+        "kp_scale": 0.85, "kd_scale": 0.95, "friction": 0.7,
+        "ground_friction": 0.3, "center_of_mass_offset": [0.01, -0.02, 0.03],
+        "joint_pos_offset": [0.005],
+    }}))
+    dr = load_dr(path, settings)
+    apply_dr(model, settings, dr)
+    np.testing.assert_allclose(model.body_mass, mass * 1.1)
+    np.testing.assert_allclose(model.body_inertia, inertia * 1.1 * 0.9)
+    np.testing.assert_allclose(model.body_ipos[1], [0.01, -0.02, 0.03])
+    np.testing.assert_allclose(model.dof_armature, [0.12])
+    np.testing.assert_allclose(model.dof_damping, [0.24])
+    np.testing.assert_allclose(model.dof_frictionloss, [0.38])
+    np.testing.assert_allclose(model.geom_friction[:, 0], [0.3, 0.7])
+    assert dr["kp_scale"] == 0.85 and dr["kd_scale"] == 0.95
+    for invalid in ({"kp_scale": 0}, {"mass_scale": -1}, {"friction": float("nan")},
+                    {"joint_pos_offset": [0, 0]}, {"kp_scale_range": [0.8, 1.2]}):
+        path.write_text(json.dumps({"domain_randomization": invalid}))
+        with pytest.raises(ValueError):
+            load_dr(path, settings)

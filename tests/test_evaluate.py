@@ -1,3 +1,4 @@
+import json
 import mujoco
 import numpy as np
 import pytest
@@ -83,7 +84,7 @@ def test_video_frame_count_and_clip_restart(tiny_trainer, monkeypatch, tmp_path,
     model = mujoco.MjModel.from_xml_path(trainer.robot.mjcf_path)
     clip_end = int(trainer.motion.clip_end[0])
     monkeypatch.setattr(
-        "readable_mimic.evaluate.sample_start_frame", lambda motion, index: torch.tensor([clip_end - 1])
+        "readable_mimic.evaluate.sample_start_frame", lambda motion, index, start_frame=None: torch.tensor([clip_end - 1])
     )
 
     class PlaybackEnv:
@@ -243,3 +244,31 @@ def test_evaluation_selects_files_before_loading(tmp_path, monkeypatch):
     monkeypatch.setattr(evaluate, "ReferenceMotion", capture)
     evaluate.load_evaluation_motion(tmp_path, robot, None, "cpu", "cartwheel")
     assert [Path(path).name for path in selected] == ["cartwheel.csv"]
+
+
+def test_fixed_evaluation_dr_matches_environment_context(tmp_path):
+    from types import SimpleNamespace
+    from readable_mimic.evaluate import apply_evaluation_dr
+    from readable_mimic.fixed_dr import load_dr
+
+    path = tmp_path / "dr.json"
+    path.write_text(json.dumps({"domain_randomization": {
+        "friction": 0.7, "ground_friction": 0.4,
+        "joint_pos_offset": [0.01, -0.02], "center_of_mass_offset": [0.01, 0.02, -0.03],
+        "mass_scale": 1.1, "inertia_scale": 0.95, "armature_scale": 1.2,
+        "passive_damping_add": 0.03, "frictionloss_add": 0.07, "kp_scale": 0.9, "kd_scale": 1.15,
+    }}))
+    dr = load_dr(path, dict(joint_names=["left", "right"], friction=1., kp_scale=1., kd_scale=1.))
+    applied = {}
+    def apply(xi, randomize, ground_friction):
+        applied.update(xi=xi.clone(), randomize=randomize, ground_friction=ground_friction)
+    env = SimpleNamespace(xi=torch.zeros(1, 13), num_joints=2,
+                          simulation=SimpleNamespace(apply_xi=apply))
+    apply_evaluation_dr(env, dr)
+    torch.testing.assert_close(env.xi, torch.tensor([[
+        0.7, 0.01, -0.02, 0.01, 0.02, -0.03, 1.1, 0.95, 1.2, 0.03, 0.07, 0.9, 1.15,
+    ]]))
+    torch.testing.assert_close(env.xi, applied["xi"])
+    assert applied["ground_friction"] == 0.4 and applied["randomize"] is False
+    assert parse_args(["--ckpt", "last.pt", "--dr", str(path)]).dr == str(path)
+    assert parse_args(["--ckpt", "last.pt"]).dr is None

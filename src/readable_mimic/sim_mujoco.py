@@ -83,7 +83,7 @@ class MujocoSim:
             self.physics.step()
             self.scene.update(PHYSICS_DT)
 
-    def apply_xi(self, xi, randomize):
+    def apply_xi(self, xi, randomize, ground_friction=None):
         physics, robot = self.physics, self.robot_description
         physics.expand_model_fields((
             "body_ipos", "geom_friction", "body_mass", "body_inertia",
@@ -96,7 +96,8 @@ class MujocoSim:
             torch.as_tensor(physics.mj_model.geom_type == mujoco.mjtGeom.mjGEOM_PLANE, device=self.device).nonzero().flatten()
         )
         physics.model.geom_friction[:, ground_indices, 0] = (
-            robot.domain_randomization.friction_range[0] if randomize else 1.0
+            ground_friction if ground_friction is not None else
+            (robot.domain_randomization.friction_range[0] if randomize else 1.0)
         )
         physics.model.geom_friction[:, self.robot.indexing.geom_ids, 0] = xi[:, :1]
         body_index = self.robot.indexing.body_ids[self.robot.find_bodies(robot.center_of_mass_body)[0][0]]

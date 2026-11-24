@@ -73,20 +73,18 @@ def export_policy(checkpoint_path, config_path, output_path):
     print("Actor verified; preparing motion reference...", flush=True)
     motion = ReferenceMotion.from_dir(config.motion_dir, robot, Kinematics(robot, "cpu"), "cpu")
     motion_path = output.with_suffix(".motion.npz")
-    fields = (
-        "base_pos_w",
-        "base_rot_mat_w",
-        "base_lin_vel_w",
-        "base_ang_vel_w",
-        "base_lin_vel",
-        "base_ang_vel",
-        "joint_pos",
-        "joint_vel",
-        "clip_start",
-        "clip_end",
-    )
+    frames = torch.arange(len(motion.base_pos_w))
+    state = motion.ref_state(frames)
+    world_to_base = state[1].transpose(-1, -2)
+    arrays = dict(zip(
+        ("base_pos_w", "base_rot_mat_w", "base_lin_vel_w", "base_ang_vel_w", "joint_pos", "joint_vel"),
+        (value.numpy() for value in state),
+    ))
+    arrays["base_lin_vel"] = (world_to_base @ state[2].unsqueeze(-1)).squeeze(-1).numpy()
+    arrays["base_ang_vel"] = (world_to_base @ state[3].unsqueeze(-1)).squeeze(-1).numpy()
     np.savez_compressed(
-        motion_path, names=np.array(motion.names), **{name: getattr(motion, name).numpy() for name in fields}
+        motion_path, names=np.array(motion.names), clip_start=motion.clip_start.numpy(),
+        clip_end=motion.clip_end.numpy(), **arrays,
     )
     metadata = {
         "format_version": 1,
@@ -106,6 +104,7 @@ def export_policy(checkpoint_path, config_path, output_path):
         "joint_armature": [robot.joint_armature[name] for name in robot.joint_names],
         "control_dt": 0.02,
         "decimation": 4,
+        "center_of_mass_body": robot.center_of_mass_body,
         "friction": 1.0,
         "kp_scale": 1.0,
         "kd_scale": 1.0,

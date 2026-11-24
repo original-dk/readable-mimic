@@ -8,7 +8,33 @@ import time
 import mujoco
 import numpy as np
 import onnxruntime as ort
+from ..fixed_dr import load_dr
 from .inputs import compute_command, compute_observation, rotation_matrix
+
+
+
+def apply_dr(model, settings, dr):
+    """Apply the fixed DR once, before constructing simulation data."""
+    body_ids = np.arange(1, model.nbody)
+    dof_ids = np.array([model.joint(name).dofadr[0] for name in settings["joint_names"]])
+    model.body_mass[body_ids] *= dr["mass_scale"]
+    model.body_inertia[body_ids] *= dr["mass_scale"] * dr["inertia_scale"]
+    model.dof_armature[dof_ids] *= dr["armature_scale"]
+    model.dof_damping[dof_ids] += dr["passive_damping_add"]
+    model.dof_frictionloss[dof_ids] += dr["frictionloss_add"]
+    ground = model.geom("ground").id
+    model.geom_friction[:, 0] = dr["friction"]
+    model.geom_friction[ground, 0] = dr["ground_friction"]
+    offset = np.asarray(dr["center_of_mass_offset"])
+    if np.any(offset):
+        body = model.body(dr["center_of_mass_body"]).id
+        if body == 0:
+            raise ValueError("COM offset requires a robot body")
+        model.body_ipos[body] += offset
+        # A shifted inertial origin invalidates compile-time frame coincidences.
+        model.body_simple[body] = 0
+        model.body_sameframe[body] = 0
+    mujoco.mj_setConst(model, mujoco.MjData(model))
 
 
 def create_model(settings, model_path):
@@ -59,7 +85,7 @@ def create_model(settings, model_path):
     return model
 
 
-def play(model_path, motions="all", duration=30.0, seed=0, headless=False, mjcf_path=None):
+def play(model_path, motions="all", duration=30.0, seed=0, headless=False, mjcf_path=None, dr_path=None):
     path = Path(model_path).resolve()
     print(f"Loading deployment bundle: {path}", flush=True)
     settings = json.loads(path.with_suffix(".json").read_text(encoding="utf-8"))
@@ -77,6 +103,9 @@ def play(model_path, motions="all", duration=30.0, seed=0, headless=False, mjcf_
         raise ValueError("Unsupported deployment bundle version")
     print("Loading native MuJoCo model...", flush=True)
     model = create_model(settings, Path(mjcf_path) if mjcf_path else path.parent / settings["mjcf_path"])
+    dr = load_dr(dr_path, settings)
+    apply_dr(model, settings, dr)
+    print("Fixed deployment DR " + json.dumps(dr, ensure_ascii=False), flush=True)
     data = mujoco.MjData(model)
     options = ort.SessionOptions()
     options.intra_op_num_threads = 1
@@ -95,8 +124,9 @@ def play(model_path, motions="all", duration=30.0, seed=0, headless=False, mjcf_
     base_qpos_indices = np.arange(base_qpos_start, base_qpos_start + 7)
     default_joint_pos = np.asarray(settings["default_joint_pos"], dtype=np.float32)
     action_scale = np.asarray(settings["action_scale"], dtype=np.float32)
-    kp = np.asarray(settings["joint_stiffness"]) * settings["kp_scale"]
-    kd = np.asarray(settings["joint_damping"]) * settings["kd_scale"]
+    kp = np.asarray(settings["joint_stiffness"]) * dr["kp_scale"]
+    kd = np.asarray(settings["joint_damping"]) * dr["kd_scale"]
+    joint_pos_offset = np.asarray(dr["joint_pos_offset"], dtype=np.float32)
     force_limit = np.asarray(settings["joint_effort_limit"])
     rng = np.random.default_rng(seed)
     last_action = np.zeros(len(joint_qpos_indices), dtype=np.float32)
@@ -106,7 +136,7 @@ def play(model_path, motions="all", duration=30.0, seed=0, headless=False, mjcf_
         return compute_observation(
             rotation_matrix(base[3:]),
             data.qvel[base_dof_start + 3 : base_dof_start + 6],
-            data.qpos[joint_qpos_indices],
+            data.qpos[joint_qpos_indices] - joint_pos_offset,
             data.qvel[joint_dof_indices],
             last_action,
             motion["base_rot_mat_w"][frame],
@@ -169,7 +199,7 @@ def play(model_path, motions="all", duration=30.0, seed=0, headless=False, mjcf_
                 action = policy.run(["action"], policy_inputs)[0][0]
                 if not np.isfinite(action).all():
                     raise RuntimeError("ONNX Actor produced non-finite actions")
-                target_joint_pos = default_joint_pos + action_scale * action
+                target_joint_pos = default_joint_pos + joint_pos_offset + action_scale * action
                 for _ in range(settings["decimation"]):
                     joint_pos = data.qpos[joint_qpos_indices]
                     joint_vel = data.qvel[joint_dof_indices]
@@ -236,9 +266,10 @@ def main():
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--headless", action="store_true")
     parser.add_argument("--mjcf", help="Override the bundle MJCF path after moving assets")
+    parser.add_argument("--dr", help="Fixed DR JSON, e.g. --dr dr.json")
     args = parser.parse_args()
     try:
-        play(args.model, args.motions, args.duration, args.seed, args.headless, args.mjcf)
+        play(args.model, args.motions, args.duration, args.seed, args.headless, args.mjcf, args.dr)
     except KeyboardInterrupt:
         print("\nPlayback interrupted.", flush=True)
     else:

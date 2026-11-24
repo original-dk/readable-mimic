@@ -1,0 +1,20 @@
+{
+  "domain_randomization": {
+    "friction": 1.0,
+    "ground_friction": 1.0,
+    "joint_pos_offset": 0.0,
+    "center_of_mass_body": "torso_link",
+    "center_of_mass_offset": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "mass_scale": 1.0,
+    "inertia_scale": 1.0,
+    "armature_scale": 1.0,
+    "passive_damping_add": 0.0,
+    "frictionloss_add": 0.0,
+    "kp_scale": 1.0,
+    "kd_scale": 1.0
+  }
+}

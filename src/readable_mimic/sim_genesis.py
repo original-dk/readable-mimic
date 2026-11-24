@@ -101,9 +101,12 @@ class GenesisSim:
         self.robot.control_dofs_position(target_joint_pos, self.joint_dof_indices)
         self.scene.step()
 
-    def apply_xi(self, xi, randomize):
+    def apply_xi(self, xi, randomize, ground_friction=None):
         robot = self.robot_description
-        self.ground.set_friction(robot.domain_randomization.friction_range[0] if randomize else 1.0)
+        self.ground.set_friction(
+            ground_friction if ground_friction is not None else
+            (robot.domain_randomization.friction_range[0] if randomize else 1.0)
+        )
         self.robot.set_friction(1.0)
         self.robot.set_friction_ratio(xi[:, :1].expand(-1, self.robot.n_links))
         self.robot.set_links_COM(

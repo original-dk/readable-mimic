@@ -16,6 +16,7 @@ from .actor import Actor, actor_kwargs
 from .config import load_config
 from .sim import CONTROL_DT, DomainRandomizationConfig
 from .env import TrackingEnv
+from .fixed_dr import load_dr
 from .kinematics import Kinematics
 from .motion import ReferenceMotion
 from .robot import get_robot
@@ -31,6 +32,7 @@ def parse_args(argv=None):
     parser.add_argument("--checkpoint", "--ckpt", required=True)
     parser.add_argument("--output-dir", default="videos", help="One MP4 per selected trajectory.")
     parser.add_argument("--config", default="config.json")
+    parser.add_argument("--dr", help="Fixed DR JSON, shared with deployment playback.")
     parser.add_argument("--motion-dir", help="Override the reference motion directory in the config.")
     parser.add_argument("--motions", default="all", help="Exact clip names separated by | (quote the list).")
     parser.add_argument("--duration", type=float, default=30.0, help="Playback seconds per selected clip.")
@@ -256,6 +258,24 @@ def render_motion(
     print(json.dumps({key: value for key, value in summary.items() if key != "failures"}), flush=True)
 
 
+def apply_evaluation_dr(env, dr):
+    """Keep fixed physical parameters and observation offsets paired across resets."""
+    xi = env.xi.clone()
+    joint_count = env.num_joints
+    xi[:, 0] = dr["friction"]
+    xi[:, 1:1 + joint_count] = torch.as_tensor(
+        dr["joint_pos_offset"], device=xi.device, dtype=xi.dtype,
+    )
+    xi[:, 1 + joint_count:4 + joint_count] = xi.new_tensor(dr["center_of_mass_offset"])
+    xi[:, -7:] = xi.new_tensor([
+        dr["mass_scale"], dr["inertia_scale"], dr["armature_scale"],
+        dr["passive_damping_add"], dr["frictionloss_add"], dr["kp_scale"], dr["kd_scale"],
+    ])
+    env.simulation.apply_xi(xi, randomize=False, ground_friction=dr["ground_friction"])
+    env.xi = xi
+    print("Fixed evaluation DR " + json.dumps(dr, ensure_ascii=False), flush=True)
+
+
 def main(argv=None):
     arguments = parse_args(argv)
     config = load_config(arguments.config, restore_training_config=False)
@@ -268,6 +288,13 @@ def main(argv=None):
     robot = replace(
         get_robot(config.robot), domain_randomization=DomainRandomizationConfig(**config.domain_randomization)
     )
+    dr = None
+    if arguments.dr is not None:
+        dr = load_dr(arguments.dr, {
+            "joint_names": robot.joint_names, "center_of_mass_body": robot.center_of_mass_body,
+            "friction": 1.0, "kp_scale": 1.0, "kd_scale": 1.0,
+        })
+        robot = replace(robot, center_of_mass_body=dr["center_of_mass_body"])
     kinematics = Kinematics(robot, config.device)
     motion_dir = arguments.motion_dir if arguments.motion_dir is not None else config.motion_dir
     motion = load_evaluation_motion(motion_dir, robot, kinematics, config.device, arguments.motions)
@@ -296,6 +323,8 @@ def main(argv=None):
         backend=config.simulator,
         genesis_settings=config.genesis,
     )
+    if dr is not None:
+        apply_evaluation_dr(env, dr)
     output_directory = Path(arguments.output_dir)
     output_directory.mkdir(parents=True, exist_ok=True)
 

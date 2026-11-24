@@ -108,3 +108,31 @@ action → target_joint_pos → tau (PD + 力矩裁剪) → data.ctrl → mj_ste
 
 `obs` 是当前帧观测，`observation_history` 按时间保存观测；`last_action` 是上一控制步动作。
 `action` 是策略输出，`target_joint_pos` 是关节目标角，`tau` 与 `data.ctrl` 均为关节力矩。
+
+
+## 固定 DR 测试
+
+编辑项目根目录的 `dr.json`，使用 `--dr dr.json` 加载。
+
+```powershell
+python -m readable_mimic.deployment.play_mujoco --model exports/policy.onnx --dr dr.json
+```
+
+`domain_randomization` 填写确定值。所有 `*_scale` 相对导出模型标称参数，
+KP/KD scale 覆盖 policy.json 中的同名 scale。最终惯量乘以 mass_scale × inertia_scale。
+`passive_damping_add` 单位为 N·m·s/rad，`frictionloss_add` 为 N·m。
+`center_of_mass_offset` 是指定 body 局部坐标的 xyz 偏移，单位为 m。
+`joint_pos_offset` 接受单个弧度值或按 joint_names 顺序排列的数组，
+同时作用于观测零位和控制目标。机器人和地面摩擦分别由 friction、ground_friction 指定。
+所有参数加载一次，在片段切换及 reset 后持续使用。启动日志输出最终配置。
+省略 `--dr` 时使用导出 bundle 的原有参数。
+
+
+训练 checkpoint 的视频评估也支持同一份固定配置。
+
+```powershell
+python -m readable_mimic.evaluate --ckpt runs/all_full_dr/last.pt --config runs/all_full_dr/config.json --dr dr.json
+```
+
+评估启动时打印固定参数，并将实际参数写入环境 xi，关节零位偏移同时用于观测和控制。
+省略 --dr 时沿用评估原有的标称物理参数和关闭 reset 扰动的行为。
