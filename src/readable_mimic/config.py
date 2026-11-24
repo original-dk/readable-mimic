@@ -40,7 +40,16 @@ def load_config(path="config.json", resume=None, *, restore_training_config=True
     )
     if resume is not None:
         values["resume"] = str(Path(resume).resolve())
-    for key in ("motion_dir", "log_dir", "resume"):
+    motion_directories = values["motion_dir"]
+    if isinstance(motion_directories, list):
+        if not motion_directories or any(not isinstance(item, str) or not item.strip() for item in motion_directories):
+            raise ValueError("motion_dir must contain at least one nonempty directory")
+        values["motion_dir"] = [str((path.parent / item).resolve()) for item in motion_directories]
+    elif isinstance(motion_directories, str) and motion_directories.strip():
+        values["motion_dir"] = str((path.parent / motion_directories).resolve())
+    else:
+        raise ValueError("motion_dir must be a directory string or a nonempty list of directories")
+    for key in ("log_dir", "resume"):
         if values[key] is not None:
             values[key] = str((path.parent / values[key]).resolve())
     if restore_training_config and values["resume"] is not None:

@@ -135,14 +135,36 @@ class ReferenceMotion:
         return self.kinematics.forward(*self.ref_state(motion_frame_index))
 
     @staticmethod
-    def find_files(path: str, robot: RobotSpec) -> list[str]:
-        files = sorted(glob.glob(os.path.join(path, robot.motion_glob)))
-        if not files:
-            raise FileNotFoundError(f"No reference motion files found in {path}; run tools/download_data.py.")
+    def find_files(path: str | list[str], robot: RobotSpec) -> list[str]:
+        directories = path if isinstance(path, list) else [path]
+        if not directories:
+            raise ValueError("motion_dir must contain at least one directory")
+        files = []
+        seen_files = set()
+        names = {}
+        for directory in directories:
+            if not isinstance(directory, (str, os.PathLike)) or not os.fspath(directory).strip():
+                raise ValueError("Each motion directory must be a nonempty path")
+            matches = sorted(glob.glob(os.path.join(directory, robot.motion_glob)))
+            if not matches:
+                raise FileNotFoundError(f"No reference motion files found in {directory}")
+            for filename in matches:
+                identity = os.path.normcase(os.path.realpath(filename))
+                if identity in seen_files:
+                    continue
+                name = os.path.splitext(os.path.basename(filename))[0]
+                if name in names:
+                    raise ValueError(
+                        f"Duplicate motion name {name!r}: {names[name]} and {filename}. "
+                        "Give these motion files distinct names."
+                    )
+                seen_files.add(identity)
+                names[name] = filename
+                files.append(filename)
         return files
 
     @staticmethod
-    def from_dir(path: str, robot: RobotSpec, kinematics: Kinematics, device: str) -> ReferenceMotion:
+    def from_dir(path: str | list[str], robot: RobotSpec, kinematics: Kinematics, device: str) -> ReferenceMotion:
         return ReferenceMotion(ReferenceMotion.find_files(path, robot), kinematics, device, robot.load_motion)
 
     def set_ref_foot_contact(

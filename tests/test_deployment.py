@@ -66,6 +66,10 @@ def test_export_onnx_and_play_without_training_imports(tiny_trainer, tmp_path, m
 
     trainer = tiny_trainer
     trainer.config.warmup_steps = 4
+    extra_directory = tmp_path / "extra_motions"
+    extra_directory.mkdir()
+    (extra_directory / "second.csv").write_bytes((tmp_path / "motion.csv").read_bytes())
+    trainer.config.motion_dir = [str(tmp_path), str(extra_directory)]
     names = trainer.robot.joint_names
     robot = replace(
         trainer.robot,
@@ -87,6 +91,8 @@ def test_export_onnx_and_play_without_training_imports(tiny_trainer, tmp_path, m
     model_path = export_onnx.export_policy(checkpoint, config_path, tmp_path / "policy.onnx")
     settings = json.loads(model_path.with_suffix(".json").read_text())
     assert settings["actor_weights"] == "ema"
+    with np.load(model_path.with_suffix(".motion.npz")) as archive:
+        assert archive["names"].tolist() == ["motion", "second"]
     model = create_model(settings, robot.mjcf_path)
     np.testing.assert_allclose(model.dof_armature[6:], 0.01)
     np.testing.assert_allclose(model.actuator_gainprm[:, 0], 1)

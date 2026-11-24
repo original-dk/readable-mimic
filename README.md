@@ -347,6 +347,13 @@ UV_PROJECT_ENVIRONMENT=.venv-mujoco uv run --extra mujoco \
 ```
 
 `motion_dir`、`log_dir`、配置中的 `resume` 相对于配置文件目录解析。
+
+`motion_dir` 支持单个目录或目录列表，例如
+`"motion_dir": ["data/lafan2/train", "data/amass/train"]`。
+多个目录合并为同一个动作库，按配置顺序加载，各目录内按文件名排序。
+重复指向同一文件时只加载一次；不同文件使用同一动作名时会报错，需先修改文件名。
+训练、评估和 ONNX 导出均使用这套读取方式。采样按合并后的时间 bin 分配，
+目录之间的采样比例取决于动作时长和当前困难度采样。
 不要直接将根目录配置移到 `runs/main/` 后继续使用原来的相对路径。
 训练保存的 `runs/main/config.json` 包含已解析的绝对路径；复制到另一台机器时要检查这些路径。
 
