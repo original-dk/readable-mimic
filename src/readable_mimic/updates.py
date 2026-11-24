@@ -78,6 +78,12 @@ class TrainingUpdates:
                 options={"triton.cudagraphs": False},
             )
         if config.compile_actor and torch.device(self.device).type == "cuda":
+            self.critic_features = torch.compile(
+                self.critic_features,
+                fullgraph=True,
+                dynamic=False,
+                options={"triton.cudagraphs": False},
+            )
             self.imagine_step = torch.compile(
                 self.imagine_step,
                 fullgraph=True,
@@ -90,6 +96,11 @@ class TrainingUpdates:
                 dynamic=False,
                 options={"triton.cudagraphs": False},
             )
+
+    def critic_features(self, state, motion_frame_index, normalized_xi, command, init_root, init_f):
+        return transforms.compute_critic_input(
+            state, motion_frame_index, normalized_xi, command, self.task, init_root, init_f,
+        )
 
     def world_model_rollout(self, start, action, last_action, xi):
         state = transforms.unflatten_state(start[:, 0])
@@ -308,12 +319,11 @@ class TrainingUpdates:
         )
         self.timer.record("reward")
         bootstrap_value = self.critic(
-            transforms.compute_critic_input(
+            self.critic_features(
                 state,
                 motion_frame_index,
                 normalized_xi,
                 command,
-                self.task,
                 start["init_root"],
                 start["init_f"],
             )
@@ -402,12 +412,11 @@ class TrainingUpdates:
                 (initial_command.unsqueeze(0), torch.stack(rollout_commands)), 0
             ).flatten(0, 1)
             critic_xi = normalized_xi.unsqueeze(0).expand(self.horizon + 1, -1, -1).flatten(0, 1)
-            critic_features = transforms.compute_critic_input(
+            critic_features = self.critic_features(
                 critic_states,
                 critic_frames,
                 critic_xi,
                 critic_commands,
-                self.task,
                 start["init_root"].repeat(self.horizon + 1, 1),
                 start["init_f"].repeat(self.horizon + 1),
             ).view(self.horizon + 1, batch_size, -1)

@@ -805,3 +805,44 @@ def test_fixed_training_constants_are_not_rebuilt(tiny_trainer, monkeypatch):
     torch.testing.assert_close(normalized, (xi - expected_center) / expected_scale)
     normalized.sum().backward()
     torch.testing.assert_close(xi.grad, expected_scale.reciprocal().expand_as(xi))
+
+
+def test_compiled_collection_reward_and_critic_features(tiny_trainer):
+    from readable_mimic.env import TrackingEnv
+
+    trainer = tiny_trainer
+    env = TrackingEnv.__new__(TrackingEnv)
+    env.task = trainer.task
+    compiled_reward = torch.compile(
+        env.reward_and_termination, backend="aot_eager", fullgraph=True, dynamic=False,
+    )
+    compiled_features = torch.compile(
+        trainer.updates.critic_features, backend="aot_eager", fullgraph=True, dynamic=False,
+    )
+    for batch in (1, trainer.config.pi_batch, (trainer.horizon + 1) * trainer.config.pi_batch):
+        frames = torch.arange(batch) % 30 + 10
+        state = trainer.motion.ref_state(frames)
+        init_f = frames - 3
+        init_root = transforms.flatten_state(trainer.motion.ref_state(init_f))[:, :7]
+        action = torch.full((batch, trainer.robot.num_joints), 0.1)
+        xi = default_xi(trainer.robot, "cpu").expand(batch, -1)
+        normalized_xi = transforms.compute_normalized_xi(xi, trainer.xi_center, trainer.xi_scale)
+        command = transforms.compute_command(frames, trainer.command_frame_offsets, trainer.motion)
+        with torch.no_grad():
+            expected_reward = env.reward_and_termination(state, frames, action, -action, init_root, init_f)
+            actual_reward = compiled_reward(state, frames, action, -action, init_root, init_f)
+        for actual, expected in zip(actual_reward, expected_reward):
+            torch.testing.assert_close(actual, expected)
+
+        def evaluate_features(function):
+            inputs = tuple(value.detach().clone().requires_grad_() for value in state)
+            features = function(inputs, frames, normalized_xi, command, init_root, init_f)
+            gradients = torch.autograd.grad(features.square().sum(), inputs)
+            return features, gradients
+
+        expected, expected_gradients = evaluate_features(trainer.updates.critic_features)
+        actual, actual_gradients = evaluate_features(compiled_features)
+        torch.testing.assert_close(actual, expected)
+        for actual_gradient, expected_gradient in zip(actual_gradients, expected_gradients):
+            assert torch.isfinite(actual_gradient).all()
+            torch.testing.assert_close(actual_gradient, expected_gradient, atol=1e-5, rtol=1e-4)

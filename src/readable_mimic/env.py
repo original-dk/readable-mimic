@@ -29,6 +29,7 @@ class TrackingEnv:
         backend="mujoco",
         genesis_settings=None,
         failure_reset_fraction=0.0,
+        compile_reward=False,
     ):
         self.evaluation = evaluation
         self.num_envs = num_envs
@@ -61,6 +62,22 @@ class TrackingEnv:
         self.observation_noise_limits = transforms.compute_observation_noise_limits(
             robot.observation_noise, robot.num_joints
         ).to(device)
+
+        if compile_reward and torch.device(device).type == "cuda":
+            self.reward_and_termination = torch.compile(
+                self.reward_and_termination,
+                fullgraph=True,
+                dynamic=False,
+                options={"triton.cudagraphs": False},
+            )
+
+    def reward_and_termination(self, state, motion_frame_index, action, last_action, init_root, init_f):
+        reward = self.task.reward(
+            state, motion_frame_index, action, last_action,
+            init_root=init_root, init_f=init_f,
+        )
+        termination = self.task.termination(state, motion_frame_index)
+        return reward, termination
 
     def state(self):
         return self.simulation.state()
@@ -147,9 +164,9 @@ class TrackingEnv:
         next_state = self.state()
         next_motion_frame_index = motion_frame_index + 1
         self.timer.record("collect_physics")
-        reward = self.task.reward(next_state, next_motion_frame_index, action, last_action,
-                                  init_root=self.init_root, init_f=self.init_f)
-        termination = self.task.termination(next_state, next_motion_frame_index)
+        reward, termination = self.reward_and_termination(
+            next_state, next_motion_frame_index, action, last_action, self.init_root, self.init_f,
+        )
         clip_end_frame = self.motion.end_frame(motion_frame_index)
         timeout = (next_motion_frame_index >= clip_end_frame) | (episode_step + 1 >= self.max_episode_steps)
         done = termination | timeout

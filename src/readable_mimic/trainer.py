@@ -198,6 +198,7 @@ class Trainer:
             backend=self.config.simulator,
             genesis_settings=self.config.genesis,
             failure_reset_fraction=self.config.failure_reset_fraction,
+            compile_reward=self.config.compile_actor,
         )
 
     @torch.no_grad()
