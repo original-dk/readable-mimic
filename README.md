@@ -573,3 +573,34 @@ buffer 额外保存 previous_target，world model 和 critic 接收该目标相�
 
 评估与 ONNX 播放使用 `--dr dr.json`，其中 `action_delay_ms` 为固定延迟值，
 例如 10.0。省略该配置时使用标称零延迟。模型困难度排名使用标称零延迟。
+
+
+#### 基于 MorphMimic 的延迟建模改进
+
+执行器延迟的采样方式参考 MorphMimic。该项目在物理步尺度延迟位置目标，
+默认范围为 0–20 ms，每个 episode 内保持固定，标称评估使用零延迟。
+本项目在此基础上增加显式延迟状态，作为 world model 与 critic 的输入，
+改进目标是减少隐藏执行器状态给动力学预测和价值估计带来的不确定性。
+参考版本为提交 `770394b4a0cad9effbf807a6c03435d1699733d0`。
+[MorphMimic 延迟配置](https://github.com/lzyang2000/morphmimic/blob/770394b4a0cad9effbf807a6c03435d1699733d0/src/morphmimic/env/env_cfg.py)
+
+MorphMimic 的 world model 使用当前物理状态、当前动作、33 维 xi 和可选形态参数；
+xi 包含摩擦、编码器偏置和躯干 COM 偏移。其 world model 与 critic 输入未显式包含
+采样到的执行器延迟或待执行的位置目标队列。本项目为 xi 增加延迟步数，
+并在 replay 中记录 `previous_target`，将其相对当前关节位置的误差提供给
+world model 和 critic。
+[MorphMimic world model](https://github.com/lzyang2000/morphmimic/blob/770394b4a0cad9effbf807a6c03435d1699733d0/src/morphmimic/model/world_model.py) ·
+[MorphMimic critic](https://github.com/lzyang2000/morphmimic/blob/770394b4a0cad9effbf807a6c03435d1699733d0/src/morphmimic/model/policy.py)
+
+设计依据是执行器目标缓冲会影响后续运动。例如，两条样本的当前关节位置、
+速度和新目标相同，但旧目标或延迟不同，下一控制周期的状态仍可能不同。
+在最大延迟不超过一个控制周期的当前设置下，上一条目标和延迟步数能够描述
+这一段目标切换过程。Reset 时使用实际初始关节姿态初始化旧目标；
+imagined rollout 中沿用相同的目标历史更新规则，并保留跨步梯度。
+Critic 也读取该历史状态，以区分后续执行目标不同的状态。
+
+这是相对于参考实现的建模扩展，其实际训练收益需要消融实验验证。
+新增输入增加了 replay 存储、模型输入维度和训练成本，启用时需要重新训练
+world model 与 critic。验证时应固定物理延迟分布、数据集和训练预算，
+比较“仅仿真延迟”和“仿真延迟加显式延迟状态”两种设置，
+检查多步预测误差、梯度稳定性、跟踪质量和达到目标成功率所需的训练时间。
