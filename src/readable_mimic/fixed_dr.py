@@ -14,6 +14,7 @@ def load_dr(path, settings):
         "mass_scale": 1.0, "inertia_scale": 1.0, "armature_scale": 1.0,
         "passive_damping_add": 0.0, "frictionloss_add": 0.0,
         "kp_scale": settings["kp_scale"], "kd_scale": settings["kd_scale"],
+        "action_delay_ms": 0.0,
     }
     if path is not None:
         supplied = json.loads(Path(path).read_text(encoding="utf-8"))["domain_randomization"]
@@ -35,6 +36,10 @@ def load_dr(path, settings):
             raise ValueError(f"Invalid shape for {name}: {array.shape}")
         if not np.isfinite(array).all():
             raise ValueError(f"{name} must be finite")
+        if name == "action_delay_ms" and (
+            float(array) not in (0.0, 5.0, 10.0, 15.0, 20.0)
+        ):
+            raise ValueError("action_delay_ms must be one of 0, 5, 10, 15, 20")
         if name.endswith("_scale") and np.any(array <= 0):
             raise ValueError(f"{name} must be positive")
         if name in ("friction", "ground_friction", "passive_damping_add", "frictionloss_add") and np.any(array < 0):

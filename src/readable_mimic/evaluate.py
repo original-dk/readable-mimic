@@ -267,10 +267,14 @@ def apply_evaluation_dr(env, dr):
         dr["joint_pos_offset"], device=xi.device, dtype=xi.dtype,
     )
     xi[:, 1 + joint_count:4 + joint_count] = xi.new_tensor(dr["center_of_mass_offset"])
-    xi[:, -7:] = xi.new_tensor([
+    xi[:, 4 + joint_count : 11 + joint_count] = xi.new_tensor([
         dr["mass_scale"], dr["inertia_scale"], dr["armature_scale"],
         dr["passive_damping_add"], dr["frictionloss_add"], dr["kp_scale"], dr["kd_scale"],
     ])
+    if env.robot_description.has_action_delay:
+        xi[:, -1] = dr["action_delay_ms"] / 5
+    elif dr["action_delay_ms"] > 0:
+        raise ValueError("Fixed delay needs an evaluation environment with action delay enabled")
     env.simulation.apply_xi(xi, randomize=False, ground_friction=dr["ground_friction"])
     env.xi = xi
     print("Fixed evaluation DR " + json.dumps(dr, ensure_ascii=False), flush=True)
@@ -294,7 +298,11 @@ def main(argv=None):
             "joint_names": robot.joint_names, "center_of_mass_body": robot.center_of_mass_body,
             "friction": 1.0, "kp_scale": 1.0, "kd_scale": 1.0,
         })
-        robot = replace(robot, center_of_mass_body=dr["center_of_mass_body"])
+        delay_max_ms = max(robot.domain_randomization.action_delay_max_ms, dr["action_delay_ms"])
+        robot = replace(
+            robot, center_of_mass_body=dr["center_of_mass_body"],
+            domain_randomization=replace(robot.domain_randomization, action_delay_max_ms=delay_max_ms),
+        )
     kinematics = Kinematics(robot, config.device)
     motion_dir = arguments.motion_dir if arguments.motion_dir is not None else config.motion_dir
     motion = load_evaluation_motion(motion_dir, robot, kinematics, config.device, arguments.motions)

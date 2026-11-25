@@ -117,7 +117,8 @@
     "kd_scale_range": [
       0.8,
       1.2
-    ]
+    ],
+    "action_delay_max_ms": 20.0
   },
   "reward": {
     "body_pos_std": 0.3,

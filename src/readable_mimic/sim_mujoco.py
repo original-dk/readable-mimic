@@ -7,7 +7,7 @@ from mjlab.sim import MujocoCfg, Simulation, SimulationCfg
 from mjlab.terrains import TerrainEntityCfg
 from mjlab.managers.event_manager import RecomputeLevel
 
-from .sim import DECIMATION, PHYSICS_DT
+from .sim import DECIMATION, PHYSICS_DT, delayed_position_target
 from .rotations import mat_to_quat, quat_to_mat
 
 
@@ -76,9 +76,13 @@ class MujocoSim:
         self.robot.set_joint_position_target(joint_pos, env_ids=env_indices)
         self.physics.forward()
 
-    def step(self, target_joint_pos):
-        self.robot.set_joint_position_target(target_joint_pos)
-        for _ in range(DECIMATION):
+    def step(self, target_joint_pos, previous_target=None, delay_steps=None):
+        if delay_steps is None:
+            self.robot.set_joint_position_target(target_joint_pos)
+        for substep in range(DECIMATION):
+            if delay_steps is not None:
+                target = delayed_position_target(target_joint_pos, previous_target, delay_steps, substep)
+                self.robot.set_joint_position_target(target)
             self.scene.write_data_to_sim()
             self.physics.step()
             self.scene.update(PHYSICS_DT)
@@ -104,7 +108,7 @@ class MujocoSim:
         physics.model.body_ipos[:, body_index] = (
             physics.get_default_field("body_ipos")[body_index] + xi[:, 1 + robot.num_joints : 4 + robot.num_joints]
         )
-        mass, inertia, armature, damping, frictionloss, kp, kd = xi[:, -7:].unbind(-1)
+        mass, inertia, armature, damping, frictionloss, kp, kd = xi[:, 4 + robot.num_joints : 11 + robot.num_joints].unbind(-1)
         body_ids = self.robot.indexing.body_ids
         dof_ids = self.robot.indexing.joint_v_adr
         actuator_ids = self.robot.indexing.ctrl_ids

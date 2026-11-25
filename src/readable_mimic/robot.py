@@ -51,6 +51,7 @@ class RobotSpec:
     joint_effort_limit: dict[str, float] = field(default_factory=dict)
     joint_armature: dict[str, float] = field(default_factory=dict)
     action_delay_steps: int = 0
+    "Optional fixed training delay in physical steps, superseded by a nonzero random delay range."
 
     @property
     def num_joints(self) -> int:
@@ -72,7 +73,7 @@ class RobotSpec:
     @property
     def has_action_delay(self) -> bool:
         """Whether any actuator delays its command (then s_{t+1} also depends on a_{t-1})."""
-        return self.action_delay_steps > 0
+        return self.action_delay_steps > 0 or self.domain_randomization.action_delay_max_ms > 0
 
 
 def get_robot(name: str) -> RobotSpec:

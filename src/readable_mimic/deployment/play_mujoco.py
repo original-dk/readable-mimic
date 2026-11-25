@@ -129,6 +129,8 @@ def play(model_path, motions="all", duration=30.0, seed=0, headless=False, mjcf_
     joint_pos_offset = np.asarray(dr["joint_pos_offset"], dtype=np.float32)
     force_limit = np.asarray(settings["joint_effort_limit"])
     rng = np.random.default_rng(seed)
+    previous_target = np.zeros(len(joint_qpos_indices), dtype=np.float64)
+    delay_steps = int(dr["action_delay_ms"] / 5)
     last_action = np.zeros(len(joint_qpos_indices), dtype=np.float32)
 
     def get_observation(frame):
@@ -157,6 +159,7 @@ def play(model_path, motions="all", duration=30.0, seed=0, headless=False, mjcf_
         data.qvel[joint_dof_indices] = motion["joint_vel"][frame]
         data.ctrl[:] = 0
         last_action.fill(0)
+        previous_target[:] = data.qpos[joint_qpos_indices]
         mujoco.mj_forward(model, data)
         observation_history = np.repeat(
             get_observation(frame)[None, None, :], settings["history_length"], axis=1
@@ -200,15 +203,17 @@ def play(model_path, motions="all", duration=30.0, seed=0, headless=False, mjcf_
                 if not np.isfinite(action).all():
                     raise RuntimeError("ONNX Actor produced non-finite actions")
                 target_joint_pos = default_joint_pos + joint_pos_offset + action_scale * action
-                for _ in range(settings["decimation"]):
+                for substep in range(settings["decimation"]):
+                    applied_target = previous_target if substep < delay_steps else target_joint_pos
                     joint_pos = data.qpos[joint_qpos_indices]
                     joint_vel = data.qvel[joint_dof_indices]
-                    tau = kp * (target_joint_pos - joint_pos) - kd * joint_vel
+                    tau = kp * (applied_target - joint_pos) - kd * joint_vel
                     tau = np.clip(tau, -force_limit, force_limit)
                     data.ctrl[:] = tau
                     mujoco.mj_step(model, data)
                 if not np.isfinite(data.qpos).all() or not np.isfinite(data.qvel).all():
                     raise RuntimeError("MuJoCo produced a non-finite state")
+                previous_target[:] = target_joint_pos
                 frame += 1
                 last_action[:] = action
                 steps += 1

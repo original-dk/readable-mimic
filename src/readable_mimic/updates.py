@@ -57,6 +57,7 @@ class TrainingUpdates:
         self.horizon = config.horizon
         self.history_length = config.hist
         self.command_frames = config.goal_frames
+        self.action_scale = torch.tensor(robot.action_scale_list(), device=self.device)
         self.default_joint_pos = torch.tensor(robot.default_joint_pos_list(), device=self.device)
         self.observation_noise_limits = transforms.compute_observation_noise_limits(
             robot.observation_noise, robot.num_joints
@@ -107,9 +108,11 @@ class TrainingUpdates:
                 options={"triton.cudagraphs": False},
             )
 
-    def critic_features(self, state, motion_frame_index, normalized_xi, command, init_root, init_f):
+    def critic_features(self, state, motion_frame_index, normalized_xi, command, init_root, init_f, previous_target=None):
+        if self.robot.has_action_delay and previous_target is None:
+            raise ValueError("Delayed critic requires previous_target")
         return transforms.compute_critic_input(
-            state, motion_frame_index, normalized_xi, command, self.task, init_root, init_f,
+            state, motion_frame_index, normalized_xi, command, self.task, init_root, init_f, previous_target,
         )
 
     def policy_gradient_loss(self, history, command, action_gradient):
@@ -128,6 +131,7 @@ class TrainingUpdates:
             normalized_xi = transforms.compute_normalized_xi(start["xi"], self.xi_center, self.xi_scale)
             values = self.critic(self.critic_features(
                 state, start["motion_frame_index"], normalized_xi, command, start["init_root"], start["init_f"],
+                start.get("previous_target"),
             ))
             selected, importance, quantiles = self.start_sampler.draw(values, batch_size)
             start = {key: value[selected] for key, value in start.items()}
@@ -142,6 +146,7 @@ class TrainingUpdates:
         xi = transforms.default_xi(self.robot, self.device).expand(len(frames), -1).clone()
         xi[:, 0] = 1.0
         normalized_xi = transforms.compute_normalized_xi(xi, self.xi_center, self.xi_scale)
+        previous_target = state[4] if self.robot.has_action_delay else None
         action = torch.zeros(len(frames), self.robot.num_joints, device=self.device)
         observation = transforms.compute_observation(
             state, action, xi, frames, self.motion, self.default_joint_pos,
@@ -154,16 +159,19 @@ class TrainingUpdates:
             previous_action = action
             state, action, history, frames, command = self.imagine_step(
                 state, history, action, frames, xi, normalized_xi, command, noisy=False,
+                previous_target=previous_target,
             )
+            if self.robot.has_action_delay:
+                previous_target = self.default_joint_pos + xi[:, 1:1 + self.robot.num_joints] + self.action_scale * action
             # Rank the same contact-free tracking objective reported in simulation.
             reward = self.task.reward(state, frames, action, previous_action, init_root=init_root, init_f=init_f)
             termination = self.task.soft_termination(state, frames)
             total += self.config.gamma**step * survival * reward
             survival *= 1 - termination
-        bootstrap = self.critic(self.critic_features(state, frames, normalized_xi, command, init_root, init_f))
+        bootstrap = self.critic(self.critic_features(state, frames, normalized_xi, command, init_root, init_f, previous_target))
         return total + self.config.gamma**horizon * survival * bootstrap
 
-    def world_model_rollout(self, start, action, last_action, xi):
+    def world_model_rollout(self, start, action, last_action, xi, previous_targets=None):
         state = transforms.unflatten_state(start[:, 0])
         normalized_xi = transforms.compute_normalized_xi(xi, self.xi_center, self.xi_scale)
         predicted_states = []
@@ -173,6 +181,7 @@ class TrainingUpdates:
                 action[:, step_index],
                 last_action[:, step_index],
                 normalized_xi[:, step_index],
+                None if previous_targets is None else previous_targets[:, step_index],
             )
             predicted_states.append(state)
         return tuple(
@@ -202,11 +211,12 @@ class TrainingUpdates:
         command,
         action_perturbation=None,
         noisy=True,
+        previous_target=None,
     ):
         action = self.actor(observation_history, command)
         if action_perturbation is not None:
             action = action + action_perturbation
-        next_state = self.world_model.step(state, action, last_action, normalized_xi)
+        next_state = self.world_model.step(state, action, last_action, normalized_xi, previous_target)
         next_motion_frame_index = motion_frame_index + 1
         next_observation = transforms.compute_observation(
             next_state, action, xi, next_motion_frame_index, self.motion, self.default_joint_pos,
@@ -253,8 +263,11 @@ class TrainingUpdates:
             ("next_state", mirror_flat_state),
             ("action", self.mirror.joints),
             ("last_action", self.mirror.joints),
+            ("previous_target", self.mirror.joints),
             ("xi", self.mirror.xi),
         ):
+            if field_name not in windows:
+                continue
             out[field_name] = torch.cat(
                 (mirror_function(windows[field_name][:num_samples]), windows[field_name][num_samples:])
             )
@@ -266,7 +279,8 @@ class TrainingUpdates:
             windows = self.mirror_windows(windows, int(self.config.wm_batch * self.config.wm_mirror))
         self.timer.record("world_model_prepare")
         predicted_state = self.world_model_rollout(
-            windows["state"], windows["action"], windows["last_action"], windows["xi"]
+            windows["state"], windows["action"], windows["last_action"], windows["xi"],
+            windows.get("previous_target"),
         )
         loss, last_step_state_error = self.world_model_loss(
             predicted_state, windows["next_state"], windows["mask"]
@@ -325,6 +339,7 @@ class TrainingUpdates:
             start["motion_frame_index"],
             start["last_action"],
         )
+        previous_target = start.get("previous_target")
         normalized_xi = transforms.compute_normalized_xi(xi, self.xi_center, self.xi_scale)
         with torch.no_grad():
             observation_history = transforms.compute_replay_observation_history(
@@ -367,7 +382,10 @@ class TrainingUpdates:
                 normalized_xi,
                 command,
                 action_perturbation=perturbation,
+                previous_target=previous_target,
             )
+            if self.robot.has_action_delay:
+                previous_target = self.default_joint_pos + xi[:, 1:1 + self.robot.num_joints] + self.action_scale * last_action
             (
                 rollout_states.append(state),
                 rollout_actions.append(last_action),
@@ -400,6 +418,7 @@ class TrainingUpdates:
                 command,
                 start["init_root"],
                 start["init_f"],
+                previous_target,
             )
         )
         actor_return, survival_weights, final_survival = transforms.compute_actor_return(
@@ -458,6 +477,7 @@ class TrainingUpdates:
             detached_terminations,
             batch_size,
             importance,
+            rollout_actions,
         )
         self.timer.record("critic")
         return (
@@ -481,6 +501,7 @@ class TrainingUpdates:
         detached_terminations,
         batch_size,
         importance=None,
+        rollout_actions=None,
     ):
         value_loss = torch.zeros(())
         with torch.no_grad():
@@ -505,6 +526,14 @@ class TrainingUpdates:
                 (initial_command.unsqueeze(0), torch.stack(rollout_commands)), 0
             ).flatten(0, 1)
             critic_xi = normalized_xi.unsqueeze(0).expand(self.horizon + 1, -1, -1).flatten(0, 1)
+            critic_previous_target = None
+            if self.robot.has_action_delay:
+                issued_actions = torch.stack([action.detach() for action in rollout_actions])
+                issued_targets = (
+                    self.default_joint_pos + start["xi"][None, :, 1:1 + self.robot.num_joints]
+                    + self.action_scale * issued_actions
+                )
+                critic_previous_target = torch.cat((start["previous_target"][None], issued_targets), 0).flatten(0, 1)
             critic_features = self.critic_features(
                 critic_states,
                 critic_frames,
@@ -512,6 +541,7 @@ class TrainingUpdates:
                 critic_commands,
                 start["init_root"].repeat(self.horizon + 1, 1),
                 start["init_f"].repeat(self.horizon + 1),
+                critic_previous_target,
             ).view(self.horizon + 1, batch_size, -1)
         self.critic.norm.update(critic_features)
         with torch.no_grad():

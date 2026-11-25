@@ -150,17 +150,20 @@ def compute_value_targets(state_values, detached_rewards, detached_terminations,
     return torch.stack(targets[::-1])
 
 
-def compute_critic_input(state, motion_frame_index, normalized_xi, command, task, init_root, init_f):
+def compute_critic_input(state, motion_frame_index, normalized_xi, command, task, init_root, init_f, previous_target=None):
     body = task.body_diff(state, motion_frame_index)
     base = task.base_diff(state, motion_frame_index, init_root, init_f)
     joint_pos, joint_vel = state[4:]
     joint_error = task.motion.joint_position(motion_frame_index) - joint_pos
-    return torch.cat((joint_pos, joint_vel, joint_error, *(diff.flatten(-2) for diff in body),
-                      *base, normalized_xi, command), -1)
+    features = torch.cat((joint_pos, joint_vel, joint_error, *(diff.flatten(-2) for diff in body),
+                          *base, normalized_xi, command), -1)
+    if previous_target is not None:
+        features = torch.cat((features, previous_target - joint_pos), -1)
+    return features
 
 
-def compute_critic_input_dim(num_joints, num_tracked_bodies, xi_dim, command_dim):
-    return 3 * num_joints + 12 * num_tracked_bodies + 12 + xi_dim + command_dim
+def compute_critic_input_dim(num_joints, num_tracked_bodies, xi_dim, command_dim, action_delay=False):
+    return 3 * num_joints + 12 * num_tracked_bodies + 12 + xi_dim + command_dim + (num_joints if action_delay else 0)
 
 
 def compute_observation_history(observation, history_length):
@@ -205,10 +208,11 @@ def compute_world_model_training_data(
     xi,
     xi_center,
     xi_scale,
+    previous_target=None,
 ):
     normalized_xi = compute_normalized_xi(xi, xi_center, xi_scale)
     return (
-        world_model.inputs(initial_state, action, last_action, normalized_xi),
+        world_model.inputs(initial_state, action, last_action, normalized_xi, previous_target),
         world_model.targets(initial_state, next_state),
         world_model.increments(initial_state, next_state),
     )
@@ -244,4 +248,6 @@ def compute_xi_normalization(robot, offset_limits):
             offset_limits.new_tensor(dynamics_scales),
         )
     )
+    if robot.has_action_delay:
+        scale = torch.cat((scale, offset_limits.new_tensor([4.0])))
     return (center, scale)

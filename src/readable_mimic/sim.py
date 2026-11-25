@@ -29,12 +29,20 @@ class DomainRandomizationConfig:
     frictionloss_add_range: tuple[float, float] = (0.0, 0.1)
     kp_scale_range: tuple[float, float] = (0.8, 1.2)
     kd_scale_range: tuple[float, float] = (0.8, 1.2)
+    action_delay_max_ms: float = 0.0
+
     reset_pos: tuple[float, float, float] = (0.05, 0.05, 0.01)
     reset_rot: tuple[float, float, float] = (0.1, 0.1, 0.2)
     reset_lin_vel: tuple[float, float, float] = (0.5, 0.5, 0.2)
     reset_ang_vel: tuple[float, float, float] = (0.52, 0.52, 0.78)
     reset_joint_pos: float = 0.1
     reset_joint_vel: float = 0.0
+
+    def __post_init__(self):
+        delay = self.action_delay_max_ms
+        lag = round(delay / (PHYSICS_DT * 1000)) if math.isfinite(delay) else -1
+        if lag < 0 or lag > DECIMATION or not math.isclose(delay, lag * PHYSICS_DT * 1000):
+            raise ValueError("action_delay_max_ms must be one of 0, 5, 10, 15, 20")
 
 
 def joint_pos_offset_limits(robot, device):
@@ -49,13 +57,13 @@ def joint_pos_offset_limits(robot, device):
 
 
 def compute_xi_dim(robot):
-    return 1 + robot.num_joints + 3 + len(DYNAMICS_RANGES)
+    return 1 + robot.num_joints + 3 + len(DYNAMICS_RANGES) + int(robot.has_action_delay)
 
 
 def default_xi(robot, device):
     friction_lower, friction_upper = robot.domain_randomization.friction_range
     return torch.tensor(
-        [(friction_lower + friction_upper) / 2] + [0.0] * (robot.num_joints + 3) + list(DYNAMICS_DEFAULTS), device=device
+        [(friction_lower + friction_upper) / 2] + [0.0] * (robot.num_joints + 3) + list(DYNAMICS_DEFAULTS) + ([0.0] if robot.has_action_delay else []), device=device
     )
 
 
@@ -89,6 +97,11 @@ def initialize_xi(env, randomize=True):
         xi[:, 0] = 1.0
     env.simulation.apply_xi(xi, randomize)
     return xi
+
+
+def delayed_position_target(current, previous, delay_steps, substep):
+    """Switch from the preceding command to the current command at its arrival step."""
+    return torch.where((substep < delay_steps)[:, None], previous, current)
 
 
 def create_simulation(robot, num_envs, device, settings, backend="mujoco", genesis_settings=None):

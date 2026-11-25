@@ -553,3 +553,23 @@ uv run --extra retarget python tools/prepare_boneseed.py --input-dir /path/to/g1
 名称规则参考 [Uni-SuperMimic BONES-SEED 筛选](https://github.com/Motphys/Uni-SuperMimic/blob/main/src/unisupermimic/data/boneseed.py)，
 仅选用楼梯、外物支撑等相关词，配置在 `motion_filter_level_1.json` 的 `boneseed` 段。
 几何检查沿用本项目的持续悬空、落地和坐姿支撑规则。无标签楼梯的识别取决于这些几何条件。
+
+
+### 执行器目标延迟
+
+训练配置 `domain_randomization.action_delay_max_ms` 支持 0、5、10、15、20 ms，
+默认 20 ms。每个并行环境在 reset 时均匀采样一个物理步延迟，episode 内保持固定。
+设为 0 可关闭随机延迟，并使用原有 world model / critic 输入维度。
+
+Policy 每 20 ms 输出一次动作。Genesis 使用 dt=0.005、substeps=1，
+每个控制周期外部推进四步；MuJoCo 同样每周期推进四个 5 ms 物理步。
+延迟 10 ms 时，前两步沿用上一位置目标，后两步执行新目标。
+Reset 的旧目标取实际初始关节姿态。
+
+启用延迟后，G1 的 xi 从 40 维变为 41 维，末项为物理步数 0–4；
+buffer 额外保存 previous_target，world model 和 critic 接收该目标相对当前关节的位置误差。
+四个物理步均结束后，当前下发目标成为下一周期的 previous_target。
+观测中的 last_action 仍表示上一条下发动作。启用延迟需要重新训练 world model 和 critic。
+
+评估与 ONNX 播放使用 `--dr dr.json`，其中 `action_delay_ms` 为固定延迟值，
+例如 10.0。省略该配置时使用标称零延迟。模型困难度排名使用标称零延迟。

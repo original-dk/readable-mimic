@@ -5,7 +5,7 @@ from . import data_transforms as transforms
 import torch
 
 
-def fields(num_joints: int, xi_dim: int) -> dict:
+def fields(num_joints: int, xi_dim: int, action_delay=False) -> dict:
     out = {
         "state": (transforms.compute_state_dim(num_joints), torch.float32),
         "next_state": (transforms.compute_state_dim(num_joints), torch.float32),
@@ -20,6 +20,8 @@ def fields(num_joints: int, xi_dim: int) -> dict:
         "done": ((), torch.bool),
         "transition_cut": ((), torch.bool),
     }
+    if action_delay:
+        out["previous_target"] = (num_joints, torch.float32)
     return out
 
 
@@ -33,9 +35,10 @@ class ReplayBuffer:
         xi_dim: int,
         window_length,
         history_length,
+        action_delay=False,
     ):
         self.capacity, self.num_envs, self.device = (capacity, num_envs, device)
-        self.fields = fields(num_joints, xi_dim)
+        self.fields = fields(num_joints, xi_dim, action_delay)
         self.data = {}
         for field_name, (shape, dtype) in self.fields.items():
             storage_shape = (capacity, num_envs) + ((shape,) if isinstance(shape, int) else shape)
@@ -76,6 +79,8 @@ class ReplayBuffer:
                 "transition_cut",
             )
         }
+        if "previous_target" in self.data:
+            windows["previous_target"] = self.data["previous_target"][rows, window_env_indices]
         cut_mask = windows["transition_cut"].float()
         mask = torch.cumprod(
             torch.cat((torch.ones(batch_size, 1, device=self.device), 1 - cut_mask[:, :-1]), -1), -1
@@ -97,4 +102,6 @@ class ReplayBuffer:
         for field in ("init_root", "init_f"):
             start[field] = self.data[field][row_indices, env_indices]
         history = {field: self.data[field][history_rows, env_indices[:, None]] for field in fields}
+        if "previous_target" in self.data:
+            start["previous_target"] = self.data["previous_target"][row_indices, env_indices]
         return (start, history)

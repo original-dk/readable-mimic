@@ -89,7 +89,7 @@ class Trainer:
         ).to(self.device)
         self.critic = Critic(
             transforms.compute_critic_input_dim(
-                joint_count, len(self.robot.tracked_bodies), self.xi_dim, command_dim
+                joint_count, len(self.robot.tracked_bodies), self.xi_dim, command_dim, self.robot.has_action_delay
             )
         ).to(self.device)
         self.world_model_optimizer = make_optimizer(
@@ -126,6 +126,7 @@ class Trainer:
             self.xi_dim,
             window_length=config.wm_window,
             history_length=config.hist,
+            action_delay=self.robot.has_action_delay,
         )
         self.observation_history = torch.zeros(
             config.num_envs, config.hist, self.observation_dim, device=self.device
@@ -241,6 +242,7 @@ class Trainer:
                 transition["xi"],
                 self.xi_center,
                 self.xi_scale,
+                previous_target=transition.get("previous_target"),
             )
             self.world_model.input_normalizer.update(inputs)
             self.world_model.output_normalizer.update(targets)

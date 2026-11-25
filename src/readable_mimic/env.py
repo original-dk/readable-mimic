@@ -39,6 +39,8 @@ class TrackingEnv:
         self.device = device
         self.timer = timer if timer is not None else TrainingTimer(False, device)
         self.robot_description = robot
+        if robot.action_delay_steps not in range(5):
+            raise ValueError("Fixed action_delay_steps must be an integer from 0 to 4 physical steps")
         self.motion = motion
         self.task = task
         self.max_episode_steps = max_episode_steps
@@ -53,6 +55,7 @@ class TrackingEnv:
         self.init_f = torch.zeros_like(self.motion_frame_index)
         self.init_root = torch.empty(num_envs, 7, device=device)
         self.episode_step = torch.zeros(num_envs, dtype=torch.long, device=device)
+        self.previous_target = torch.zeros(num_envs, self.num_joints, device=device)
         self.last_action = torch.zeros(num_envs, self.num_joints, device=device)
         self.episode_return = torch.zeros(num_envs, device=device)
         self.failure_reset = None
@@ -137,10 +140,19 @@ class TrackingEnv:
         self.init_f[env_indices] = motion_frames
         self.motion_frame_index[env_indices] = motion_frames
         self.episode_step[env_indices] = 0
+        self.previous_target[env_indices] = joint_pos
         self.last_action[env_indices] = 0
         self.episode_return[env_indices] = 0
         if not self.evaluation:
             randomize_joint_pos_offsets(self.xi, env_indices, self.joint_pos_offset_limits)
+            if self.robot_description.has_action_delay:
+                max_lag = round(reset_config.action_delay_max_ms / 5)
+                if max_lag:
+                    self.xi[env_indices, -1] = torch.randint(
+                        max_lag + 1, (num_resets,), device=self.device,
+                    ).to(self.xi.dtype)
+                else:
+                    self.xi[env_indices, -1] = self.robot_description.action_delay_steps
 
     def observe(self):
         observation = transforms.compute_observation(
@@ -164,7 +176,12 @@ class TrackingEnv:
         episode_step = self.episode_step.clone()
         joint_pos_offset = self.xi[:, 1 : 1 + self.num_joints]
         target_joint_pos = self.default_joint_pos + joint_pos_offset + self.action_scale * action
-        self.simulation.step(target_joint_pos)
+        previous_target = self.previous_target.clone()
+        if self.robot_description.has_action_delay:
+            self.simulation.step(target_joint_pos, previous_target, self.xi[:, -1].long())
+        else:
+            self.simulation.step(target_joint_pos)
+        self.previous_target = target_joint_pos.clone()
         next_state = self.state()
         next_motion_frame_index = motion_frame_index + 1
         self.timer.record("collect_physics")
@@ -180,6 +197,7 @@ class TrackingEnv:
             next_state=transforms.flatten_state(next_state),
             action=action.clone(),
             last_action=last_action,
+            previous_target=previous_target,
             motion_frame_index=motion_frame_index,
             episode_step=episode_step,
             init_root=self.init_root.clone(),

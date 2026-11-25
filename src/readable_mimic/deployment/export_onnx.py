@@ -106,6 +106,7 @@ def export_policy(checkpoint_path, config_path, output_path):
         "decimation": 4,
         "center_of_mass_body": robot.center_of_mass_body,
         "friction": 1.0,
+        "action_delay_max_ms": actor_config.get("domain_randomization", {}).get("action_delay_max_ms", 0.0),
         "kp_scale": 1.0,
         "kd_scale": 1.0,
         "simulation": config.simulation,

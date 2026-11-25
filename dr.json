@@ -15,6 +15,7 @@
     "passive_damping_add": 0.0,
     "frictionloss_add": 0.0,
     "kp_scale": 1.0,
-    "kd_scale": 1.0
+    "kd_scale": 1.0,
+    "action_delay_ms": 0.0
   }
 }

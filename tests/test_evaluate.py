@@ -263,6 +263,7 @@ def test_fixed_evaluation_dr_matches_environment_context(tmp_path):
     def apply(xi, randomize, ground_friction):
         applied.update(xi=xi.clone(), randomize=randomize, ground_friction=ground_friction)
     env = SimpleNamespace(xi=torch.zeros(1, 13), num_joints=2,
+                          robot_description=SimpleNamespace(has_action_delay=False),
                           simulation=SimpleNamespace(apply_xi=apply))
     apply_evaluation_dr(env, dr)
     torch.testing.assert_close(env.xi, torch.tensor([[

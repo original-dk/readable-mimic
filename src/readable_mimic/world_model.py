@@ -9,8 +9,8 @@ from .common import mlp, RunningNorm
 class WorldModel(nn.Module):
     """Deterministic dynamics s_{t+1} = f(s_t, a_t, xi) predicting frame-local state increments.
 
-    With ``use_last_action`` the model also sees a_{t-1}: delayed actuators still track the previous
-    action's target during the first physics steps of a control step.
+    With ``use_last_action`` the model receives the preceding issued position target,
+    relative to the current joints. This includes the reset target before the first action.
     """
 
     def __init__(
@@ -41,13 +41,15 @@ class WorldModel(nn.Module):
         self.output_normalizer = RunningNorm(self.output_dim, epsilon=0.0001)
         self.increment_normalizer = RunningNorm(self.output_dim, epsilon=0.0001)
 
-    def inputs(self, state, action, last_action, normalized_xi):
+    def inputs(self, state, action, last_action, normalized_xi, previous_target=None):
         if self.use_last_action:
+            if previous_target is None:
+                raise ValueError("Delayed world model requires previous_target")
             return torch.cat(
                 (
                     transforms.compute_invariant_features(state),
                     action,
-                    last_action,
+                    previous_target - state[4],
                     normalized_xi,
                 ),
                 -1,
@@ -135,8 +137,8 @@ class WorldModel(nn.Module):
             -1,
         )
 
-    def step(self, state, action, last_action, normalized_xi):
-        model_input = self.inputs(state, action, last_action, normalized_xi)
+    def step(self, state, action, last_action, normalized_xi, previous_target=None):
+        model_input = self.inputs(state, action, last_action, normalized_xi, previous_target)
         normalized_output = self.network(self.input_normalizer(model_input))
         state_increments = normalized_output * self.output_normalizer.std() + self.output_normalizer.mean
         return self.integrate(state, state_increments)

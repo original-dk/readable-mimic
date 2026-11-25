@@ -2,7 +2,7 @@
 
 import torch
 
-from .sim import CONTROL_DT, DECIMATION
+from .sim import PHYSICS_DT, DECIMATION, delayed_position_target
 from .rotations import mat_to_quat, quat_to_mat
 
 
@@ -18,11 +18,9 @@ class GenesisSim:
             gs.init(backend=gs.cuda if self.device.type == "cuda" else gs.cpu, logging_level="warning")
         if gs.device != self.device:
             raise ValueError(f"Genesis is already initialized on {gs.device}; requested {self.device}.")
-        if robot.has_action_delay:
-            raise ValueError("Genesis currently supports robots without action delay.")
         self.robot_description = robot
         self.scene = gs.Scene(
-            sim_options=gs.options.SimOptions(dt=CONTROL_DT, substeps=DECIMATION),
+            sim_options=gs.options.SimOptions(dt=PHYSICS_DT, substeps=1),
             rigid_options=gs.options.RigidOptions(
                 constraint_solver=gs.constraint_solver.Newton,
                 integrator=gs.integrator.approximate_implicitfast,
@@ -97,9 +95,14 @@ class GenesisSim:
         self.robot.set_dofs_velocity(joint_vel, self.joint_dof_indices, envs_idx=env_indices)
         self.robot.control_dofs_position(joint_pos, self.joint_dof_indices, envs_idx=env_indices)
 
-    def step(self, target_joint_pos):
-        self.robot.control_dofs_position(target_joint_pos, self.joint_dof_indices)
-        self.scene.step()
+    def step(self, target_joint_pos, previous_target=None, delay_steps=None):
+        if delay_steps is None:
+            self.robot.control_dofs_position(target_joint_pos, self.joint_dof_indices)
+        for substep in range(DECIMATION):
+            if delay_steps is not None:
+                target = delayed_position_target(target_joint_pos, previous_target, delay_steps, substep)
+                self.robot.control_dofs_position(target, self.joint_dof_indices)
+            self.scene.step()
 
     def apply_xi(self, xi, randomize, ground_friction=None):
         robot = self.robot_description
@@ -112,7 +115,7 @@ class GenesisSim:
         self.robot.set_links_COM(
             self.default_center_of_mass + xi[:, None, 1 + robot.num_joints : 4 + robot.num_joints], [self.center_of_mass_index]
         )
-        mass, inertia, armature, damping, frictionloss, kp, kd = xi[:, -7:].unbind(-1)
+        mass, inertia, armature, damping, frictionloss, kp, kd = xi[:, 4 + robot.num_joints : 11 + robot.num_joints].unbind(-1)
         self.robot.set_mass(self.default_mass * mass)
         self.robot.set_links_inertia(self.default_inertia * (mass * inertia)[:, None, None, None])
         self.robot.set_dofs_armature(self.default_armature * armature[:, None], self.joint_dof_indices)

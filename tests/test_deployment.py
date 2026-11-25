@@ -128,6 +128,13 @@ assert summaries[0]['policy_steps'] == 5
 assert summaries[0]['physics_steps'] == 20
 assert summaries[0]['work_ms'] >= 0
 assert summaries[0]['rtf'] > 0
+import json
+from pathlib import Path
+delay_path = Path(sys.argv[1]).with_suffix(".dr.json")
+delay_path.write_text(json.dumps({"domain_randomization": {"action_delay_ms": 10.0}}))
+delayed = play(sys.argv[1], duration=0.1, headless=True, dr_path=delay_path)
+assert delayed[0]["policy_steps"] == 5
+assert delayed[0]["physics_steps"] == 20
 from types import SimpleNamespace
 from contextlib import nullcontext
 from mujoco import viewer
@@ -222,7 +229,7 @@ def test_fixed_deployment_dr(tmp_path):
         "passive_damping_add": 0.04, "frictionloss_add": 0.08,
         "kp_scale": 0.85, "kd_scale": 0.95, "friction": 0.7,
         "ground_friction": 0.3, "center_of_mass_offset": [0.01, -0.02, 0.03],
-        "joint_pos_offset": [0.005],
+        "joint_pos_offset": [0.005], "action_delay_ms": 10.0,
     }}))
     dr = load_dr(path, settings)
     apply_dr(model, settings, dr)
@@ -235,7 +242,7 @@ def test_fixed_deployment_dr(tmp_path):
     np.testing.assert_allclose(model.geom_friction[:, 0], [0.3, 0.7])
     assert dr["kp_scale"] == 0.85 and dr["kd_scale"] == 0.95
     for invalid in ({"kp_scale": 0}, {"mass_scale": -1}, {"friction": float("nan")},
-                    {"joint_pos_offset": [0, 0]}, {"kp_scale_range": [0.8, 1.2]}):
+                    {"joint_pos_offset": [0, 0]}, {"kp_scale_range": [0.8, 1.2]}, {"action_delay_ms": 1}):
         path.write_text(json.dumps({"domain_randomization": invalid}))
         with pytest.raises(ValueError):
             load_dr(path, settings)

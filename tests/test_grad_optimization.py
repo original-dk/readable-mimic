@@ -1,11 +1,11 @@
 """Gradient reconstruction and sampling regressions for the paper update."""
-from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
 import torch
 
-from test_pipeline import tiny_trainer
+from test_pipeline import tiny_trainer as tiny_trainer
+from test_action_delay import delayed_trainer as delayed_trainer
 from readable_mimic import data_transforms as transforms
 from readable_mimic.grad_optimization import (
     GradientOptimizationConfig, GradientStartSampler, ModelRankedReset, capped_action_gradients,
@@ -80,8 +80,9 @@ def test_model_ranked_resets_preserve_legal_starts_and_state(ground_supported):
     torch.testing.assert_close(restored.sample(200), expected)
 
 
-def test_two_pass_gradient_matches_closed_loop_backprop(tiny_trainer):
-    updates = tiny_trainer.updates
+@pytest.mark.parametrize("action_delay", [False, True])
+def test_two_pass_gradient_matches_closed_loop_backprop(tiny_trainer, delayed_trainer, action_delay):
+    updates = (delayed_trainer if action_delay else tiny_trainer).updates
     start, history = updates.sample_valid_starts(4)
     normalized_xi = transforms.compute_normalized_xi(start["xi"], updates.xi_center, updates.xi_scale)
     initial_history = transforms.compute_replay_observation_history(
@@ -102,6 +103,7 @@ def test_two_pass_gradient_matches_closed_loop_backprop(tiny_trainer):
         state = transforms.unflatten_state(start["state"])
         frames, last_action = start["motion_frame_index"], start["last_action"]
         observations = initial_history
+        previous_target = start.get("previous_target")
         command = transforms.compute_command(frames, updates.command_frame_offsets, updates.motion)
         objective = torch.zeros(4)
         perturbations, stored = [], []
@@ -116,13 +118,16 @@ def test_two_pass_gradient_matches_closed_loop_backprop(tiny_trainer):
             state, last_action, observations, frames, command = step(
                 state, observations, last_action, frames, start["xi"], normalized_xi, command,
                 action_perturbation=perturbation,
+                previous_target=previous_target,
             )
+            if action_delay:
+                previous_target = updates.default_joint_pos + start["xi"][:, 1:3] + updates.action_scale * last_action
             reward, termination = updates.reward_and_termination(
                 state, frames, last_action, previous_action, start["init_root"], start["init_f"],
             )
             objective = objective + reward * (1 - termination)
         objective += 0.5 * updates.critic(updates.critic_features(
-            state, frames, normalized_xi, command, start["init_root"], start["init_f"],
+            state, frames, normalized_xi, command, start["init_root"], start["init_f"], previous_target,
         ))
         sample_weights = torch.tensor([0.2, 0.5, 1.0, 0.8])
         if two_pass:
