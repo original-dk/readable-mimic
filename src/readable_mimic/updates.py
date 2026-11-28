@@ -65,6 +65,8 @@ class TrainingUpdates:
         self.xi_center = xi_center
         self.xi_scale = xi_scale
         self.command_frame_offsets = command_frame_offsets
+        self.horizon_offsets = torch.arange(config.horizon + 1, device=self.device)
+        self.policy_gradient_chunk = 32768
         self.discount_factors = (
             config.gamma ** torch.arange(config.horizon, device=self.device, dtype=torch.float32)[:, None]
         )
@@ -101,19 +103,81 @@ class TrainingUpdates:
                 dynamic=False,
                 options={"triton.cudagraphs": False},
             )
+            self.imagine_step_precomputed = torch.compile(
+                self.imagine_step_precomputed,
+                fullgraph=True,
+                dynamic=False,
+                options={"triton.cudagraphs": False},
+            )
+            self.compute_commands = torch.compile(
+                self.compute_commands,
+                fullgraph=True,
+                dynamic=False,
+                options={"triton.cudagraphs": False},
+            )
+            self.encode_commands = torch.compile(
+                self.encode_commands,
+                fullgraph=True,
+                dynamic=False,
+                options={"triton.cudagraphs": False},
+            )
             self.reward_and_termination = torch.compile(
                 self.reward_and_termination,
                 fullgraph=True,
                 dynamic=False,
                 options={"triton.cudagraphs": False},
             )
+            self.reward_termination_and_bodies = torch.compile(
+                self.reward_termination_and_bodies,
+                fullgraph=True,
+                dynamic=False,
+                options={"triton.cudagraphs": False},
+            )
+            self.compute_critic_targets = torch.compile(
+                self.compute_critic_targets,
+                fullgraph=True,
+                dynamic=False,
+                options={"triton.cudagraphs": False},
+            )
+            self.critic_loss = torch.compile(
+                self.critic_loss,
+                fullgraph=True,
+                dynamic=False,
+                options={"triton.cudagraphs": False},
+            )
 
-    def critic_features(self, state, motion_frame_index, normalized_xi, command, init_root, init_f, previous_target=None):
+    def critic_features(
+        self,
+        state,
+        motion_frame_index,
+        normalized_xi,
+        command,
+        init_root,
+        init_f,
+        previous_target=None,
+        body_state=None,
+        ref_body_state=None,
+    ):
         if self.robot.has_action_delay and previous_target is None:
             raise ValueError("Delayed critic requires previous_target")
         return transforms.compute_critic_input(
-            state, motion_frame_index, normalized_xi, command, self.task, init_root, init_f, previous_target,
+            state,
+            motion_frame_index,
+            normalized_xi,
+            command,
+            self.task,
+            init_root,
+            init_f,
+            previous_target,
+            body_state=body_state,
+            ref_body_state=ref_body_state,
         )
+
+    def compute_commands(self, motion_frame_index):
+        return transforms.compute_command(motion_frame_index, self.command_frame_offsets, self.motion)
+
+    def encode_commands(self, command):
+        return self.actor.encode(command)
 
     def policy_gradient_loss(self, history, command, action_gradient):
         return -(self.actor(history, command) * action_gradient).sum()
@@ -200,6 +264,32 @@ class TrainingUpdates:
         squared_state_error = squared_state_error.mean(-1)
         return ((squared_state_error * mask).sum() / next_states.shape[0], squared_state_error[:, -1])
 
+    def _imagine_step_core(
+        self,
+        state,
+        observation_history,
+        last_action,
+        next_motion_frame_index,
+        xi,
+        normalized_xi,
+        command,
+        action_perturbation=None,
+        noisy=True,
+        previous_target=None,
+        motion_latent=None,
+    ):
+        action = self.actor(observation_history, command, motion_latent=motion_latent)
+        if action_perturbation is not None:
+            action = action + action_perturbation
+        next_state = self.world_model.step(state, action, last_action, normalized_xi, previous_target)
+        next_observation = transforms.compute_observation(
+            next_state, action, xi, next_motion_frame_index, self.motion, self.default_joint_pos,
+        )
+        if noisy:
+            next_observation = transforms.apply_observation_noise(next_observation, self.observation_noise_limits)
+        observation_history = transforms.update_observation_history(observation_history, next_observation)
+        return next_state, action, observation_history
+
     def imagine_step(
         self,
         state,
@@ -213,17 +303,19 @@ class TrainingUpdates:
         noisy=True,
         previous_target=None,
     ):
-        action = self.actor(observation_history, command)
-        if action_perturbation is not None:
-            action = action + action_perturbation
-        next_state = self.world_model.step(state, action, last_action, normalized_xi, previous_target)
         next_motion_frame_index = motion_frame_index + 1
-        next_observation = transforms.compute_observation(
-            next_state, action, xi, next_motion_frame_index, self.motion, self.default_joint_pos,
+        next_state, action, observation_history = self._imagine_step_core(
+            state,
+            observation_history,
+            last_action,
+            next_motion_frame_index,
+            xi,
+            normalized_xi,
+            command,
+            action_perturbation=action_perturbation,
+            noisy=noisy,
+            previous_target=previous_target,
         )
-        if noisy:
-            next_observation = transforms.apply_observation_noise(next_observation, self.observation_noise_limits)
-        observation_history = transforms.update_observation_history(observation_history, next_observation)
         return (
             next_state,
             action,
@@ -231,6 +323,51 @@ class TrainingUpdates:
             next_motion_frame_index,
             transforms.compute_command(next_motion_frame_index, self.command_frame_offsets, self.motion),
         )
+
+    def imagine_step_precomputed(
+        self,
+        state,
+        observation_history,
+        last_action,
+        next_motion_frame_index,
+        xi,
+        normalized_xi,
+        command,
+        motion_latent=None,
+        action_perturbation=None,
+        noisy=True,
+        previous_target=None,
+    ):
+        return self._imagine_step_core(
+            state,
+            observation_history,
+            last_action,
+            next_motion_frame_index,
+            xi,
+            normalized_xi,
+            command,
+            action_perturbation=action_perturbation,
+            noisy=noisy,
+            previous_target=previous_target,
+            motion_latent=motion_latent,
+        )
+
+    def reward_termination_and_bodies(self, state, motion_frame_index, action, last_action, init_root, init_f):
+        body_state = self.task.kinematics.forward(*state)
+        ref_body_state = self.motion.ref_body_state(motion_frame_index)
+        reward = self.task.reward(
+            state,
+            motion_frame_index,
+            action,
+            last_action,
+            init_root=init_root,
+            init_f=init_f,
+            foot_contact_reward_weight=self.config.contact_reward,
+            body_state=body_state,
+            ref_body_state=ref_body_state,
+        )
+        termination = self.task.soft_termination(state, motion_frame_index)
+        return reward, termination, body_state, ref_body_state
 
     def reward_and_termination(self, state, motion_frame_index, action, last_action, init_root, init_f):
         return (
@@ -245,6 +382,33 @@ class TrainingUpdates:
             ),
             self.task.soft_termination(state, motion_frame_index),
         )
+
+    def compute_critic_targets(self, critic_features, detached_rewards, detached_terminations):
+        return transforms.compute_value_targets(
+            self.critic(critic_features),
+            detached_rewards,
+            detached_terminations,
+            self.config.gamma,
+            self.config.lam,
+        )
+
+    def _backward_policy_gradients(self, histories, commands, weighted_gradients, batch_size):
+        flat_histories = histories.flatten(0, 1)
+        flat_commands = commands.flatten(0, 1)
+        flat_gradients = (weighted_gradients / batch_size).flatten(0, 1)
+        total_samples = flat_histories.shape[0]
+        chunk_size = self.policy_gradient_chunk
+        if total_samples > chunk_size and total_samples % chunk_size == 0:
+            for start_index in range(0, total_samples, chunk_size):
+                end_index = start_index + chunk_size
+                surrogate = self.policy_gradient_loss(
+                    flat_histories[start_index:end_index],
+                    flat_commands[start_index:end_index],
+                    flat_gradients[start_index:end_index],
+                )
+                surrogate.backward()
+        else:
+            self.policy_gradient_loss(flat_histories, flat_commands, flat_gradients).backward()
 
     def critic_loss(self, critic_features, value_targets, importance=None):
         errors = (self.critic(critic_features) - value_targets) ** 2
@@ -350,20 +514,20 @@ class TrainingUpdates:
         capped = self.grad_config.cap > 0
         if capped:
             set_requires_grad(self.actor, False)
-        action_perturbations, policy_histories, policy_commands = [], [], []
+        action_perturbations, policy_histories = [], []
         batch_size = self.config.pi_batch
-        initial_command = transforms.compute_command(
-            motion_frame_index, self.command_frame_offsets, self.motion
-        )
-        command = initial_command
+        all_frames = motion_frame_index[None, :] + self.horizon_offsets[:, None]
+        with torch.no_grad():
+            all_commands = self.compute_commands(all_frames.flatten()).view(
+                self.horizon + 1, batch_size, -1
+            )
+            motion_latents = (
+                self.encode_commands(all_commands[:-1].flatten(0, 1)).view(self.horizon, batch_size, -1)
+                if capped
+                else None
+            )
         initial_state = state
-        rollout_states, rollout_actions, rollout_last_actions, rollout_frames, rollout_commands = (
-            [],
-            [],
-            [],
-            [],
-            [],
-        )
+        rollout_states, rollout_actions, rollout_last_actions = [], [], []
         self.timer.record("actor_prepare")
         for step_index in range(self.horizon):
             perturbation = None
@@ -371,27 +535,27 @@ class TrainingUpdates:
                 perturbation = torch.zeros_like(last_action, requires_grad=True)
                 action_perturbations.append(perturbation)
                 policy_histories.append(observation_history.detach())
-                policy_commands.append(command.detach())
             rollout_last_actions.append(last_action)
-            state, last_action, observation_history, motion_frame_index, command = self.imagine_step(
+            state, last_action, observation_history = self.imagine_step_precomputed(
                 state,
                 observation_history,
                 last_action,
-                motion_frame_index,
+                all_frames[step_index + 1],
                 xi,
                 normalized_xi,
-                command,
+                all_commands[step_index],
+                motion_latent=None if motion_latents is None else motion_latents[step_index],
                 action_perturbation=perturbation,
                 previous_target=previous_target,
             )
             if self.robot.has_action_delay:
-                previous_target = self.default_joint_pos + xi[:, 1:1 + self.robot.num_joints] + self.action_scale * last_action
-            (
-                rollout_states.append(state),
-                rollout_actions.append(last_action),
-                rollout_frames.append(motion_frame_index),
-                rollout_commands.append(command),
-            )
+                previous_target = (
+                    self.default_joint_pos
+                    + xi[:, 1 : 1 + self.robot.num_joints]
+                    + self.action_scale * last_action
+                )
+            rollout_states.append(state)
+            rollout_actions.append(last_action)
         self.timer.record("actor_rollout")
         flat = lambda xs: torch.stack(xs).flatten(0, 1)
         all_states = tuple(
@@ -400,10 +564,15 @@ class TrainingUpdates:
                 for component_index in range(6)
             )
         )
-        all_frames = flat(rollout_frames)
-        rewards, termination_probabilities = self.reward_and_termination(
-            all_states, all_frames, flat(rollout_actions), flat(rollout_last_actions),
-            start["init_root"].repeat(self.horizon, 1), start["init_f"].repeat(self.horizon),
+        rewards, termination_probabilities, rollout_body_state, rollout_ref_body_state = (
+            self.reward_termination_and_bodies(
+                all_states,
+                all_frames[1:].flatten(),
+                flat(rollout_actions),
+                flat(rollout_last_actions),
+                start["init_root"].repeat(self.horizon, 1),
+                start["init_f"].repeat(self.horizon),
+            )
         )
         rewards, termination_probabilities = (
             rewards.view(self.horizon, batch_size),
@@ -413,9 +582,9 @@ class TrainingUpdates:
         bootstrap_value = self.critic(
             self.critic_features(
                 state,
-                motion_frame_index,
+                all_frames[-1],
                 normalized_xi,
-                command,
+                all_commands[-1],
                 start["init_root"],
                 start["init_f"],
                 previous_target,
@@ -443,12 +612,9 @@ class TrainingUpdates:
             self.grad_metrics["start_importance_min"] = importance.min()
             self.grad_metrics["start_importance_max"] = importance.max()
             set_requires_grad(self.actor, True)
-            for step_index in range(self.horizon):
-                surrogate = self.policy_gradient_loss(
-                    policy_histories[step_index], policy_commands[step_index],
-                    weighted_gradients[step_index] / batch_size,
-                )
-                surrogate.backward()
+            self._backward_policy_gradients(
+                torch.stack(policy_histories), all_commands[:-1], weighted_gradients, batch_size
+            )
         else:
             loss.backward()
         self.timer.record("actor_backward_gradients")
@@ -469,15 +635,16 @@ class TrainingUpdates:
             initial_state,
             rollout_states,
             start,
-            rollout_frames,
-            initial_command,
-            rollout_commands,
+            all_frames,
+            all_commands,
             normalized_xi,
             detached_rewards,
             detached_terminations,
             batch_size,
             importance,
             rollout_actions,
+            rollout_body_state=rollout_body_state,
+            rollout_ref_body_state=rollout_ref_body_state,
         )
         self.timer.record("critic")
         return (
@@ -493,15 +660,16 @@ class TrainingUpdates:
         initial_state,
         rollout_states,
         start,
-        rollout_frames,
-        initial_command,
-        rollout_commands,
+        all_frames,
+        all_commands,
         normalized_xi,
         detached_rewards,
         detached_terminations,
         batch_size,
         importance=None,
         rollout_actions=None,
+        rollout_body_state=None,
+        rollout_ref_body_state=None,
     ):
         value_loss = torch.zeros(())
         with torch.no_grad():
@@ -519,12 +687,8 @@ class TrainingUpdates:
                     for component_index in range(6)
                 )
             )
-            critic_frames = torch.cat(
-                (start["motion_frame_index"].unsqueeze(0), torch.stack(rollout_frames)), 0
-            ).flatten()
-            critic_commands = torch.cat(
-                (initial_command.unsqueeze(0), torch.stack(rollout_commands)), 0
-            ).flatten(0, 1)
+            critic_frames = all_frames.flatten()
+            critic_commands = all_commands.flatten(0, 1)
             critic_xi = normalized_xi.unsqueeze(0).expand(self.horizon + 1, -1, -1).flatten(0, 1)
             critic_previous_target = None
             if self.robot.has_action_delay:
@@ -534,6 +698,19 @@ class TrainingUpdates:
                     + self.action_scale * issued_actions
                 )
                 critic_previous_target = torch.cat((start["previous_target"][None], issued_targets), 0).flatten(0, 1)
+            critic_body_state = None
+            critic_ref_body_state = None
+            if rollout_body_state is not None and rollout_ref_body_state is not None:
+                initial_body_state = self.task.kinematics.forward(*initial_state)
+                initial_ref_body_state = self.motion.ref_body_state(all_frames[0])
+                critic_body_state = tuple(
+                    torch.cat((init_value, rollout_value.detach()), 0)
+                    for init_value, rollout_value in zip(initial_body_state, rollout_body_state)
+                )
+                critic_ref_body_state = tuple(
+                    torch.cat((init_value, rollout_value.detach()), 0)
+                    for init_value, rollout_value in zip(initial_ref_body_state, rollout_ref_body_state)
+                )
             critic_features = self.critic_features(
                 critic_states,
                 critic_frames,
@@ -542,16 +719,12 @@ class TrainingUpdates:
                 start["init_root"].repeat(self.horizon + 1, 1),
                 start["init_f"].repeat(self.horizon + 1),
                 critic_previous_target,
+                body_state=critic_body_state,
+                ref_body_state=critic_ref_body_state,
             ).view(self.horizon + 1, batch_size, -1)
         self.critic.norm.update(critic_features)
         with torch.no_grad():
-            targets = transforms.compute_value_targets(
-                self.critic(critic_features),
-                detached_rewards,
-                detached_terminations,
-                self.config.gamma,
-                self.config.lam,
-            )
+            targets = self.compute_critic_targets(critic_features, detached_rewards, detached_terminations)
         flat_critic_features, flat_value_targets = (
             critic_features[:-1].reshape(-1, critic_features.shape[-1]),
             targets.reshape(-1),

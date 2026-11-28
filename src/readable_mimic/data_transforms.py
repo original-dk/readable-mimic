@@ -150,8 +150,19 @@ def compute_value_targets(state_values, detached_rewards, detached_terminations,
     return torch.stack(targets[::-1])
 
 
-def compute_critic_input(state, motion_frame_index, normalized_xi, command, task, init_root, init_f, previous_target=None):
-    body = task.body_diff(state, motion_frame_index)
+def compute_critic_input(
+    state,
+    motion_frame_index,
+    normalized_xi,
+    command,
+    task,
+    init_root,
+    init_f,
+    previous_target=None,
+    body_state=None,
+    ref_body_state=None,
+):
+    body = task.body_diff(state, motion_frame_index, body_state=body_state, ref_body_state=ref_body_state)
     base = task.base_diff(state, motion_frame_index, init_root, init_f)
     joint_pos, joint_vel = state[4:]
     joint_error = task.motion.joint_position(motion_frame_index) - joint_pos

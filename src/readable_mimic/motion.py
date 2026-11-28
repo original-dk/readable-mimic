@@ -104,6 +104,35 @@ class ReferenceMotion:
         self.bin_start = torch.tensor(bin_start, device=device)
         self.num_bins = len(bin_start)
         self.reset_starts = None
+        self._ref_body_cache = self._build_ref_body_cache()
+
+    def _build_ref_body_cache(self, max_cache_bytes: int = 512 * 1024 * 1024):
+        if self.num_frames == 0:
+            return None
+        num_tracked = len(self.kinematics.tracked_body_indices)
+        bytes_per_frame = num_tracked * 18 * 4
+        if self.num_frames * bytes_per_frame > max_cache_bytes:
+            return None
+        positions = torch.empty((self.num_frames, num_tracked, 3), device=self.device, dtype=torch.float32)
+        rotations = torch.empty((self.num_frames, num_tracked, 3, 3), device=self.device, dtype=torch.float32)
+        linear_velocities = torch.empty(
+            (self.num_frames, num_tracked, 3), device=self.device, dtype=torch.float32
+        )
+        angular_velocities = torch.empty(
+            (self.num_frames, num_tracked, 3), device=self.device, dtype=torch.float32
+        )
+        with torch.no_grad():
+            for first in range(0, self.num_frames, 65536):
+                last = min(first + 65536, self.num_frames)
+                indices = torch.arange(first, last, device=self.device)
+                body_pos, body_rot, body_lin_vel, body_ang_vel = self.kinematics.forward(
+                    *self.ref_state(indices)
+                )
+                positions[first:last].copy_(body_pos)
+                rotations[first:last].copy_(body_rot)
+                linear_velocities[first:last].copy_(body_lin_vel)
+                angular_velocities[first:last].copy_(body_ang_vel)
+        return (positions, rotations, linear_velocities, angular_velocities)
 
     def top_failure_bins(self, failure_counts):
         counts = failure_counts.cpu().numpy()
@@ -132,6 +161,14 @@ class ReferenceMotion:
         return self.compact_state[motion_frame_index][..., 10 : 10 + self.num_joints].float()
 
     def ref_body_state(self, motion_frame_index):
+        if self._ref_body_cache is not None:
+            positions, rotations, linear_velocities, angular_velocities = self._ref_body_cache
+            return (
+                positions[motion_frame_index],
+                rotations[motion_frame_index],
+                linear_velocities[motion_frame_index],
+                angular_velocities[motion_frame_index],
+            )
         return self.kinematics.forward(*self.ref_state(motion_frame_index))
 
     @staticmethod

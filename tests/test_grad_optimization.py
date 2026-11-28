@@ -210,3 +210,173 @@ def test_legacy_resume_keeps_original_gradient_rule(tiny_trainer, tmp_path):
     path.write_text(json.dumps(current))
     resumed = load_config(path, resume=str(checkpoint))
     assert resumed.grad_optimization == {}
+
+
+@pytest.mark.parametrize("action_delay", [False, True])
+def test_precomputed_rollout_batched_backward_and_reused_fk(tiny_trainer, delayed_trainer, action_delay):
+    updates = (delayed_trainer if action_delay else tiny_trainer).updates
+    start, history = updates.sample_valid_starts(4)
+    normalized_xi = transforms.compute_normalized_xi(start["xi"], updates.xi_center, updates.xi_scale)
+    initial_history = transforms.compute_replay_observation_history(
+        history, updates.motion, updates.default_joint_pos, updates.observation_noise_limits,
+    )
+    with torch.no_grad():
+        updates.world_model.network[-1].weight.normal_(0, 0.01)
+    set_requires_grad(updates.world_model, False)
+    set_requires_grad(updates.critic, False)
+
+    compiled_commands = torch.compile(updates.compute_commands, backend="aot_eager", fullgraph=True, dynamic=False)
+    compiled_encode = torch.compile(updates.encode_commands, backend="aot_eager", fullgraph=True, dynamic=False)
+    compiled_step = torch.compile(
+        updates.imagine_step_precomputed, backend="aot_eager", fullgraph=True, dynamic=False,
+    )
+    compiled_reward_bodies = torch.compile(
+        updates.reward_termination_and_bodies, backend="aot_eager", fullgraph=True, dynamic=False,
+    )
+    compiled_critic_features = torch.compile(
+        updates.critic_features, backend="aot_eager", fullgraph=True, dynamic=False,
+    )
+    compiled_targets = torch.compile(
+        updates.compute_critic_targets, backend="aot_eager", fullgraph=True, dynamic=False,
+    )
+    compiled_surrogate = torch.compile(
+        updates.policy_gradient_loss, backend="aot_eager", fullgraph=True, dynamic=False,
+    )
+
+    # Reference unbatched two-pass gradients.
+    set_requires_grad(updates.actor, False)
+    updates.actor.zero_grad(set_to_none=True)
+    state = transforms.unflatten_state(start["state"])
+    frames, last_action = start["motion_frame_index"], start["last_action"]
+    observations = initial_history
+    previous_target = start.get("previous_target")
+    command = transforms.compute_command(frames, updates.command_frame_offsets, updates.motion)
+    objective = torch.zeros(4)
+    perturbations, stored = [], []
+    torch.manual_seed(99)
+    for _ in range(updates.horizon):
+        perturbation = torch.zeros_like(last_action, requires_grad=True)
+        perturbations.append(perturbation)
+        stored.append((observations.detach(), command.detach()))
+        previous_action = last_action
+        state, last_action, observations, frames, command = updates.imagine_step(
+            state, observations, last_action, frames, start["xi"], normalized_xi, command,
+            action_perturbation=perturbation, previous_target=previous_target,
+        )
+        if action_delay:
+            previous_target = (
+                updates.default_joint_pos + start["xi"][:, 1:3] + updates.action_scale * last_action
+            )
+        reward, termination = updates.reward_and_termination(
+            state, frames, last_action, previous_action, start["init_root"], start["init_f"],
+        )
+        objective = objective + reward * (1 - termination)
+    objective += 0.5 * updates.critic(updates.critic_features(
+        state, frames, normalized_xi, command, start["init_root"], start["init_f"], previous_target,
+    ))
+    ref_action_grads = torch.stack(torch.autograd.grad(objective.sum(), perturbations))
+    set_requires_grad(updates.actor, True)
+    for (obs_step, cmd_step), action_grad in zip(stored, ref_action_grads):
+        updates.policy_gradient_loss(obs_step, cmd_step, action_grad.detach() / 4).backward()
+    expected_grads = [p.grad.clone() for p in updates.actor.parameters()]
+
+    # Optimized precomputed rollout + compiled reward/bodies + chunked batched backward.
+    set_requires_grad(updates.actor, False)
+    updates.actor.zero_grad(set_to_none=True)
+    state = transforms.unflatten_state(start["state"])
+    initial_state = state
+    last_action = start["last_action"]
+    observations = initial_history
+    previous_target = start.get("previous_target")
+    all_frames = start["motion_frame_index"][None, :] + updates.horizon_offsets[:, None]
+    with torch.no_grad():
+        all_commands = compiled_commands(all_frames.flatten()).view(updates.horizon + 1, 4, -1)
+        motion_latents = compiled_encode(all_commands[:-1].flatten(0, 1)).view(updates.horizon, 4, -1)
+    perturbations, policy_histories = [], []
+    rollout_states, rollout_actions, rollout_last_actions = [], [], []
+    torch.manual_seed(99)
+    for step_index in range(updates.horizon):
+        perturbation = torch.zeros_like(last_action, requires_grad=True)
+        perturbations.append(perturbation)
+        policy_histories.append(observations.detach())
+        rollout_last_actions.append(last_action)
+        state, last_action, observations = compiled_step(
+            state, observations, last_action, all_frames[step_index + 1], start["xi"], normalized_xi,
+            all_commands[step_index], motion_latent=motion_latents[step_index],
+            action_perturbation=perturbation, previous_target=previous_target,
+        )
+        if action_delay:
+            previous_target = (
+                updates.default_joint_pos + start["xi"][:, 1:3] + updates.action_scale * last_action
+            )
+        rollout_states.append(state)
+        rollout_actions.append(last_action)
+    flat = lambda xs: torch.stack(xs).flatten(0, 1)
+    all_states = tuple(flat([s[i] for s in rollout_states]) for i in range(6))
+    rewards, terminations, body_state, ref_body_state = compiled_reward_bodies(
+        all_states, all_frames[1:].flatten(), flat(rollout_actions), flat(rollout_last_actions),
+        start["init_root"].repeat(updates.horizon, 1), start["init_f"].repeat(updates.horizon),
+    )
+    rewards = rewards.view(updates.horizon, 4)
+    terminations = terminations.view(updates.horizon, 4)
+    opt_objective = (rewards * (1 - terminations)).sum(0) + 0.5 * updates.critic(compiled_critic_features(
+        state, all_frames[-1], normalized_xi, all_commands[-1], start["init_root"], start["init_f"],
+        previous_target,
+    ))
+    torch.testing.assert_close(opt_objective, objective)
+    opt_action_grads = torch.stack(torch.autograd.grad(opt_objective.sum(), perturbations))
+    torch.testing.assert_close(opt_action_grads, ref_action_grads)
+    set_requires_grad(updates.actor, True)
+    updates.policy_gradient_loss, orig_pg = compiled_surrogate, updates.policy_gradient_loss
+    updates.policy_gradient_chunk, orig_chunk = 6, updates.policy_gradient_chunk
+    try:
+        updates._backward_policy_gradients(
+            torch.stack(policy_histories), all_commands[:-1], opt_action_grads.detach(), 4,
+        )
+    finally:
+        updates.policy_gradient_loss = orig_pg
+        updates.policy_gradient_chunk = orig_chunk
+    for actual, expected in zip([p.grad for p in updates.actor.parameters()], expected_grads):
+        torch.testing.assert_close(actual, expected, atol=2e-5, rtol=2e-4)
+
+    # Reused FK critic features and compiled GAE targets match uncached FK.
+    with torch.no_grad():
+        init_body = updates.task.kinematics.forward(*initial_state)
+        init_ref = updates.motion.ref_body_state(all_frames[0])
+        critic_body = tuple(torch.cat((a, b.detach()), 0) for a, b in zip(init_body, body_state))
+        critic_ref = tuple(torch.cat((a, b.detach()), 0) for a, b in zip(init_ref, ref_body_state))
+        critic_states = tuple(
+            torch.cat((initial_state[i].unsqueeze(0), torch.stack([s[i].detach() for s in rollout_states])), 0)
+            .flatten(0, 1)
+            for i in range(6)
+        )
+        critic_xi = normalized_xi.unsqueeze(0).expand(updates.horizon + 1, -1, -1).flatten(0, 1)
+        critic_prev = None
+        if action_delay:
+            issued_targets = (
+                updates.default_joint_pos + start["xi"][None, :, 1:3]
+                + updates.action_scale * torch.stack([a.detach() for a in rollout_actions])
+            )
+            critic_prev = torch.cat((start["previous_target"][None], issued_targets), 0).flatten(0, 1)
+        reused = compiled_critic_features(
+            critic_states, all_frames.flatten(), critic_xi, all_commands.flatten(0, 1),
+            start["init_root"].repeat(updates.horizon + 1, 1), start["init_f"].repeat(updates.horizon + 1),
+            critic_prev, body_state=critic_body, ref_body_state=critic_ref,
+        )
+        uncached = updates.critic_features(
+            critic_states, all_frames.flatten(), critic_xi, all_commands.flatten(0, 1),
+            start["init_root"].repeat(updates.horizon + 1, 1), start["init_f"].repeat(updates.horizon + 1),
+            critic_prev,
+        )
+        torch.testing.assert_close(reused, uncached)
+        reused_grid = reused.view(updates.horizon + 1, 4, -1)
+        actual_targets = compiled_targets(reused_grid, rewards.detach(), terminations.detach())
+        expected_targets = transforms.compute_value_targets(
+            updates.critic(reused_grid), rewards.detach(), terminations.detach(),
+            updates.config.gamma, updates.config.lam,
+        )
+        torch.testing.assert_close(actual_targets, expected_targets)
+        raw_ref_body = updates.motion.kinematics.forward(*updates.motion.ref_state(all_frames.flatten()))
+        cached_ref_body = updates.motion.ref_body_state(all_frames.flatten())
+        for cached_val, raw_val in zip(cached_ref_body, raw_ref_body):
+            torch.testing.assert_close(cached_val, raw_val)

@@ -115,6 +115,8 @@ class TrackingTask:
         foot_contact_reward_weight: float = 0.0,
         init_root=None,
         init_f=None,
+        body_state=None,
+        ref_body_state=None,
     ):
         """Per-step reward, scaled by CONTROL_DT, compared with the ref motion frame.
 
@@ -123,9 +125,11 @@ class TrackingTask:
         the reference foot is down. Evaluation keeps ``foot_contact_reward_weight = 0``, i.e. the paper's reward."""
         reward_config, motion = (self.config, self.motion)
         joint_pos = state[4]
-        body_state = self.kinematics.forward(*state)
+        if body_state is None:
+            body_state = self.kinematics.forward(*state)
         body_pos_w, _, body_lin_vel_w, _ = body_state
-        ref_body_state = motion.ref_body_state(motion_frame_index)
+        if ref_body_state is None:
+            ref_body_state = motion.ref_body_state(motion_frame_index)
         body_errors = self.body_diff(state, motion_frame_index, body_state, ref_body_state)
         body_pos_error, body_rot_error, body_lin_vel_error, body_ang_vel_error = (
             diff.square().sum(-1).mean(-1) for diff in body_errors
